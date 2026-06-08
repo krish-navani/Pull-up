@@ -1,0 +1,56 @@
+{
+  "cli": {
+    "version": ">= 15.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal"
+    },
+    "preview": {
+      "distribution": "internal",
+      "env": {
+        "NODE_ENV": "production",
+        "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyAKbuybbJFQbaIlal3uP26JrRv2A-n8q1A",
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "pullup-2026.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "pullup-2026",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "pullup-2026.firebasestorage.app",
+        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "271893491884",
+        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:271893491884:web:ae67e0962af993470e6f09",
+        "EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID": "G-ZLKRDJB2S6",
+        "EXPO_PUBLIC_OTP_BACKEND_URL": "https://pullup-backend-otp.vercel.app",
+        "EXPO_PUBLIC_OTP_EXPIRY_MINUTES": "10",
+        "EXPO_PUBLIC_OTP_LENGTH": "4",
+        "EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME": "dednna8sw",
+        "EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET": "pullup_driver_license",
+        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyCIZ1Lccen5Ek7-0cXIU3Pxv5he7vhmZ6Y"
+      },
+      "android": {
+        "buildType": "apk"
+      }
+    },
+    "production": {
+      "autoIncrement": true,
+      "env": {
+        "NODE_ENV": "production",
+        "EXPO_PUBLIC_FIREBASE_API_KEY": "AIzaSyAKbuybbJFQbaIlal3uP26JrRv2A-n8q1A",
+        "EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN": "pullup-2026.firebaseapp.com",
+        "EXPO_PUBLIC_FIREBASE_PROJECT_ID": "pullup-2026",
+        "EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET": "pullup-2026.firebasestorage.app",
+        "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "271893491884",
+        "EXPO_PUBLIC_FIREBASE_APP_ID": "1:271893491884:web:ae67e0962af993470e6f09",
+        "EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID": "G-ZLKRDJB2S6",
+        "EXPO_PUBLIC_OTP_BACKEND_URL": "https://pullup-backend-otp.vercel.app",
+        "EXPO_PUBLIC_OTP_EXPIRY_MINUTES": "10",
+        "EXPO_PUBLIC_OTP_LENGTH": "4",
+        "EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME": "dednna8sw",
+        "EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET": "pullup_driver_license",
+        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyCIZ1Lccen5Ek7-0cXIU3Pxv5he7vhmZ6Y"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

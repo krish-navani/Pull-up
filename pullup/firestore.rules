@@ -1,0 +1,79 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Helper Functions ───────────────────────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // ─── OTP Verification ───────────────────────────────────────────────────
+    // Must be accessible before authentication (signup / login flow)
+    match /otpVerification/{document=**} {
+      allow read, write: if true;
+    }
+
+    // ─── Users ──────────────────────────────────────────────────────────────
+    match /users/{userId} {
+      // Public reads: needed for messaging, booking display, driver profile pages
+      allow read: if true;
+
+      // Only authenticated users can create / update / delete user documents
+      // OTP verification is the real security gate — Firebase Auth UID is
+      // assigned after OTP confirms the user, so request.auth != null is safe.
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isSignedIn();
+
+      // ── Notifications subcollection ──────────────────────────────────────
+      match /notifications/{notificationId} {
+        allow read:   if isSignedIn();
+        allow create: if isSignedIn();
+        allow update: if isSignedIn();
+        allow delete: if isSignedIn();
+      }
+    }
+
+    // ─── Rides ──────────────────────────────────────────────────────────────
+    // NOTE: queries that combine `where status in [...]` + `orderBy departureTime`
+    // require a composite index. To avoid index errors (which surface as
+    // permission-denied), sorting is done client-side in rideService.ts.
+    match /rides/{rideId} {
+      allow read:   if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isSignedIn(); // used by expired-ride cleanup scheduler
+    }
+
+    // ─── Bookings ───────────────────────────────────────────────────────────
+    match /bookings/{bookingId} {
+      allow read:   if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isSignedIn();
+    }
+
+    // ─── Chat Rooms + Messages ───────────────────────────────────────────────
+    match /chatRooms/{rideId} {
+      allow read:   if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isSignedIn();
+
+      match /messages/{messageId} {
+        allow read:   if isSignedIn();
+        allow create: if isSignedIn();
+        allow update: if isSignedIn(); // for read receipts / mark-as-read
+        allow delete: if false;        // soft-delete only (update the doc)
+      }
+    }
+
+    // ─── Legacy Chats (kept for backward compat) ────────────────────────────
+    match /chats/{document=**} {
+      allow read:   if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isSignedIn();
+    }
+  }
+}
