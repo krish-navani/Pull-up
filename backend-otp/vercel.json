@@ -1,0 +1,21 @@
+{
+  "buildCommand": "cd backend && npm install --include=dev && npm run build",
+  "outputDirectory": "backend/dist",
+  "env": {
+    "NODE_ENV": "production"
+  },
+  "functions": {
+    "api/otp/index.js": {
+      "maxDuration": 30,
+      "memory": 512
+    },
+    "api/otp/send-otp.js": {
+      "maxDuration": 60,
+      "memory": 1024
+    },
+    "api/otp/verify-otp.js": {
+      "maxDuration": 30,
+      "memory": 512
+    }
+  }
+}

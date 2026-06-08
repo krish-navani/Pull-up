@@ -1,0 +1,15 @@
+{
+  "name": "pullup-admin-panel",
+  "version": "1.0.0",
+  "description": "PullUp Admin License Management Dashboard",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "start": "node admin-server.js",
+    "dev": "node admin-server.js"
+  },
+  "keywords": ["admin", "dashboard", "licenses"],
+  "author": "",
+  "license": "ISC"
+}

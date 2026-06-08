@@ -1,0 +1,11 @@
+.env
+.env.local
+.env.production.local
+.env.development.local
+node_modules
+dist
+*.log
+.vercel/
+private_key.txt
+private_key.pem
+*.pem

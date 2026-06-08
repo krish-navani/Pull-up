@@ -1,0 +1,11 @@
+{
+  "name": "pullup-backend-otp-vercel",
+  "version": "1.0.0",
+  "description": "OTP Backend deployed on Vercel",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "build": "cd backend && npm install --include=dev && npm run build"
+  }
+}

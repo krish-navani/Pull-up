@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PullUp - Admin License Management</title>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            border-left: 4px solid #0ea5e9;
+        }
+
+        header h1 {
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+
+        header p {
+            color: #94a3b8;
+            font-size: 14px;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            background: #0ea5e9;
+            color: white;
+            border: none;
+            padding: 10px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+            transition: background 0.2s;
+        }
+
+        button:hover {
+            background: #0284c7;
+        }
+
+        button.secondary {
+            background: #64748b;
+        }
+
+        button.secondary:hover {
+            background: #475569;
+        }
+
+        .filter-group {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .filter-group label {
+            font-size: 14px;
+            color: #cbd5e1;
+        }
+
+        .filter-group select {
+            background: #1e293b;
+            color: #e2e8f0;
+            border: 1px solid #334155;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 3px solid #0ea5e9;
+        }
+
+        .stat-card h3 {
+            color: #94a3b8;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .stat-card .value {
+            font-size: 28px;
+            font-weight: bold;
+        }
+
+        .licenses-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+        }
+
+        .license-card {
+            background: #1e293b;
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid #334155;
+            transition: all 0.3s;
+        }
+
+        .license-card:hover {
+            border-color: #0ea5e9;
+            box-shadow: 0 8px 16px rgba(14, 165, 233, 0.1);
+        }
+
+        .license-image-container {
+            position: relative;
+            width: 100%;
+            height: 200px;
+            background: #0f172a;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        .license-image-container img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .license-image-container.no-image {
+            color: #64748b;
+            font-size: 12px;
+        }
+
+        .license-info {
+            padding: 20px;
+        }
+
+        .driver-name {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .driver-email {
+            color: #94a3b8;
+            font-size: 13px;
+            margin-bottom: 12px;
+        }
+
+        .driver-details {
+            font-size: 13px;
+            color: #cbd5e1;
+            margin-bottom: 12px;
+            line-height: 1.8;
+        }
+
+        .driver-details div {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+
+        .driver-details label {
+            color: #94a3b8;
+            min-width: 80px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 12px;
+        }
+
+        .status-pending {
+            background: #fbbf24;
+            color: #000;
+        }
+
+        .status-verified {
+            background: #22c55e;
+            color: #000;
+        }
+
+        .status-rejected {
+            background: #ef4444;
+            color: #fff;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 10px;
+            margin-top: 16px;
+        }
+
+        .action-buttons button {
+            flex: 1;
+            padding: 10px 12px;
+            font-size: 13px;
+        }
+
+        .btn-verify {
+            background: #22c55e;
+        }
+
+        .btn-verify:hover {
+            background: #16a34a;
+        }
+
+        .btn-reject {
+            background: #ef4444;
+        }
+
+        .btn-reject:hover {
+            background: #dc2626;
+        }
+
+        .btn-pending {
+            background: #64748b;
+        }
+
+        .btn-pending:hover {
+            background: #475569;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #64748b;
+        }
+
+        .empty-state h2 {
+            font-size: 24px;
+            margin-bottom: 10px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #94a3b8;
+        }
+
+        .spinner {
+            border: 3px solid #334155;
+            border-top: 3px solid #0ea5e9;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #1e293b;
+            border-radius: 12px;
+            padding: 30px;
+            max-width: 600px;
+            width: 90%;
+            max-height: 90vh;
+            overflow-y: auto;
+        }
+
+        .modal-header {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 20px;
+        }
+
+        .modal-body {
+            margin-bottom: 20px;
+        }
+
+        .modal-image {
+            width: 100%;
+            max-height: 400px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            object-fit: contain;
+        }
+
+        .modal-details {
+            background: #0f172a;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 13px;
+        }
+
+        .modal-details div {
+            display: flex;
+            margin-bottom: 10px;
+            gap: 10px;
+        }
+
+        .modal-details label {
+            color: #94a3b8;
+            min-width: 140px;
+        }
+
+        .modal-details span {
+            color: #e2e8f0;
+        }
+
+        .modal-footer {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+
+        .modal-footer button {
+            padding: 10px 20px;
+        }
+
+        .btn-close {
+            background: #64748b;
+        }
+
+        .btn-close:hover {
+            background: #475569;
+        }
+
+        .alert {
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-size: 14px;
+        }
+
+        .alert-success {
+            background: #22c55e;
+            color: #000;
+            border-left: 4px solid #16a34a;
+        }
+
+        .alert-error {
+            background: #ef4444;
+            color: #fff;
+            border-left: 4px solid #dc2626;
+        }
+
+        .alert-info {
+            background: #0ea5e9;
+            color: #fff;
+            border-left: 4px solid #0284c7;
+        }
+
+        .auth-section {
+            background: #1e293b;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .auth-section button {
+            background: #ef4444;
+        }
+
+        .auth-section button:hover {
+            background: #dc2626;
+        }
+
+        @media (max-width: 768px) {
+            .licenses-grid {
+                grid-template-columns: 1fr;
+            }
+
+            header h1 {
+                font-size: 20px;
+            }
+
+            .controls {
+                flex-direction: column;
+            }
+
+            .filter-group {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🚗 PullUp Admin Dashboard</h1>
+            <p>Database Management & License Verification</p>
+        </header>
+
+        <div style="text-align: center; padding: 10px; background: #1e293b; margin-bottom: 20px; border-radius: 8px;">
+            <p style="color: #0ea5e9; font-weight: 600;">✓ Admin Dashboard Loaded</p>
+        </div>
+
+        <!-- Database Management Section -->
+        <div style="background: #1e293b; padding: 25px; border-radius: 8px; margin-bottom: 30px; border-left: 4px solid #f59e0b;">
+            <h2 style="font-size: 20px; margin-bottom: 15px; color: #fbbf24;">⚙️ Database Management</h2>
+            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                <button onclick="seedDatabase()" style="background: #22c55e;">
+                    🌱 Seed Database with Dummy Data
+                </button>
+                <button onclick="flushDatabase()" style="background: #ef4444;">
+                    🗑️ Flush Database (Delete All)
+                </button>
+            </div>
+            <div id="seedProgress" style="display: none; background: #0f172a; padding: 15px; border-radius: 6px; margin-top: 15px; border-left: 3px solid #60a5fa;">
+            </div>
+        </div>
+
+        <div id="mainContent" style="display: none;">
+            <h2 style="font-size: 20px; margin-bottom: 20px; color: #e2e8f0;">📋 License Management</h2>
+            <div class="stats">
+                <div class="stat-card">
+                    <h3>Total Licenses</h3>
+                    <div class="value" id="statTotal">0</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Pending Review</h3>
+                    <div class="value" id="statPending">0</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Verified</h3>
+                    <div class="value" id="statVerified">0</div>
+                </div>
+                <div class="stat-card">
+                    <h3>Rejected</h3>
+                    <div class="value" id="statRejected">0</div>
+                </div>
+            </div>
+
+            <div class="controls">
+                <div class="filter-group">
+                    <label>Filter by Status:</label>
+                    <select id="filterStatus" onchange="applyFilters()">
+                        <option value="">All</option>
+                        <option value="pending">Pending</option>
+                        <option value="verified">Verified</option>
+                        <option value="rejected">Rejected</option>
+                    </select>
+                </div>
+                <button onclick="refreshData()" class="secondary">🔄 Refresh</button>
+            </div>
+
+            <div id="licensesContainer" class="licenses-grid"></div>
+
+            <div id="emptyState" class="empty-state" style="display: none;">
+                <h2>No licenses found</h2>
+                <p>There are no licenses matching your current filters</p>
+            </div>
+
+            <div id="loadingState" class="loading" style="display: none;">
+                <div class="spinner"></div>
+                <p>Loading licenses...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Detail Modal -->
+    <div id="licenseModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">License Details</div>
+            <div class="modal-body">
+                <img id="modalImage" class="modal-image" src="" alt="License">
+                <div class="modal-details">
+                    <div>
+                        <label>Car Owner Name:</label>
+                        <span id="modalName"></span>
+                    </div>
+                    <div>
+                        <label>Email:</label>
+                        <span id="modalEmail"></span>
+                    </div>
+                    <div>
+                        <label>Role:</label>
+                        <span id="modalRole"></span>
+                    </div>
+                    <div>
+                        <label>Year:</label>
+                        <span id="modalYear"></span>
+                    </div>
+                    <div>
+                        <label>Course:</label>
+                        <span id="modalCourse"></span>
+                    </div>
+                    <div>
+                        <label>Division:</label>
+                        <span id="modalDivision"></span>
+                    </div>
+                    <div>
+                        <label>Status:</label>
+                        <span id="modalStatus"></span>
+                    </div>
+                    <div>
+                        <label>Uploaded:</label>
+                        <span id="modalUploadedAt"></span>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-close" onclick="closeModal()">Close</button>
+                <button class="btn-verify" id="btnModalVerify" onclick="verifyLicense()" style="display: none;">Verify</button>
+                <button class="btn-reject" id="btnModalReject" onclick="rejectLicense()" style="display: none;">Reject</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="dbManager.js"></script>
+    <script>
+        // Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyAKbuybbJFQbaIlal3uP26JrRv2A-n8q1A",
+            authDomain: "pullup-2026.firebaseapp.com",
+            projectId: "pullup-2026",
+            storageBucket: "pullup-2026.firebasestorage.app",
+            messagingSenderId: "271893491884",
+            appId: "1:271893491884:web:ae67e0962af993470e6f09"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.firestore();
+        const auth = firebase.auth();
+
+        let currentUser = null;
+        let allLicenses = [];
+        let currentlyViewingLicense = null;
+
+        // Initialize - Authenticate anonymously first, then load licenses
+        async function initialize() {
+            try {
+                console.log('🔐 Admin: Starting anonymous authentication...');
+                await auth.signInAnonymously();
+                console.log('✅ Admin: Authenticated as:', auth.currentUser?.uid);
+                
+                // Small delay to ensure auth state is fully propagated
+                await new Promise(resolve => setTimeout(resolve, 500));
+                
+                // Now initialize database manager after auth is complete
+                if (typeof initializeDBManager === 'function') {
+                  console.log('🚀 Admin: Initializing DB manager...');
+                  initializeDBManager();
+                } else {
+                  console.warn('⚠️ Admin: initializeDBManager not found');
+                }
+                
+                document.getElementById('mainContent').style.display = 'block';
+                loadLicenses();
+            } catch (error) {
+                showAlert('Failed to initialize admin panel: ' + error.message, 'error');
+                console.error('❌ Admin: Authentication error:', error);
+            }
+        }
+        
+        // Start initialization when DOM is ready
+        document.addEventListener('DOMContentLoaded', initialize);
+
+        async function loadLicenses() {
+            showLoading();
+            try {
+                const snapshot = await db.collection('users')
+                    .where('licenseImageUri', '!=', null)
+                    .get();
+
+                allLicenses = [];
+                snapshot.forEach(doc => {
+                    allLicenses.push({
+                        id: doc.id,
+                        ...doc.data()
+                    });
+                });
+
+                updateStats();
+                applyFilters();
+            } catch (error) {
+                showAlert('Error loading licenses: ' + error.message, 'error');
+                hideLoading();
+            }
+        }
+
+        function updateStats() {
+            const total = allLicenses.length;
+            const pending = allLicenses.filter(l => l.licenseVerificationStatus === 'pending').length;
+            const verified = allLicenses.filter(l => l.licenseVerificationStatus === 'verified').length;
+            const rejected = allLicenses.filter(l => l.licenseVerificationStatus === 'rejected').length;
+
+            document.getElementById('statTotal').textContent = total;
+            document.getElementById('statPending').textContent = pending;
+            document.getElementById('statVerified').textContent = verified;
+            document.getElementById('statRejected').textContent = rejected;
+        }
+
+        function applyFilters() {
+            const statusFilter = document.getElementById('filterStatus').value;
+            let filtered = allLicenses;
+
+            if (statusFilter) {
+                filtered = filtered.filter(l => l.licenseVerificationStatus === statusFilter);
+            }
+
+            if (filtered.length === 0) {
+                document.getElementById('licensesContainer').style.display = 'none';
+                document.getElementById('emptyState').style.display = 'block';
+            } else {
+                document.getElementById('licensesContainer').style.display = 'grid';
+                document.getElementById('emptyState').style.display = 'none';
+                renderLicenses(filtered);
+            }
+
+            hideLoading();
+        }
+
+        function renderLicenses(licenses) {
+            const container = document.getElementById('licensesContainer');
+            container.innerHTML = licenses.map(license => `
+                <div class="license-card">
+                    <div class="license-image-container" onclick="viewLicense('${license.id}')">
+                        ${license.licenseImageUri ? 
+                            `<img src="${license.licenseImageUri}" alt="License">` :
+                            `<span class="no-image">No image</span>`
+                        }
+                    </div>
+                    <div class="license-info">
+                        <div class="driver-name">${license.fullName || 'Unknown'}</div>
+                        <div class="driver-email">${license.email}</div>
+                        <div class="status-badge status-${license.licenseVerificationStatus || 'pending'}">
+                            ${(license.licenseVerificationStatus || 'pending').toUpperCase()}
+                        </div>
+                        <div class="driver-details">
+                            <div>
+                                <label>Role:</label>
+                                <span>${license.role || '-'}</span>
+                            </div>
+                            <div>
+                                <label>Year:</label>
+                                <span>${license.year || '-'}</span>
+                            </div>
+                            <div>
+                                <label>Course:</label>
+                                <span>${license.course || '-'}</span>
+                            </div>
+                            <div>
+                                <label>Phone:</label>
+                                <span>${license.phone || 'Not provided'}</span>
+                            </div>
+                        </div>
+                        <div class="action-buttons">
+                            ${license.licenseVerificationStatus === 'pending' ? `
+                                <button class="btn-verify" onclick="quickVerify('${license.id}')">Verify</button>
+                                <button class="btn-reject" onclick="quickReject('${license.id}')">Reject</button>
+                            ` : `
+                                <button class="btn-pending" onclick="viewLicense('${license.id}')">View</button>
+                            `}
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function viewLicense(licenseId) {
+            const license = allLicenses.find(l => l.id === licenseId);
+            if (!license) return;
+
+            currentlyViewingLicense = license;
+            document.getElementById('modalImage').src = license.licenseImageUri || '';
+            document.getElementById('modalName').textContent = license.fullName || 'Unknown';
+            document.getElementById('modalEmail').textContent = license.email;
+            document.getElementById('modalRole').textContent = license.role || '-';
+            document.getElementById('modalYear').textContent = license.year || '-';
+            document.getElementById('modalCourse').textContent = license.course || '-';
+            document.getElementById('modalDivision').textContent = license.division || '-';
+            document.getElementById('modalStatus').textContent = (license.licenseVerificationStatus || 'pending').toUpperCase();
+            
+            const uploadedAt = license.licenseUploadedAt ?
+                new Date(license.licenseUploadedAt).toLocaleDateString() : 'Unknown';
+            document.getElementById('modalUploadedAt').textContent = uploadedAt;
+
+            const isPending = license.licenseVerificationStatus === 'pending';
+            document.getElementById('btnModalVerify').style.display = isPending ? 'block' : 'none';
+            document.getElementById('btnModalReject').style.display = isPending ? 'block' : 'none';
+
+            document.getElementById('licenseModal').classList.add('active');
+        }
+
+        function closeModal() {
+            document.getElementById('licenseModal').classList.remove('active');
+            currentlyViewingLicense = null;
+        }
+
+        async function verifyLicense() {
+            if (!currentlyViewingLicense) return;
+            await updateLicenseStatus(currentlyViewingLicense.id, 'verified');
+            closeModal();
+        }
+
+        async function rejectLicense() {
+            if (!currentlyViewingLicense) return;
+            await updateLicenseStatus(currentlyViewingLicense.id, 'rejected');
+            closeModal();
+        }
+
+        async function quickVerify(licenseId) {
+            await updateLicenseStatus(licenseId, 'verified');
+        }
+
+        async function quickReject(licenseId) {
+            await updateLicenseStatus(licenseId, 'rejected');
+        }
+
+        async function updateLicenseStatus(licenseId, status) {
+            showLoading();
+            try {
+                await db.collection('users').doc(licenseId).update({
+                    licenseVerified: status === 'verified',
+                    licenseVerificationStatus: status,
+                });
+                showAlert(`License ${status} successfully!`, 'success');
+                loadLicenses();
+            } catch (error) {
+                showAlert('Error updating license: ' + error.message, 'error');
+                hideLoading();
+            }
+        }
+
+        function refreshData() {
+            loadLicenses();
+        }
+
+        function showLoading() {
+            document.getElementById('loadingState').style.display = 'block';
+        }
+
+        function hideLoading() {
+            document.getElementById('loadingState').style.display = 'none';
+        }
+
+        function showAlert(message, type) {
+            const container = document.querySelector('.controls');
+            const alert = document.createElement('div');
+            alert.className = `alert alert-${type}`;
+            alert.textContent = message;
+            container.parentNode.insertBefore(alert, container);
+
+            setTimeout(() => alert.remove(), 5000);
+        }
+
+        // Close modal when clicking outside
+        document.getElementById('licenseModal').addEventListener('click', (e) => {
+            if (e.target.id === 'licenseModal') closeModal();
+        });
+    </script>
+</body>
+</html>
