@@ -29,6 +29,34 @@ export default function RideDetailsScreen() {
   const [requestStatus, setRequestStatus] = useState<'idle' | 'pending' | 'accepted' | 'rejected' | 'cancelled'>('idle');
   const [routeCoordinates, setRouteCoordinates] = useState<any[]>([]);
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
+  const [carPositionIndex, setCarPositionIndex] = useState(0);
+  const carPulseAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.timing(carPulseAnim, {
+        toValue: 1,
+        duration: 1800,
+        easing: Easing.out(Easing.ease),
+        useNativeDriver: true,
+      })
+    ).start();
+  }, [carPulseAnim]);
+
+  useEffect(() => {
+    if (routeCoordinates && routeCoordinates.length > 1) {
+      setCarPositionIndex(0);
+      const interval = setInterval(() => {
+        setCarPositionIndex((prev) => {
+          if (prev >= routeCoordinates.length - 1) {
+            return 0;
+          }
+          return prev + 1;
+        });
+      }, 180);
+      return () => clearInterval(interval);
+    }
+  }, [routeCoordinates]);
   const [routeDistanceKm, setRouteDistanceKm] = useState<number>(0);
   const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView>(null);
@@ -302,6 +330,39 @@ export default function RideDetailsScreen() {
                   geodesic={false}
                 />
               </>
+            )}
+
+            {routeCoordinates && routeCoordinates.length > 0 && routeCoordinates[carPositionIndex] && (
+              <Marker
+                coordinate={routeCoordinates[carPositionIndex]}
+                anchor={{ x: 0.5, y: 0.5 }}
+                flat={true}
+              >
+                <View style={styles.movingCarMarker}>
+                  <Animated.View
+                    style={[
+                      styles.movingCarPulse,
+                      {
+                        transform: [
+                          {
+                            scale: carPulseAnim.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: [1, 2.8],
+                            }),
+                          },
+                        ],
+                        opacity: carPulseAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0.6, 0],
+                        }),
+                      },
+                    ]}
+                  />
+                  <View style={styles.movingCarInner}>
+                    <MaterialCommunityIcons name="car-sports" size={14} color={WARM_CORE.white} />
+                  </View>
+                </View>
+              </Marker>
             )}
 
             <Marker
@@ -711,6 +772,36 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: WARM_CORE.background,
+  },
+  movingCarMarker: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  movingCarInner: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: WARM_CORE.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: WARM_CORE.white,
+    shadowColor: WARM_CORE.text,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+    zIndex: 2,
+  },
+  movingCarPulse: {
+    position: 'absolute',
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: WARM_CORE.accent,
+    zIndex: 1,
   },
   safeArea: {
     flex: 1,

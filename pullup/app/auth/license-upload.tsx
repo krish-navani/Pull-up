@@ -77,6 +77,7 @@ export default function LicenseUploadScreen() {
     const [isVerified, setIsVerified] = useState(false);
     const [pollInterval, setPollInterval] = useState<ReturnType<typeof setInterval> | null>(null);
     const [isRejected, setIsRejected] = useState(false);
+    const [showSuccessModal, setShowSuccessModal] = useState(false);
 
     // Animations
     const titleFade = useRef(createFadeAnimation(0)).current;
@@ -413,6 +414,9 @@ export default function LicenseUploadScreen() {
             
             // Disable upload buttons
             setLicenseImage(null);
+            
+            // Show verification success modal
+            setShowSuccessModal(true);
         } catch (err: any) {
             console.error('[LICENSE] Upload error:', err);
             setError(err.message || 'Failed to submit license. Please try again.');
@@ -714,6 +718,42 @@ export default function LicenseUploadScreen() {
                 </Animated.View>
                 )}
             </ScrollView>
+
+            {isVerificationPending && (
+                <TouchableOpacity
+                    style={styles.exploreButton}
+                    onPress={() => router.replace('/(tabs)/home')}
+                >
+                    <Text style={styles.exploreButtonText}>Continue to App</Text>
+                    <MaterialCommunityIcons name="arrow-right" size={18} color={WARM_CORE.primary} />
+                </TouchableOpacity>
+            )}
+
+            {showSuccessModal && (
+                <View style={styles.modalOverlay}>
+                    <View style={styles.modalContent}>
+                        <View style={styles.modalIconContainer}>
+                            <MaterialCommunityIcons name="file-document-check-outline" size={44} color={WARM_CORE.primary} />
+                        </View>
+                        <Text style={styles.modalTitle}>License Submitted!</Text>
+                        <Text style={styles.modalText}>
+                            Your driving license has been uploaded successfully and is currently under review by our administration team.
+                            {"\n\n"}
+                            In the meantime, you can explore the app and coordinate rides. We will notify you immediately once your account is fully verified.
+                        </Text>
+                        <TouchableOpacity
+                            style={styles.modalButton}
+                            onPress={() => {
+                                setShowSuccessModal(false);
+                                router.replace('/(tabs)/home');
+                            }}
+                        >
+                            <Text style={styles.modalButtonText}>Continue to App</Text>
+                            <MaterialCommunityIcons name="chevron-right" size={20} color={WARM_CORE.white} />
+                        </TouchableOpacity>
+                    </View>
+                </View>
+            )}
         </SafeAreaView>
     );
 }
@@ -1152,6 +1192,85 @@ const styles = StyleSheet.create({
         fontSize: 14,
         fontWeight: '700',
         color: WARM_CORE.white,
+    } as TextStyle,
+    exploreButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: 8,
+        paddingVertical: 14,
+        paddingHorizontal: 24,
+        borderRadius: 12,
+        borderWidth: 1.5,
+        borderColor: WARM_CORE.primary,
+        marginTop: 16,
+        marginHorizontal: 24,
+        marginBottom: 8,
+    } as ViewStyle,
+    exploreButtonText: {
+        fontSize: 15,
+        fontWeight: '700',
+        color: WARM_CORE.primary,
+    } as TextStyle,
+    modalOverlay: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: 'rgba(30, 18, 13, 0.45)',
+        justifyContent: 'center',
+        alignItems: 'center',
+        zIndex: 100000,
+    } as ViewStyle,
+    modalContent: {
+        backgroundColor: WARM_CORE.background,
+        borderRadius: 24,
+        padding: 30,
+        width: '85%',
+        alignItems: 'center',
+        borderWidth: 1.5,
+        borderColor: WARM_CORE.border,
+        shadowColor: WARM_CORE.text,
+        shadowOffset: { width: 0, height: 10 },
+        shadowOpacity: 0.12,
+        shadowRadius: 20,
+        elevation: 10,
+    } as ViewStyle,
+    modalIconContainer: {
+        width: 80,
+        height: 80,
+        borderRadius: 40,
+        backgroundColor: WARM_CORE.card,
+        justifyContent: 'center',
+        alignItems: 'center',
+        marginBottom: 20,
+    } as ViewStyle,
+    modalTitle: {
+        fontSize: 20,
+        fontWeight: '800',
+        color: WARM_CORE.text,
+        marginBottom: 12,
+        textAlign: 'center',
+    } as TextStyle,
+    modalText: {
+        fontSize: 13.5,
+        color: WARM_CORE.textSecondary,
+        textAlign: 'center',
+        lineHeight: 20,
+        marginBottom: 26,
+    } as TextStyle,
+    modalButton: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: WARM_CORE.primary,
+        paddingVertical: 14,
+        paddingHorizontal: 24,
+        borderRadius: 12,
+        width: '100%',
+    } as ViewStyle,
+    modalButtonText: {
+        color: WARM_CORE.white,
+        fontSize: 15,
+        fontWeight: '700',
+        marginRight: 6,
     } as TextStyle,
 });
 

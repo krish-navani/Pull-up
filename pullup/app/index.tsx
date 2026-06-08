@@ -19,7 +19,8 @@ export default function RootIndex() {
   const isProfileComplete = auth.user?.profileComplete ?? false;
   const isDriver = auth.user?.role === 'driver';
   const isLicenseVerified = auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'verified';
-  const needsLicenseVerification = isDriver && !isLicenseVerified;
+  const isLicensePendingOrVerified = isLicenseVerified || auth.user?.licenseVerificationStatus === 'pending';
+  const needsLicenseVerification = isDriver && !isLicensePendingOrVerified;
   const canAccessMainApp = isSignedIn && isProfileComplete && !needsLicenseVerification;
   
   // If fully authenticated, go to home

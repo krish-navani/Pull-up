@@ -192,20 +192,21 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 4,
+    transform: [{ scaleX: 1.15 }], // Stretches text horizontally to match wide geometric logotype
   },
   textPull: {
     fontSize: 58,
     fontWeight: '900', // Extra bold matching the logo logotype
     color: WARM_CORE.text,
-    fontFamily: Platform.OS === 'ios' ? 'AvenirNext-Heavy' : 'sans-serif-layout',
-    letterSpacing: -3.5, // Tight spacing matching logo
+    fontFamily: Platform.OS === 'ios' ? 'AvenirNext-Heavy' : 'sans-serif-black',
+    letterSpacing: -5.0, // Tight spacing compensating for horizontal stretch
   },
   textUp: {
     fontSize: 58,
     fontWeight: '900', // Extra bold matching the logo logotype
     color: WARM_CORE.primary,
-    fontFamily: Platform.OS === 'ios' ? 'AvenirNext-Heavy' : 'sans-serif-layout',
-    letterSpacing: -3.5, // Tight spacing matching logo
+    fontFamily: Platform.OS === 'ios' ? 'AvenirNext-Heavy' : 'sans-serif-black',
+    letterSpacing: -5.0, // Tight spacing compensating for horizontal stretch
   },
   subtitle: {
     fontSize: 11.5,
