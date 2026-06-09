@@ -835,7 +835,7 @@ export default function MyBookingsScreen() {
                 </Animated.View>
                 <Text style={styles.emptyStateText}>No Active Bookings</Text>
                 <Text style={styles.emptyStateSubText}>
-                  You don't have any upcoming or ongoing rides
+                  You don{"'"}t have any upcoming or ongoing rides
                 </Text>
                 <Animated.View style={{ transform: [{ scale: bookBtnBreath }] }}>
                   <Animated.View style={{ transform: [{ scale: bookBtnScale }] }}>

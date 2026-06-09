@@ -811,7 +811,7 @@ export default function ProfileScreen() {
               <View style={styles.driverHint}>
                 <MaterialCommunityIcons name="information-outline" size={16} color={WARM_CORE.primary} />
                 <Text style={styles.driverHintText}>
-                  You'll need to upload your driving license to start posting rides
+                  You{"'"}ll need to upload your driving license to start posting rides
                 </Text>
               </View>
             )}

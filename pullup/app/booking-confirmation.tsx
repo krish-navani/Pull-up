@@ -247,7 +247,7 @@ function SuccessScreen({ ride, seatsSelected, totalPrice, onGoToBookings }: any)
         <Animated.View style={[st.infoNote, { opacity: infoOpacity }]}>
           <MaterialCommunityIcons name="information-outline" size={14} color={WARM_CORE.textSecondary} />
           <Text style={st.infoNoteText}>
-            The car owner will review your request shortly. You'll be notified once accepted or rejected.
+            The car owner will review your request shortly. You{"'"}ll be notified once accepted or rejected.
           </Text>
         </Animated.View>
 

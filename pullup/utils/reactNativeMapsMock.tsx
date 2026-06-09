@@ -4,10 +4,12 @@ import { View } from 'react-native';
 const MapView = React.forwardRef((props: any, ref: any) => {
   return <View {...props} ref={ref}>{props.children}</View>;
 });
+MapView.displayName = 'MapView';
 
 export const Marker = React.forwardRef((props: any, ref: any) => {
   return <View {...props} ref={ref}>{props.children}</View>;
 });
+Marker.displayName = 'Marker';
 
 export const Polyline = (props: any) => {
   return <View {...props} />;

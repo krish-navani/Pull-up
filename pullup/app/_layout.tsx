@@ -152,6 +152,14 @@ function RootLayoutContent() {
             headerShown: false,
             presentation: 'card',
           }} />
+          <Stack.Screen name="create-taxi-pool" options={{
+            headerShown: false,
+            presentation: 'card',
+          }} />
+          <Stack.Screen name="taxi-pool-details" options={{
+            headerShown: false,
+            presentation: 'card',
+          }} />
           <Stack.Screen name="chat" options={{
             headerShown: false,
             presentation: 'card',

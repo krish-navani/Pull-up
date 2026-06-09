@@ -264,7 +264,7 @@ export default function NotificationsScreen() {
           <MaterialCommunityIcons name="bell-outline" size={48} color={WARM_CORE.textSecondary} />
           <Text style={styles.emptyText}>No notifications yet</Text>
           <Text style={styles.emptySubtext}>
-            You'll see booking updates, messages, and ride events here
+            You{"'"}ll see booking updates, messages, and ride events here
           </Text>
         </View>
       ) : (

@@ -44,8 +44,8 @@ export const decodePolyline = (encoded: string) => {
 
 // Fetch route from Google Directions API
 export const fetchRoute = async (
-  pickup: Location,
-  dropoff: Location,
+  pickup: { latitude: number; longitude: number; address?: string; city?: string },
+  dropoff: { latitude: number; longitude: number; address?: string; city?: string },
   apiKey: string
 ) => {
   try {

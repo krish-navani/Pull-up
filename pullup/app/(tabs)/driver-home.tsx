@@ -4,7 +4,7 @@ import { formatTime } from '@/utils/mockData';
 import { getTimeBasedGreeting } from '@/utils/stringUtils';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Animated,
   Easing,
@@ -14,6 +14,7 @@ import {
   Text,
   TouchableOpacity,
   View,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WARM_CORE } from '@/constants/theme';
@@ -210,7 +211,7 @@ export default function DriverHomeScreen() {
         {/* ── Today's Ride ── */}
         {todayRide ? (
           <Animated.View style={[s.section, { transform: [{ translateY: todaySlide.slideY }] }]}>
-            <Text style={s.sectionLabel}>TODAY'S RIDE</Text>
+            <Text style={s.sectionLabel}>TODAY{"'"}S RIDE</Text>
             <SpringPress onPress={() => handleViewDetails(todayRide.id)} style={s.todayCard}>
               <View style={s.todayInner}>
                 {/* Route */}
@@ -388,6 +389,10 @@ export default function DriverHomeScreen() {
         )}
 
       </ScrollView>
+
+      <StatusBar barStyle="dark-content" />
+
+      <StatusBar barStyle="dark-content" />
     </SafeAreaView>
   );
 }
@@ -477,4 +482,109 @@ const s = StyleSheet.create({
   emptySubtitle: { fontSize: 14, color: WARM_CORE.textSecondary, textAlign: 'center', lineHeight: 22, marginBottom: 28 },
   emptyCTA:    { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: WARM_CORE.primary, paddingHorizontal: 28, paddingVertical: 14, borderRadius: 14 },
   emptyCTAText: { fontSize: 15, fontWeight: '700', color: WARM_CORE.white },
+  // FAB & Action Sheet Styles
+  fabContainer: {
+    position: 'absolute',
+    bottom: 24,
+    right: 24,
+    zIndex: 99,
+  },
+  fabButton: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: WARM_CORE.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  },
+  modalOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(30,18,13,0.4)',
+    justifyContent: 'flex-end',
+    zIndex: 999,
+  },
+  actionSheet: {
+    backgroundColor: WARM_CORE.background,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 24,
+    paddingBottom: 34,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -10 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 24,
+  },
+  actionSheetHeader: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  actionSheetKnob: {
+    width: 40,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: WARM_CORE.border,
+    marginBottom: 14,
+  },
+  actionSheetTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: WARM_CORE.text,
+  },
+  actionSheetButtons: {
+    gap: 12,
+    marginBottom: 16,
+  },
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  },
+  actionIconBg: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 16,
+  },
+  actionButtonText: {
+    flex: 1,
+  },
+  actionButtonTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  },
+  actionButtonDesc: {
+    fontSize: 12,
+    color: WARM_CORE.textSecondary,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  cancelActionButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: WARM_CORE.card,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  },
+  cancelActionText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  },
 });

@@ -3,7 +3,7 @@ import { formatTime } from '@/utils/mockData';
 import { getTimeBasedGreeting } from '@/utils/stringUtils';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import {
   Animated,
   Easing,
@@ -14,6 +14,7 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  Platform,
   TextInput,
   TextStyle,
   View,
@@ -23,6 +24,9 @@ import {
 import { calculateDistance, formatDistance, getCurrentLocation } from '@/utils/locationUtils';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WARM_CORE } from '@/constants/theme';
+import { subscribeToActivePools, subscribeToPassengerRequests, TaxiPool, PoolRequest } from '@/utils/taxiPoolService';
+import PoolCard from '@/components/PoolCard';
+import { TouchableOpacity } from 'react-native';
 
 // ---------------------------------------------------------------------------
 // Skeleton shimmer row shown while rides are loading
@@ -71,16 +75,176 @@ function PressableRideCard({ onPress, children }: any) {
   );
 }
 
+function UnifiedFeedCard({ item, onPress }: { item: any; onPress: () => void }) {
+  const formattedTime = new Date(item.time).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  return (
+    <TouchableOpacity
+      style={styles.newCard}
+      onPress={onPress}
+      activeOpacity={0.9}
+    >
+      {/* Top Header Row */}
+      <View style={styles.cardHeaderRow}>
+        <View style={[
+          styles.typePill,
+          item.type === 'car' ? styles.typePillCar : styles.typePillTaxi
+        ]}>
+          <Text style={[
+            styles.typePillText,
+            item.type === 'car' ? styles.typePillTextCar : styles.typePillTextTaxi
+          ]}>
+            {item.type === 'car' ? 'CAR POOL' : 'TAXI POOL'}
+          </Text>
+        </View>
+        <Text style={styles.cardTimeText}>{formattedTime}</Text>
+      </View>
+
+      {/* Body Route Section */}
+      <View style={styles.cardBodyRow}>
+        <View style={styles.cardRouteSection}>
+          <View style={styles.cardRouteLine}>
+            <View style={styles.cardRouteHollowCircle} />
+            <View style={styles.cardRouteConnector} />
+            <View style={styles.cardRouteSolidCircle} />
+          </View>
+          
+          <View style={styles.cardAddresses}>
+            <Text style={styles.cardAddressText} numberOfLines={1}>{item.pickup}</Text>
+            <Text style={styles.cardAddressText} numberOfLines={1}>{item.dropoff}</Text>
+          </View>
+        </View>
+
+        {/* Price Box */}
+        <View style={styles.cardPriceBox}>
+          <Text style={styles.cardPriceText}>₹{item.price}</Text>
+          <Text style={styles.cardPriceLabel}>/seat</Text>
+        </View>
+      </View>
+
+      <View style={styles.cardDivider} />
+
+      {/* Footer Info Row */}
+      <View style={styles.cardFooterRow}>
+        <Text style={styles.cardUserText}>
+          {item.creatorName}  ·  ★ {item.creatorRating}
+        </Text>
+        <Text style={styles.cardSeatsText}>
+          {item.seatsLeft} {item.seatsLeft === 1 ? 'seat' : 'seats'} left →
+        </Text>
+      </View>
+    </TouchableOpacity>
+  );
+}
+
 // ---------------------------------------------------------------------------
 export default function HomeScreen() {
   const router = useRouter();
-  const { rides, auth, notifications, loadAllAvailableRides, authInitializing } = useAppContext();
+  const { rides, auth, notifications, loadAllAvailableRides, authInitializing, switchRolePersistent } = useAppContext();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [rideDistances, setRideDistances] = useState<Record<string, number>>({});
   const [isLoadingRides, setIsLoadingRides] = useState(false);
+
+  // Taxi Pool States
+  const [pools, setPools] = useState<TaxiPool[]>([]);
+  const [passengerRequests, setPassengerRequests] = useState<PoolRequest[]>([]);
+  const [activeTab, setActiveTab] = useState<'all' | 'rides' | 'pools'>('all');
+  const [showRolePrompt, setShowRolePrompt] = useState(false);
+  const [joinLoading, setJoinLoading] = useState<Record<string, boolean>>({});
+  const [poolDistances, setPoolDistances] = useState<Record<string, number>>({});
+
+  // Combine rides and pools into a unified list
+  const combinedFeed = useMemo(() => {
+    const feed: any[] = [];
+    
+    // 1. Car Pools (Rides)
+    (rides ?? []).forEach(ride => {
+      if (ride.status === 'active') {
+        const distanceVal = rideDistances[ride.id] ?? Infinity;
+        
+        // Make clean addresses
+        const pickupAddr = ride.pickupLocation.address.split(',')[0];
+        const dropoffAddr = ride.dropLocation.address.split(',')[0];
+        
+        feed.push({
+          id: ride.id,
+          type: 'car',
+          pickup: pickupAddr,
+          dropoff: dropoffAddr,
+          time: ride.departureTime,
+          price: ride.price,
+          seatsLeft: ride.availableSeats,
+          totalSeats: ride.totalSeats,
+          creatorName: ride.driverName,
+          creatorRating: '4.9',
+          rawItem: ride,
+          distance: distanceVal,
+        });
+      }
+    });
+
+    // 2. Taxi Pools
+    (pools ?? []).forEach(pool => {
+      if (pool.status === 'OPEN' || pool.status === 'FULL') {
+        const distanceVal = poolDistances[pool.id] ?? Infinity;
+        const priceVal = (pool as any).price ?? 40; // Default to 40 per seat
+        
+        const isToAtlas = pool.destination.address.includes('Atlas') || 
+                          pool.destination.address.includes('SkillTech') ||
+                          pool.destination.address.includes('Gate') ||
+                          pool.destination.address.includes('Campus');
+                          
+        const cleanDest = pool.destination.address.split(',')[0];
+        
+        feed.push({
+          id: pool.id,
+          type: 'taxi',
+          pickup: isToAtlas ? cleanDest : 'Atlas Gate',
+          dropoff: isToAtlas ? 'Atlas Gate' : cleanDest,
+          time: pool.departureTime,
+          price: priceVal,
+          seatsLeft: pool.maxMembers - pool.memberCount,
+          totalSeats: pool.maxMembers,
+          creatorName: pool.creatorName,
+          creatorRating: '4.7',
+          rawItem: pool,
+          distance: distanceVal,
+        });
+      }
+    });
+
+    // Filter by tab
+    let filtered = feed;
+    if (activeTab === 'rides') {
+      filtered = feed.filter(item => item.type === 'car');
+    } else if (activeTab === 'pools') {
+      filtered = feed.filter(item => item.type === 'taxi');
+    }
+
+    // Filter by searchQuery
+    if (searchQuery.trim() !== '') {
+      const q = searchQuery.toLowerCase();
+      filtered = filtered.filter(item => 
+        item.pickup.toLowerCase().includes(q) ||
+        item.dropoff.toLowerCase().includes(q) ||
+        item.creatorName.toLowerCase().includes(q)
+      );
+    }
+
+    // Sort by distance (closest first), fallback to departure time
+    return filtered.sort((a, b) => {
+      if (a.distance !== b.distance) {
+        return (a.distance ?? Infinity) - (b.distance ?? Infinity);
+      }
+      return new Date(a.time).getTime() - new Date(b.time).getTime();
+    });
+  }, [rides, pools, activeTab, searchQuery, rideDistances, poolDistances]);
 
   // ── Entry animations ─────────────────────────────────────────────────────
   // All three groups start invisible and slide up together as a clean stagger
@@ -217,6 +381,102 @@ export default function HomeScreen() {
     }, [authInitializing, auth.user, loadAllAvailableRides])
   );
 
+  // Subscribe to taxi pools in real time
+  useEffect(() => {
+    if (authInitializing || !auth.user) return;
+    
+    console.log('[HOME] Subscribing to real-time active taxi pools...');
+    const unsubscribePools = subscribeToActivePools((updatedPools) => {
+      setPools(updatedPools);
+    });
+
+    console.log('[HOME] Subscribing to real-time passenger requests...');
+    const unsubscribeRequests = subscribeToPassengerRequests(auth.user.id, (requests) => {
+      setPassengerRequests(requests);
+    });
+
+    return () => {
+      unsubscribePools();
+      unsubscribeRequests();
+    };
+  }, [authInitializing, auth.user]);
+
+  // Calculate distance for all pools and sort them
+  useEffect(() => {
+    const safePools = pools ?? [];
+    if (userLocation && safePools.length > 0) {
+      const distances: Record<string, number> = {};
+      safePools.forEach(pool => {
+        const distance = calculateDistance(
+          userLocation.latitude,
+          userLocation.longitude,
+          pool.destination.latitude,
+          pool.destination.longitude
+        );
+        distances[pool.id] = distance;
+      });
+      setPoolDistances(distances);
+    }
+  }, [userLocation, pools]);
+
+  // Search filter and sort pools by distance
+  const sortedAndFilteredPools = (pools ?? []).filter(pool => {
+    const matchesQuery = searchQuery === '' ||
+      pool.destination.address.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      pool.creatorName.toLowerCase().includes(searchQuery.toLowerCase());
+    return matchesQuery;
+  }).sort((a, b) => {
+    const distA = poolDistances[a.id] ?? Infinity;
+    const distB = poolDistances[b.id] ?? Infinity;
+    return distA - distB;
+  });
+
+  const handlePostRideSelect = () => {
+    if (auth.user?.role === 'driver') {
+      router.push('/(tabs)/post-ride' as any);
+    } else {
+      setShowRolePrompt(true);
+    }
+  };
+
+  const handleSwitchToDriver = async () => {
+    setShowRolePrompt(false);
+    try {
+      if (switchRolePersistent) {
+        await switchRolePersistent('driver');
+        router.replace('/(tabs)/driver-home' as any);
+      }
+    } catch (err) {
+      console.error('[HOME] Failed to switch role:', err);
+    }
+  };
+
+  const handleJoinPool = async (poolId: string, creatorId: string) => {
+    if (!auth.user) return;
+    
+    setJoinLoading(prev => ({ ...prev, [poolId]: true }));
+    try {
+      const { createJoinRequest } = await import('@/utils/taxiPoolService');
+      await createJoinRequest(
+        poolId,
+        {
+          id: auth.user.id,
+          fullName: auth.user.fullName,
+          profileImage: auth.user.profileImage || undefined,
+          course: auth.user.course || 'BBA',
+          division: auth.user.division || 'A'
+        },
+        creatorId
+      );
+      alert('Join request submitted successfully! The pool creator has been notified.');
+    } catch (error: any) {
+      console.error('[HOME] Join pool request failed:', error);
+      alert(error.message || 'Failed to submit join request. Please try again.');
+    } finally {
+      setJoinLoading(prev => ({ ...prev, [poolId]: false }));
+    }
+  };
+
   // Calculate distances for all rides when userLocation or rides change
   useEffect(() => {
     const safeRides = rides ?? [];
@@ -316,44 +576,30 @@ export default function HomeScreen() {
         ]}>
           <View style={styles.headerRow}>
 
-            {/* LEFT: Avatar + Welcome Text side by side */}
+            {/* LEFT: Headline */}
             <View style={styles.headerLeft}>
-              <View style={styles.headerAvatarContainer}>
-                <View style={styles.avatar}>
-                  {auth.user?.profileImage ? (
-                    <Image source={{ uri: auth.user.profileImage }} style={styles.avatarImage} />
-                  ) : (
-                    <Text style={styles.avatarText}>
-                      {(auth.user?.fullName || 'U').charAt(0).toUpperCase()}
-                    </Text>
-                  )}
-                </View>
-              </View>
-
               <View style={styles.headerTextContainer}>
-                <Text style={styles.welcomeText}>WELCOME BACK</Text>
-                <View style={styles.greetingRow}>
-                  <Text style={styles.greetingText} numberOfLines={1}>
-                    {getTimeBasedGreeting(auth.user?.fullName?.split(' ')[0] || 'Student')}
-                  </Text>
-                </View>
+                <Text style={styles.subtitleText}>MUMBAI  ·  ATLAS</Text>
+                <Text style={styles.headlineText}>
+                  Rides to{'\n'}
+                  <Text style={styles.headlineTextHighlight}>campus</Text>
+                </Text>
               </View>
             </View>
 
-            {/* RIGHT: Notification bell */}
-            <Animated.View style={{ transform: [{ scale: notifScale }] }}>
-              <Pressable
-                style={styles.notificationButton}
-                onPressIn={onNotifPressIn}
-                onPressOut={onNotifPressOut}
-                onPress={() => router.push('/notifications')}
-              >
-                <MaterialCommunityIcons name="bell" size={22} color={WARM_CORE.text} />
-                {unreadNotifications > 0 && (
-                  <Animated.View style={[styles.notificationDot, { transform: [{ scale: notifPulse }] }]} />
+            {/* RIGHT: Orange profile circle */}
+            <TouchableOpacity 
+              onPress={() => router.push('/(tabs)/profile')}
+              activeOpacity={0.8}
+            >
+              <View style={styles.topRightCircle}>
+                {auth.user?.profileImage ? (
+                  <Image source={{ uri: auth.user.profileImage }} style={styles.topRightAvatarImage} />
+                ) : (
+                  <View style={styles.topRightOrangeCircle} />
                 )}
-              </Pressable>
-            </Animated.View>
+              </View>
+            </TouchableOpacity>
 
           </View>
         </Animated.View>
@@ -397,116 +643,56 @@ export default function HomeScreen() {
         {/* ALL content below search wrapped in contentAnim — nothing visible until stage 3 */}
         <Animated.View style={{ opacity: contentAnim.opacity, transform: [{ translateY: contentAnim.translateY }] }}>
 
-          {/* Nearby Rides Section Header */}
-          <View style={styles.nearbyRidesHeader}>
-            <Text style={styles.nearbyRidesTitle}>
-              {searchQuery ? 'Search Results' : `Nearby Rides${!isLoadingRides ? ` (${nearbyRides.length})` : ''}`}
-            </Text>
-            <Animated.View style={{ transform: [{ scale: viewAllScale }] }}>
-              <Pressable
-                style={styles.viewAllButton}
-                onPressIn={onViewAllPressIn}
-                onPressOut={onViewAllPressOut}
-                onPress={handleViewAll}
-              >
-                <Text style={styles.viewAllText}>View All</Text>
-              </Pressable>
-            </Animated.View>
+          {/* Segmented Control */}
+          <View style={styles.segmentContainer}>
+            <TouchableOpacity 
+              style={[styles.segmentButton, activeTab === 'all' && styles.segmentButtonActive]} 
+              onPress={() => setActiveTab('all')}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.segmentText, activeTab === 'all' && styles.segmentTextActive]}>All</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.segmentButton, activeTab === 'rides' && styles.segmentButtonActive]} 
+              onPress={() => setActiveTab('rides')}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.segmentText, activeTab === 'rides' && styles.segmentTextActive]}>Car Pool</Text>
+            </TouchableOpacity>
+            <TouchableOpacity 
+              style={[styles.segmentButton, activeTab === 'pools' && styles.segmentButtonActive]} 
+              onPress={() => setActiveTab('pools')}
+              activeOpacity={0.7}
+            >
+              <Text style={[styles.segmentText, activeTab === 'pools' && styles.segmentTextActive]}>Taxi Pool</Text>
+            </TouchableOpacity>
           </View>
 
-          {/* Loading State — skeleton shimmer */}
-          {isLoadingRides && <RideSkeletonRow />}
-
-          {/* Rides Horizontal Scroll */}
-          {!isLoadingRides && nearbyRides.length > 0 ? (
-            <View>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.horizontalScrollContent}
-                style={styles.horizontalScroll}
-              >
-              {nearbyRides.map(ride => (
-                <PressableRideCard key={ride.id} onPress={() => handleRidePress(ride.id)}>
-
-                    {/* Main Content with Route Lines */}
-                    <View style={styles.rideCardContent}>
-                      <View style={styles.contentWithRoute}>
-                        {/* Route Indicator Lines */}
-                        <View style={styles.routeIndicator}>
-                          <View style={styles.routeLineDot} />
-                          <View style={styles.routeLineConnector} />
-                          <View style={[styles.routeLineDot, { backgroundColor: WARM_CORE.textSecondary, borderColor: WARM_CORE.textSecondary }]} />
-                        </View>
-
-                        {/* Location Content */}
-                        <View style={styles.locationsContainer}>
-                          {/* Pickup Section */}
-                          <View style={styles.locationSection}>
-                            <Text style={styles.pickupBadge}>PICKUP</Text>
-                            <Text style={styles.locationMainText} numberOfLines={1}>
-                              {ride.pickupLocation.address}
-                            </Text>
-                          </View>
-
-                          {/* Dropoff Section */}
-                          <View style={styles.locationSection}>
-                            <Text style={styles.dropoffBadge}>DROP-OFF</Text>
-                            <Text style={styles.locationMainText} numberOfLines={1}>
-                              {ride.dropLocation.address}
-                            </Text>
-                          </View>
-                        </View>
-                      </View>
-
-                      {/* Footer Info */}
-                      <View style={styles.footerInfo}>
-                        <View style={styles.driverInfo}>
-                          <View style={styles.driverAvatar}>
-                            <Text style={styles.driverInitial}>
-                              {ride.driverName.charAt(0)}
-                            </Text>
-                          </View>
-                          <View style={styles.carAndTime}>
-                            <View style={styles.carRow}>
-                              <Text style={styles.carModelText} numberOfLines={1} ellipsizeMode="tail">
-                                {ride.carModel}
-                              </Text>
-                            </View>
-                            <View style={styles.timeSeatRow}>
-                              <Text style={styles.footerTimeText}>{formatTime(ride.departureTime)}</Text>
-                              <Text style={styles.dotSeparator}> • </Text>
-                              <Text style={styles.seatsInfoText}>{ride.availableSeats} Seats</Text>
-                              {rideDistances[ride.id] !== undefined && (
-                                <>
-                                  <Text style={styles.dotSeparator}> • </Text>
-                                  <Text style={styles.distanceText}>{formatDistance(rideDistances[ride.id])}</Text>
-                                </>
-                              )}
-                            </View>
-                          </View>
-                        </View>
-                        {/* Price Badge */}
-                        <View style={styles.priceBadge}>
-                          <Text style={styles.badgePriceText}>₹{ride.price}</Text>
-                          <Text style={styles.badgePriceLabel}>Per Seat</Text>
-                        </View>
-                      </View>
-                    </View>
-                  </PressableRideCard>
+          {/* Combined Feed List */}
+          {combinedFeed.length > 0 ? (
+            <View style={{ marginTop: 12, paddingHorizontal: 20 }}>
+              {combinedFeed.map(item => (
+                <UnifiedFeedCard
+                  key={`${item.type}_${item.id}`}
+                  item={item}
+                  onPress={() => {
+                    if (item.type === 'car') {
+                      router.push({ pathname: '/ride-details', params: { rideId: item.id } } as any);
+                    } else {
+                      router.push({ pathname: '/taxi-pool-details', params: { poolId: item.id } } as any);
+                    }
+                  }}
+                />
               ))}
-              </ScrollView>
             </View>
           ) : (
-            !isLoadingRides && (
-              <View style={styles.emptyState}>
-                <Animated.View style={{ transform: [{ scale: emptyIconScale }, { translateY: emptyIconFloat }] }}>
-                  <MaterialCommunityIcons name="car-off" size={64} color={WARM_CORE.textSecondary} />
-                </Animated.View>
-                <Text style={styles.emptyStateText}>No rides nearby</Text>
-                <Text style={styles.emptyStateSubText}>Try searching for other locations</Text>
-              </View>
-            )
+            <View style={styles.emptyState}>
+              <Animated.View style={{ transform: [{ scale: emptyIconScale }, { translateY: emptyIconFloat }] }}>
+                <MaterialCommunityIcons name="car-off" size={64} color={WARM_CORE.textSecondary} />
+              </Animated.View>
+              <Text style={styles.emptyStateText}>No commutes found</Text>
+              <Text style={styles.emptyStateSubText}>Try clearing search or change category</Text>
+            </View>
           )}
 
           {/* Quick Actions Section */}
@@ -534,6 +720,8 @@ export default function HomeScreen() {
 
         </Animated.View>
       </ScrollView>
+
+
       <StatusBar barStyle="dark-content" />
     </SafeAreaView>
   );
@@ -1207,5 +1395,358 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '500',
     marginTop: 2,
+  } as TextStyle,
+  segmentContainer: {
+    flexDirection: 'row',
+    marginTop: 20,
+    marginBottom: 10,
+    gap: 10,
+  } as ViewStyle,
+  segmentButton: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    borderColor: WARM_CORE.border,
+    backgroundColor: '#FFF8F0',
+    justifyContent: 'center',
+    alignItems: 'center',
+  } as ViewStyle,
+  segmentButtonActive: {
+    backgroundColor: WARM_CORE.primary,
+    borderColor: WARM_CORE.primary,
+    shadowColor: WARM_CORE.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 2,
+  } as ViewStyle,
+  segmentText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  } as TextStyle,
+  segmentTextActive: {
+    color: WARM_CORE.white,
+  } as TextStyle,
+  fabButton: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: WARM_CORE.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.2)',
+  } as ViewStyle,
+  modalOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(30,18,13,0.4)',
+    justifyContent: 'flex-end',
+    zIndex: 999,
+  } as ViewStyle,
+  actionSheet: {
+    backgroundColor: WARM_CORE.background,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 24,
+    paddingBottom: 34,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -10 },
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    elevation: 24,
+  } as ViewStyle,
+  actionSheetHeader: {
+    alignItems: 'center',
+    marginBottom: 20,
+  } as ViewStyle,
+  actionSheetKnob: {
+    width: 40,
+    height: 5,
+    borderRadius: 2.5,
+    backgroundColor: WARM_CORE.border,
+    marginBottom: 14,
+  } as ViewStyle,
+  actionSheetTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: WARM_CORE.text,
+  } as TextStyle,
+  actionSheetButtons: {
+    gap: 12,
+    marginBottom: 16,
+  } as ViewStyle,
+  actionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  } as ViewStyle,
+  actionIconBg: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 16,
+  } as ViewStyle,
+  actionButtonText: {
+    flex: 1,
+  } as ViewStyle,
+  actionButtonTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  } as TextStyle,
+  actionButtonDesc: {
+    fontSize: 12,
+    color: WARM_CORE.textSecondary,
+    fontWeight: '500',
+    marginTop: 2,
+  } as TextStyle,
+  cancelActionButton: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: WARM_CORE.card,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  } as ViewStyle,
+  cancelActionText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  } as TextStyle,
+  rolePromptModal: {
+    backgroundColor: WARM_CORE.background,
+    borderRadius: 28,
+    marginHorizontal: 32,
+    padding: 24,
+    alignSelf: 'center',
+    marginTop: 'auto',
+    marginBottom: 'auto',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    elevation: 24,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  } as ViewStyle,
+  rolePromptTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: WARM_CORE.text,
+    textAlign: 'center',
+    marginBottom: 8,
+  } as TextStyle,
+  rolePromptDesc: {
+    fontSize: 14,
+    color: WARM_CORE.textSecondary,
+    fontWeight: '500',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 20,
+  } as TextStyle,
+  rolePromptButtons: {
+    flexDirection: 'row',
+    gap: 12,
+  } as ViewStyle,
+  rolePromptButton: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  } as ViewStyle,
+  rolePromptButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+  } as TextStyle,
+  // ── Unified Feed & Headline Styles ──
+  subtitleText: {
+    fontSize: 11,
+    fontWeight: '800',
+    color: WARM_CORE.textSecondary,
+    letterSpacing: 2.2,
+    textTransform: 'uppercase',
+    marginBottom: 4,
+  } as TextStyle,
+  headlineText: {
+    fontSize: 34,
+    fontWeight: '900',
+    color: WARM_CORE.text,
+    fontFamily: Platform.OS === 'ios' ? 'AvenirNext-Heavy' : 'sans-serif-black',
+    letterSpacing: -2.0,
+    lineHeight: 38,
+    transform: [{ scaleX: 1.15 }],
+    alignSelf: 'flex-start',
+  } as TextStyle,
+  headlineTextHighlight: {
+    color: WARM_CORE.primary,
+  } as TextStyle,
+  topRightCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
+  } as ViewStyle,
+  topRightAvatarImage: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+  },
+  topRightOrangeCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: WARM_CORE.primary,
+  } as ViewStyle,
+  newCard: {
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 22,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+  } as ViewStyle,
+  cardHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  } as ViewStyle,
+  typePill: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+  } as ViewStyle,
+  typePillCar: {
+    backgroundColor: WARM_CORE.primary,
+  } as ViewStyle,
+  typePillTaxi: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: WARM_CORE.primary,
+  } as ViewStyle,
+  typePillText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  } as TextStyle,
+  typePillTextCar: {
+    color: WARM_CORE.white,
+  } as TextStyle,
+  typePillTextTaxi: {
+    color: WARM_CORE.primary,
+  } as TextStyle,
+  cardTimeText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: WARM_CORE.textSecondary,
+  } as TextStyle,
+  cardBodyRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  } as ViewStyle,
+  cardRouteSection: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  } as ViewStyle,
+  cardRouteLine: {
+    alignItems: 'center',
+    height: 48,
+    justifyContent: 'space-between',
+    paddingVertical: 2,
+  } as ViewStyle,
+  cardRouteHollowCircle: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    borderWidth: 2,
+    borderColor: WARM_CORE.primary,
+    backgroundColor: 'transparent',
+  } as ViewStyle,
+  cardRouteConnector: {
+    width: 2,
+    flex: 1,
+    backgroundColor: WARM_CORE.primary,
+    marginVertical: 2,
+  } as ViewStyle,
+  cardRouteSolidCircle: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: WARM_CORE.primary,
+  } as ViewStyle,
+  cardAddresses: {
+    flex: 1,
+    justifyContent: 'space-between',
+    height: 48,
+  } as ViewStyle,
+  cardAddressText: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: WARM_CORE.text,
+  } as TextStyle,
+  cardPriceBox: {
+    alignItems: 'flex-end',
+  } as ViewStyle,
+  cardPriceText: {
+    fontSize: 24,
+    fontWeight: '900',
+    color: WARM_CORE.primary,
+    fontFamily: Platform.OS === 'ios' ? 'AvenirNext-Heavy' : 'sans-serif-black',
+    letterSpacing: -1.0,
+    transform: [{ scaleX: 1.15 }],
+  } as TextStyle,
+  cardPriceLabel: {
+    fontSize: 11,
+    color: WARM_CORE.textSecondary,
+    fontWeight: '700',
+    marginTop: -2,
+  } as TextStyle,
+  cardDivider: {
+    height: 0.5,
+    backgroundColor: WARM_CORE.border,
+    marginBottom: 12,
+  } as ViewStyle,
+  cardFooterRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  } as ViewStyle,
+  cardUserText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: WARM_CORE.textSecondary,
+  } as TextStyle,
+  cardSeatsText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: WARM_CORE.primary,
   } as TextStyle,
 });
