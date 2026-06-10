@@ -52,7 +52,7 @@ function SpringCard({ onPress, style, children }: any) {
 
 export default function AllRidesScreen() {
   const router = useRouter();
-  const { rides, loadAllAvailableRides } = useAppContext();
+  const { rides, loadAllAvailableRides, auth } = useAppContext();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
   const [userLocation, setUserLocation] = useState<Location | null>(null);
@@ -113,7 +113,7 @@ export default function AllRidesScreen() {
   };
 
   const filteredRides = rides
-    .filter(ride => ride.status === 'active' && (searchQuery === '' || ride.pickupLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) || ride.dropLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) || ride.driverName.toLowerCase().includes(searchQuery.toLowerCase())))
+    .filter(ride => ride.status === 'active' && ride.driverId !== auth.user?.id && (searchQuery === '' || ride.pickupLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) || ride.dropLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) || ride.driverName.toLowerCase().includes(searchQuery.toLowerCase())))
     .sort((a, b) => (rideDistances[a.id] ?? Infinity) - (rideDistances[b.id] ?? Infinity));
 
   return (

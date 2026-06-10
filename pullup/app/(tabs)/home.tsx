@@ -165,7 +165,7 @@ export default function HomeScreen() {
     
     // 1. Car Pools (Rides)
     (rides ?? []).forEach(ride => {
-      if (ride.status === 'active') {
+      if (ride.status === 'active' && ride.driverId !== auth.user?.id) {
         const distanceVal = rideDistances[ride.id] ?? Infinity;
         
         // Make clean addresses
@@ -191,7 +191,7 @@ export default function HomeScreen() {
 
     // 2. Taxi Pools
     (pools ?? []).forEach(pool => {
-      if (pool.status === 'OPEN' || pool.status === 'FULL') {
+      if ((pool.status === 'OPEN' || pool.status === 'FULL') && pool.creatorId !== auth.user?.id) {
         const distanceVal = poolDistances[pool.id] ?? Infinity;
         const priceVal = (pool as any).price ?? 40; // Default to 40 per seat
         

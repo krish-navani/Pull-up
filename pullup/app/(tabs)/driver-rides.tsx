@@ -1,11 +1,12 @@
 import { useAppContext } from '@/context/AppContext';
-import { formatTime } from '@/utils/mockData';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { WARM_CORE } from '@/constants/theme';
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
+    Animated,
+    Easing,
     Modal,
     RefreshControl,
     ScrollView,
@@ -16,8 +17,18 @@ import {
     View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { subscribeToCreatorPools, subscribeToMemberPools, TaxiPool } from '@/utils/taxiPoolService';
 
 type RideStatus = 'active' | 'in_progress' | 'completed' | 'cancelled';
+
+const formatTime = (timeString: string) => {
+  try {
+    const date = new Date(timeString);
+    return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+  } catch (e) {
+    return '';
+  }
+};
 
 const getTimeRemaining = (departureTimeStr: string) => {
   try {
@@ -50,6 +61,50 @@ export default function DriverRidesScreen() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedRideForDetails, setSelectedRideForDetails] = useState<string | null>(null);
+
+  // Unified dashboard states
+  const [activeTab, setActiveTab] = useState<'hosting' | 'riding'>('hosting');
+  const [subTab, setSubTab] = useState<'car' | 'taxi'>('car');
+  const [joinedTaxiPools, setJoinedTaxiPools] = useState<TaxiPool[]>([]);
+  const [createdTaxiPools, setCreatedTaxiPools] = useState<TaxiPool[]>([]);
+
+  // Entry animations
+  const headerAnim = useRef({ opacity: new Animated.Value(0), translateY: new Animated.Value(18) }).current;
+  const contentAnim = useRef({ opacity: new Animated.Value(0), translateY: new Animated.Value(22) }).current;
+
+  // Subscribe to taxi pools in real time
+  useEffect(() => {
+    if (!auth.user?.id) return;
+    
+    console.log('[DRIVER COMMUTES] Subscribing to member pools for:', auth.user.id);
+    const unsubJoined = subscribeToMemberPools(auth.user.id, (pools) => {
+      setJoinedTaxiPools(pools);
+    });
+
+    console.log('[DRIVER COMMUTES] Subscribing to creator pools for:', auth.user.id);
+    const unsubCreated = subscribeToCreatorPools(auth.user.id, (pools) => {
+      setCreatedTaxiPools(pools);
+    });
+
+    return () => {
+      unsubJoined();
+      unsubCreated();
+    };
+  }, [auth.user?.id]);
+
+  // Stagger animation on mount
+  useEffect(() => {
+    Animated.stagger(80, [
+      Animated.parallel([
+        Animated.timing(headerAnim.opacity, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+        Animated.spring(headerAnim.translateY, { toValue: 0, damping: 18, stiffness: 200, mass: 0.9, useNativeDriver: true }),
+      ]),
+      Animated.parallel([
+        Animated.timing(contentAnim.opacity, { toValue: 1, duration: 300, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+        Animated.spring(contentAnim.translateY, { toValue: 0, damping: 20, stiffness: 160, mass: 1, useNativeDriver: true }),
+      ]),
+    ]).start();
+  }, []);
 
   const fetchRides = useCallback(async (showIndicator = false) => {
     if (!auth.user) return;
@@ -161,169 +216,339 @@ export default function DriverRidesScreen() {
     }
   };
 
+  const renderTaxiPoolCard = (pool: TaxiPool, isHosting: boolean) => {
+    const seatsLeft = pool.maxMembers - pool.memberCount;
+    const depTime = new Date(pool.departureTime);
+    
+    // Status colors
+    let statusBg = 'rgba(16, 185, 129, 0.1)';
+    let statusText = '#10B981';
+    if (pool.status === 'FULL') {
+      statusBg = 'rgba(245, 158, 11, 0.1)';
+      statusText = '#F59E0B';
+    } else if (pool.status === 'CANCELLED') {
+      statusBg = 'rgba(239, 68, 68, 0.1)';
+      statusText = '#EF4444';
+    } else if (pool.status === 'CLOSED') {
+      statusBg = 'rgba(107, 114, 128, 0.1)';
+      statusText = '#6B7280';
+    }
+
+    return (
+      <TouchableOpacity
+        key={pool.id}
+        style={styles.taxiPoolCard}
+        onPress={() => router.push({ pathname: '/taxi-pool-details', params: { poolId: pool.id } } as any)}
+        activeOpacity={0.85}
+      >
+        <View style={styles.taxiCardHeader}>
+          <View style={styles.taxiCardHeaderLeft}>
+            <View style={styles.taxiIconContainer}>
+              <MaterialCommunityIcons name="taxi" size={20} color={WARM_CORE.primary} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.taxiDestText} numberOfLines={1}>
+                To {pool.destination.address.split(',')[0]}
+              </Text>
+              <Text style={styles.taxiTimeText}>
+                {depTime.toLocaleDateString([], { month: 'short', day: 'numeric' })} · {depTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </Text>
+            </View>
+          </View>
+          
+          <View style={[styles.taxiStatusBadge, { backgroundColor: statusBg }]}>
+            <Text style={[styles.taxiStatusText, { color: statusText }]}>
+              {pool.status}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.taxiCardBottom}>
+          <View style={styles.taxiCardInfoGroup}>
+            <View style={styles.taxiStatItem}>
+              <MaterialCommunityIcons name="account-group-outline" size={16} color={WARM_CORE.textSecondary} />
+              <Text style={styles.taxiStatText}>{pool.memberCount}/{pool.maxMembers} members</Text>
+            </View>
+            <Text style={styles.taxiDotSeparator}>•</Text>
+            <View style={styles.taxiStatItem}>
+              <MaterialCommunityIcons name="account-multiple-plus" size={16} color={WARM_CORE.textSecondary} />
+              <Text style={styles.taxiStatText}>{seatsLeft} seats left</Text>
+            </View>
+          </View>
+
+          <View style={styles.taxiDetailsAction}>
+            <Text style={styles.taxiDetailsActionText}>
+              {isHosting ? 'Manage Pool' : 'View Pool'}
+            </Text>
+            <MaterialCommunityIcons name="arrow-right" size={14} color={WARM_CORE.primary} />
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor={WARM_CORE.background} />
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={styles.contentContainer}
-        showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl
-            refreshing={isRefreshing}
-            onRefresh={handleRefresh}
-            tintColor={WARM_CORE.primary}
-            progressBackgroundColor={WARM_CORE.card}
-          />
-        }
+
+      {/* Animated Header */}
+      <Animated.View
+        style={[
+          styles.headerSection,
+          {
+            opacity: headerAnim.opacity,
+            transform: [{ translateY: headerAnim.translateY }],
+          },
+        ]}
       >
-        {/* Header */}
-        <View style={styles.headerSection}>
-          <Text style={styles.headerTitle}>My Rides</Text>
-          <Text style={styles.headerSubtitle}>Manage your posted rides</Text>
+        <Text style={styles.headerTitle}>My Commutes</Text>
+        <Text style={styles.headerSubtitle}>Manage your driving and riding schedules</Text>
+      </Animated.View>
+
+      <Animated.View
+        style={{
+          flex: 1,
+          opacity: contentAnim.opacity,
+          transform: [{ translateY: contentAnim.translateY }],
+        }}
+      >
+        {/* Top Tab Selector (Hosting vs Riding) */}
+        <View style={styles.topTabContainer}>
+          <TouchableOpacity
+            style={[styles.topTab, activeTab === 'hosting' && styles.topTabActive]}
+            onPress={() => setActiveTab('hosting')}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.topTabLabel, activeTab === 'hosting' && styles.topTabLabelActive]}>
+              Hosting (Driving)
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.topTab, activeTab === 'riding' && styles.topTabActive]}
+            onPress={() => setActiveTab('riding')}
+            activeOpacity={0.8}
+          >
+            <Text style={[styles.topTabLabel, activeTab === 'riding' && styles.topTabLabelActive]}>
+              Riding (Joined)
+            </Text>
+          </TouchableOpacity>
         </View>
 
-        {/* Tab Filter */}
-        <View style={styles.tabContainer}>
-          {(['active', 'in_progress', 'completed', 'cancelled'] as RideStatus[]).map(status => {
-            const isSelected = selectedStatus === status;
-            let statusLabel = '';
-            if (status === 'active') statusLabel = 'Upcoming';
-            else if (status === 'in_progress') statusLabel = 'Ongoing';
-            else statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
-            
-            return (
-              <TouchableOpacity
-                key={status}
-                style={[styles.tab, isSelected && styles.tabActive]}
-                onPress={() => setSelectedStatus(status)}
-              >
-                <Text style={[styles.tabLabel, isSelected && styles.tabLabelActive]}>
-                  {statusLabel}
-                </Text>
-                {isSelected && <View style={styles.tabUnderline} />}
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-
-        {/* Loading State */}
-        {isLoading && (
-          <View style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={WARM_CORE.primary} />
-            <Text style={styles.loadingText}>Loading your rides...</Text>
+        {/* Sub Tab Selector (Only if Hosting is active) */}
+        {activeTab === 'hosting' && (
+          <View style={styles.subTabContainer}>
+            <TouchableOpacity
+              style={[styles.subTabButton, subTab === 'car' && styles.subTabButtonActive]}
+              onPress={() => setSubTab('car')}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons name="car" size={16} color={subTab === 'car' ? WARM_CORE.white : WARM_CORE.textSecondary} style={{ marginRight: 6 }} />
+              <Text style={[styles.subTabText, subTab === 'car' && styles.subTabTextActive]}>Car Pools</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.subTabButton, subTab === 'taxi' && styles.subTabButtonActive]}
+              onPress={() => setSubTab('taxi')}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons name="taxi" size={16} color={subTab === 'taxi' ? WARM_CORE.white : WARM_CORE.textSecondary} style={{ marginRight: 6 }} />
+              <Text style={[styles.subTabText, subTab === 'taxi' && styles.subTabTextActive]}>Taxi Pools</Text>
+            </TouchableOpacity>
           </View>
         )}
 
-        {/* Rides List */}
-        {!isLoading && filteredRides.length > 0 ? (
-          <View style={styles.ridesContainer}>
-            {filteredRides.map(ride => {
-              const statusBadge = getStatusBadge(ride.status);
-              const bookedCount = ride.bookedSeats.filter(
-                bs => bs.status === 'accepted' || bs.status === 'pending'
-              ).length;
-              const earnings = getRideEarnings(ride);
-
+        {/* Status Tab Filter (Only if Hosting -> Car Pools is active) */}
+        {activeTab === 'hosting' && subTab === 'car' && (
+          <View style={styles.tabContainer}>
+            {(['active', 'in_progress', 'completed', 'cancelled'] as RideStatus[]).map(status => {
+              const isSelected = selectedStatus === status;
+              let statusLabel = '';
+              if (status === 'active') statusLabel = 'Upcoming';
+              else if (status === 'in_progress') statusLabel = 'Ongoing';
+              else statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+              
               return (
                 <TouchableOpacity
-                  key={ride.id}
-                  style={styles.rideCard}
-                  onPress={() => handleRidePress(ride.id)}
-                  activeOpacity={0.7}
+                  key={status}
+                  style={[styles.tab, isSelected && styles.tabActive]}
+                  onPress={() => setSelectedStatus(status)}
                 >
-                  {/* Status Badge */}
-                  <View style={[styles.statusBadge, { backgroundColor: statusBadge.bgColor }]}>
-                    <MaterialCommunityIcons 
-                      name={
-                        ride.status === 'active' ? 'clock-outline' : 
-                        ride.status === 'in_progress' ? 'play-circle-outline' :
-                        'check-circle-outline'
-                      } 
-                      size={14} 
-                      color={statusBadge.color} 
-                    />
-                    <Text style={[styles.statusText, { color: statusBadge.color }]}>
-                      {statusBadge.label}
-                    </Text>
-                  </View>
-
-                  {/* Route Info */}
-                  <View style={styles.routeSection}>
-                    <View style={styles.routeIndicator}>
-                      <View style={styles.routeDot} />
-                      <View style={styles.routeLine} />
-                      <View style={styles.routeDot} />
-                    </View>
-
-                    <View style={styles.locationsContainer}>
-                      <View>
-                        <Text style={styles.locationLabel}>PICKUP</Text>
-                        <Text style={styles.locationName} numberOfLines={1}>
-                          {ride.pickupLocation.address}
-                        </Text>
-                      </View>
-                      <View style={styles.locationDivider} />
-                      <View>
-                        <Text style={styles.locationLabel}>DROP-OFF</Text>
-                        <Text style={styles.locationName} numberOfLines={1}>
-                          {ride.dropLocation.address}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
-
-                  {/* Time Remaining */}
-                  {ride.status === 'active' && (
-                    <View style={{flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(212, 80, 10, 0.08)', paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, marginBottom: 12}}>
-                      <MaterialCommunityIcons name="clock-fast" size={16} color={WARM_CORE.primary} style={{marginRight: 8}} />
-                      <Text style={{color: WARM_CORE.primary, fontSize: 12, fontWeight: '600'}}>{getTimeRemaining(ride.departureTime)}</Text>
-                    </View>
-                  )}
-
-                  {/* Footer Info */}
-                  <View style={styles.cardFooter}>
-                    <View style={styles.infoGroup}>
-                      <View style={styles.infoItem}>
-                        <MaterialCommunityIcons name="clock-outline" size={16} color={WARM_CORE.textSecondary} />
-                        <Text style={styles.infoText}>{formatTime(ride.departureTime)}</Text>
-                      </View>
-                      <Text style={styles.dotSeparator}>•</Text>
-                      <View style={styles.infoItem}>
-                        <MaterialCommunityIcons name="seat" size={16} color={WARM_CORE.textSecondary} />
-                        <Text style={styles.infoText}>{bookedCount}/{ride.totalSeats}</Text>
-                      </View>
-                    </View>
-
-                    <View style={styles.earningsBox}>
-                      <Text style={styles.earningsLabel}>₹{earnings}</Text>
-                      <Text style={styles.earningsDesc}>Total</Text>
-                    </View>
-                  </View>
+                  <Text style={[styles.tabLabel, isSelected && styles.tabLabelActive]}>
+                    {statusLabel}
+                  </Text>
+                  {isSelected && <View style={styles.tabUnderline} />}
                 </TouchableOpacity>
               );
             })}
           </View>
-        ) : (
-          !isLoading && (
-            <View style={styles.emptyState}>
-              <MaterialCommunityIcons
-                name={selectedStatus === 'active' ? 'plus-circle-outline' : 'check-circle-outline'}
-                size={56}
-                color={WARM_CORE.textSecondary}
-              />
-              <Text style={styles.emptyTitle}>
-                {selectedStatus === 'active' ? 'No Upcoming Rides' : `No ${selectedStatus} rides`}
-              </Text>
-              <Text style={styles.emptySubtitle}>
-                {selectedStatus === 'active'
-                  ? 'Post a new ride to get started'
-                  : 'Your rides will appear here'}
-              </Text>
-            </View>
-          )
         )}
-      </ScrollView>
+
+        <ScrollView
+          style={styles.container}
+          contentContainerStyle={styles.contentContainer}
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={isRefreshing}
+              onRefresh={handleRefresh}
+              tintColor={WARM_CORE.primary}
+              progressBackgroundColor={WARM_CORE.card}
+            />
+          }
+        >
+          {isLoading ? (
+            <View style={styles.loadingContainer}>
+              <ActivityIndicator size="large" color={WARM_CORE.primary} />
+              <Text style={styles.loadingText}>Loading...</Text>
+            </View>
+          ) : activeTab === 'hosting' ? (
+            subTab === 'car' ? (
+              filteredRides.length > 0 ? (
+                <View style={styles.ridesContainer}>
+                  {filteredRides.map(ride => {
+                    const statusBadge = getStatusBadge(ride.status);
+                    const bookedCount = ride.bookedSeats.filter(
+                      bs => bs.status === 'accepted' || bs.status === 'pending'
+                    ).length;
+                    const earnings = getRideEarnings(ride);
+
+                    return (
+                      <TouchableOpacity
+                        key={ride.id}
+                        style={styles.rideCard}
+                        onPress={() => handleRidePress(ride.id)}
+                        activeOpacity={0.7}
+                      >
+                        {/* Status Badge */}
+                        <View style={[styles.statusBadge, { backgroundColor: statusBadge.bgColor }]}>
+                          <MaterialCommunityIcons 
+                            name={
+                              ride.status === 'active' ? 'clock-outline' : 
+                              ride.status === 'in_progress' ? 'play-circle-outline' :
+                              'check-circle-outline'
+                            } 
+                            size={14} 
+                            color={statusBadge.color} 
+                          />
+                          <Text style={[styles.statusText, { color: statusBadge.color }]}>
+                            {statusBadge.label}
+                          </Text>
+                        </View>
+
+                        {/* Route Info */}
+                        <View style={styles.routeSection}>
+                          <View style={styles.routeIndicator}>
+                            <View style={styles.routeDot} />
+                            <View style={styles.routeLine} />
+                            <View style={styles.routeDot} />
+                          </View>
+
+                          <View style={styles.locationsContainer}>
+                            <View>
+                              <Text style={styles.locationLabel}>PICKUP</Text>
+                              <Text style={styles.locationName} numberOfLines={1}>
+                                {ride.pickupLocation.address}
+                              </Text>
+                            </View>
+                            <View style={styles.locationDivider} />
+                            <View>
+                              <Text style={styles.locationLabel}>DROP-OFF</Text>
+                              <Text style={styles.locationName} numberOfLines={1}>
+                                {ride.dropLocation.address}
+                              </Text>
+                            </View>
+                          </View>
+                        </View>
+
+                        {/* Time Remaining */}
+                        {ride.status === 'active' && (
+                          <View style={{flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(212, 80, 10, 0.08)', paddingHorizontal: 10, paddingVertical: 8, borderRadius: 8, marginBottom: 12}}>
+                            <MaterialCommunityIcons name="clock-fast" size={16} color={WARM_CORE.primary} style={{marginRight: 8}} />
+                            <Text style={{color: WARM_CORE.primary, fontSize: 12, fontWeight: '600'}}>{getTimeRemaining(ride.departureTime)}</Text>
+                          </View>
+                        )}
+
+                        {/* Footer Info */}
+                        <View style={styles.cardFooter}>
+                          <View style={styles.infoGroup}>
+                            <View style={styles.infoItem}>
+                              <MaterialCommunityIcons name="clock-outline" size={16} color={WARM_CORE.textSecondary} />
+                              <Text style={styles.infoText}>{formatTime(ride.departureTime)}</Text>
+                            </View>
+                            <Text style={styles.dotSeparator}>•</Text>
+                            <View style={styles.infoItem}>
+                              <MaterialCommunityIcons name="seat" size={16} color={WARM_CORE.textSecondary} />
+                              <Text style={styles.infoText}>{bookedCount}/{ride.totalSeats}</Text>
+                            </View>
+                          </View>
+
+                          <View style={styles.earningsBox}>
+                            <Text style={styles.earningsLabel}>₹{earnings}</Text>
+                            <Text style={styles.earningsDesc}>Total</Text>
+                          </View>
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ) : (
+                <View style={styles.emptyState}>
+                  <MaterialCommunityIcons
+                    name={selectedStatus === 'active' ? 'plus-circle-outline' : 'check-circle-outline'}
+                    size={56}
+                    color={WARM_CORE.textSecondary}
+                  />
+                  <Text style={styles.emptyTitle}>
+                    {selectedStatus === 'active' ? 'No Upcoming Rides' : `No ${selectedStatus} rides`}
+                  </Text>
+                  <Text style={styles.emptySubtitle}>
+                    {selectedStatus === 'active'
+                      ? 'Post a new ride to get started'
+                      : 'Your rides will appear here'}
+                  </Text>
+                </View>
+              )
+            ) : (
+              createdTaxiPools.length === 0 ? (
+                <View style={styles.emptyState}>
+                  <MaterialCommunityIcons name="plus-circle-outline" size={56} color={WARM_CORE.textSecondary} />
+                  <Text style={styles.emptyTitle}>No Hosted Taxi Pools</Text>
+                  <Text style={styles.emptySubtitle}>You haven't created any taxi pools yet</Text>
+                  <TouchableOpacity
+                    style={styles.bookNowButton}
+                    onPress={() => router.push('/create-taxi-pool')}
+                  >
+                    <MaterialCommunityIcons name="plus" size={18} color={WARM_CORE.white} style={{ marginRight: 6 }} />
+                    <Text style={styles.bookNowButtonText}>Create a Taxi Pool</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View style={styles.ridesContainer}>
+                  {createdTaxiPools.map((pool) => renderTaxiPoolCard(pool, true))}
+                </View>
+              )
+            )
+          ) : (
+            joinedTaxiPools.length === 0 ? (
+              <View style={styles.emptyState}>
+                <MaterialCommunityIcons name="taxi" size={56} color={WARM_CORE.textSecondary} />
+                <Text style={styles.emptyTitle}>No Joined Taxi Pools</Text>
+                <Text style={styles.emptySubtitle}>You haven't joined any taxi pools yet</Text>
+                <TouchableOpacity
+                  style={styles.bookNowButton}
+                  onPress={() => router.push('/(tabs)/home')}
+                >
+                  <MaterialCommunityIcons name="magnify" size={16} color={WARM_CORE.white} style={{ marginRight: 6 }} />
+                  <Text style={styles.bookNowButtonText}>Find Taxi Pools</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.ridesContainer}>
+                {joinedTaxiPools.map((pool) => renderTaxiPoolCard(pool, false))}
+              </View>
+            )
+          )}
+        </ScrollView>
+      </Animated.View>
 
       {/* RIDE DETAILS MODAL */}
       {selectedRideForDetails && (
@@ -1165,5 +1390,177 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: '#0EA5E9',
+  },
+  /* ── Switcher Tabs ─────────────────────────────────────────────────────── */
+  topTabContainer: {
+    flexDirection: 'row',
+    backgroundColor: WARM_CORE.card,
+    borderBottomWidth: 1,
+    borderBottomColor: WARM_CORE.border,
+  },
+  topTab: {
+    flex: 1,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderBottomWidth: 2,
+    borderBottomColor: 'transparent',
+  },
+  topTabActive: {
+    borderBottomColor: WARM_CORE.primary,
+  },
+  topTabLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: WARM_CORE.textSecondary,
+  },
+  topTabLabelActive: {
+    color: WARM_CORE.primary,
+    fontWeight: '800',
+  },
+  subTabContainer: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    gap: 8,
+    backgroundColor: WARM_CORE.background,
+  },
+  subTabButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    backgroundColor: WARM_CORE.card,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  },
+  subTabButtonActive: {
+    backgroundColor: WARM_CORE.primary,
+    borderColor: WARM_CORE.primary,
+  },
+  subTabText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: WARM_CORE.textSecondary,
+  },
+  subTabTextActive: {
+    color: WARM_CORE.white,
+    fontWeight: '700',
+  },
+  /* ── Taxi Pool Card ──────────────────────────────────────────────────────── */
+  taxiPoolCard: {
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 20,
+    marginBottom: 16,
+    borderWidth: 0.5,
+    borderColor: WARM_CORE.border,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  taxiCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  taxiCardHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  taxiIconContainer: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(212, 80, 10, 0.08)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  taxiDestText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+    letterSpacing: -0.2,
+    marginBottom: 2,
+    maxWidth: 180,
+  },
+  taxiTimeText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: WARM_CORE.textSecondary,
+  },
+  taxiStatusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+  },
+  taxiStatusText: {
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  taxiCardBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: WARM_CORE.border,
+  },
+  taxiCardInfoGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  taxiStatItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  taxiStatText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: WARM_CORE.textSecondary,
+  },
+  taxiDotSeparator: {
+    fontSize: 12,
+    color: WARM_CORE.border,
+  },
+  taxiDetailsAction: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  taxiDetailsActionText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: WARM_CORE.primary,
+  },
+  /* ── Book Now / Create Pool Buttons ──────────────────────────────────────── */
+  bookNowButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: WARM_CORE.primary,
+    paddingVertical: 14,
+    paddingHorizontal: 32,
+    borderRadius: 16,
+    gap: 8,
+    shadowColor: WARM_CORE.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 4,
+    marginTop: 20,
+  },
+  bookNowButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: WARM_CORE.white,
   },
 });

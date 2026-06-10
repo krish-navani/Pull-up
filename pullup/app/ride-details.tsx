@@ -219,6 +219,15 @@ export default function RideDetailsScreen() {
   };
 
   const getButtonInfo = () => {
+    if (ride.driverId === auth.user?.id) {
+      return {
+        text: 'Hosting this Ride',
+        icon: 'account-tie',
+        color: WARM_CORE.textSecondary,
+        bgColor: WARM_CORE.card,
+        disabled: true,
+      };
+    }
     if (ride.status === 'completed') {
       return {
         text: 'Ride Completed',
