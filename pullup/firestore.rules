@@ -75,5 +75,32 @@ service cloud.firestore {
       allow update: if isSignedIn();
       allow delete: if isSignedIn();
     }
+
+    // ─── Taxi Pools ─────────────────────────────────────────────────────────
+    // NOTE: queries filter by status only (no composite index needed).
+    // Client-side sorting avoids composite index requirements.
+    match /taxiPools/{poolId} {
+      allow read:   if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isSignedIn();
+    }
+
+    // ─── Pool Members ───────────────────────────────────────────────────────
+    match /poolMembers/{memberId} {
+      allow read:   if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isSignedIn();
+    }
+
+    // ─── Pool Requests ──────────────────────────────────────────────────────
+    match /poolRequests/{requestId} {
+      allow read:   if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isSignedIn();
+    }
+
   }
 }

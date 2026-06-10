@@ -91,7 +91,16 @@ export default function NotificationsScreen() {
       }
 
       // Navigate based on notification type
-      if (notification.rideId) {
+      if (notification.actionUrl) {
+        if (notification.actionUrl.includes('taxi-pool-details')) {
+          router.push({
+            pathname: '/taxi-pool-details',
+            params: { poolId: notification.rideId },
+          } as any);
+        } else {
+          router.push(notification.actionUrl as any);
+        }
+      } else if (notification.rideId) {
         router.push({
           pathname: '/ride-details',
           params: { rideId: notification.rideId },

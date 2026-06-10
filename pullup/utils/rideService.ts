@@ -503,23 +503,25 @@ export const deleteExpiredRides = async (): Promise<number> => {
     const now = new Date();
     const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000); // 6 hours = 21,600,000 ms
     
-    // Query for rides with departureTime older than 6 hours and status 'active'
-    // Single equality filter — no index needed here
+    // Query for all active rides (single-field equality, index-free)
     const q = query(
       collection(db, 'rides'),
-      where('departureTime', '<', sixHoursAgo.toISOString()),
       where('status', '==', 'active')
     );
     
     const querySnapshot = await getDocs(q);
     let deletedCount = 0;
     
-    // Delete each expired ride
+    // Filter and delete each expired ride client-side
     for (const doc of querySnapshot.docs) {
       try {
-        await deleteDoc(doc.ref);
-        deletedCount++;
-        console.log('[RIDE SERVICE] ✅ Deleted expired ride:', doc.id);
+        const data = doc.data();
+        const departureDate = new Date(data.departureTime);
+        if (departureDate.getTime() < sixHoursAgo.getTime()) {
+          await deleteDoc(doc.ref);
+          deletedCount++;
+          console.log('[RIDE SERVICE] ✅ Deleted expired ride:', doc.id);
+        }
       } catch (err) {
         console.error('[RIDE SERVICE] Failed to delete ride:', doc.id, err);
       }

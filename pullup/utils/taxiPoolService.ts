@@ -389,7 +389,8 @@ export const createJoinRequest = async (
         poolId,
         docRef.id,
         passenger.id,
-        passenger.fullName
+        passenger.fullName,
+        '/taxi-pool-details'
       );
     } catch (notifErr) {
       console.warn('[TAXI POOL SERVICE] Notification dispatch failed:', notifErr);
@@ -471,7 +472,10 @@ export const acceptJoinRequest = async (
         'Pool Request Approved',
         `You have been accepted into the Taxi Pool!`,
         poolId,
-        requestId
+        requestId,
+        undefined,
+        undefined,
+        '/taxi-pool-details'
       );
     } catch (notifErr) {
       console.warn('[TAXI POOL SERVICE] Notification dispatch failed:', notifErr);
@@ -504,7 +508,10 @@ export const rejectJoinRequest = async (
         'Pool Request Declined',
         `Your request to join the Taxi Pool was declined.`,
         poolId,
-        requestId
+        requestId,
+        undefined,
+        undefined,
+        '/taxi-pool-details'
       );
     } catch (notifErr) {
       console.warn('[TAXI POOL SERVICE] Notification dispatch failed:', notifErr);
@@ -559,7 +566,11 @@ export const cancelTaxiPool = async (
             'ride_cancelled',
             'Taxi Pool Cancelled',
             `The Taxi Pool creator cancelled the pool.`,
-            poolId
+            poolId,
+            undefined,
+            undefined,
+            undefined,
+            '/taxi-pool-details'
           );
         } catch (notifErr) {
           console.warn('[TAXI POOL SERVICE] Notification dispatch failed:', notifErr);
@@ -571,3 +582,63 @@ export const cancelTaxiPool = async (
     throw error;
   }
 };
+
+/**
+ * Subscribe to taxi pools where the user is a passenger/member in real-time
+ */
+export const subscribeToMemberPools = (
+  passengerId: string,
+  onUpdate: (pools: TaxiPool[]) => void
+): Unsubscribe => {
+  const membersRef = collection(db, 'poolMembers');
+  const q = query(membersRef, where('passengerId', '==', passengerId));
+
+  return onSnapshot(
+    q,
+    async (snapshot) => {
+      const poolIds: string[] = [];
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        poolIds.push(data.poolId);
+      });
+
+      if (poolIds.length === 0) {
+        onUpdate([]);
+        return;
+      }
+
+      try {
+        const poolsRef = collection(db, 'taxiPools');
+        const qPools = query(poolsRef, where('__name__', 'in', poolIds.slice(0, 30)));
+        const poolsSnap = await getDocs(qPools);
+        const pools: TaxiPool[] = [];
+        poolsSnap.forEach((docSnap) => {
+          const data = docSnap.data();
+          // Filter out pools created by the user (since they will be in the Hosting tab)
+          if (data.creatorId !== passengerId) {
+            pools.push({
+              id: docSnap.id,
+              ...data,
+              createdAt: data.createdAt ? (data.createdAt.toDate ? data.createdAt.toDate().toISOString() : data.createdAt) : null
+            } as TaxiPool);
+          }
+        });
+        
+        // Sort newest first
+        pools.sort((a, b) => {
+          if (!a.createdAt) return 1;
+          if (!b.createdAt) return -1;
+          return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        });
+        
+        onUpdate(pools);
+      } catch (err) {
+        console.error('[TAXI POOL SERVICE] Error fetching member pools details:', err);
+      }
+    },
+    (error) => {
+      console.error('[TAXI POOL SERVICE] Error subscribing to member pools:', error);
+    }
+  );
+};
+
