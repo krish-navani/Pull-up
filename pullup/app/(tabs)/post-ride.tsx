@@ -451,6 +451,7 @@ function SuccessScreen({ pickupCity, dropoffCity, pickupDetail, dropoffDetail, r
 function PostRideScreenInner() {
   const router = useRouter();
   const { createRide, auth } = useAppContext();
+  const [postMode, setPostMode] = useState<'car' | 'taxi'>('car');
   const [isLoading, setIsLoading] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
   const [postedRideData, setPostedRideData] = useState<any>(null);
@@ -743,12 +744,8 @@ function PostRideScreenInner() {
     }
   };
 
-  const isFormValid = formData.pickupLocation &&
-    formData.dropLocation &&
-    formData.departureDate &&
-    formData.departureTime &&
-    formData.price &&
-    formData.carModel;
+  // Always allow pressing the button - validation shows inline errors via handleCreateRide
+  const isFormValid = true;
 
   // --- All hooks must be called unconditionally before any early return ---
   const headerAnim = useFadeSlideIn(0, 16);
@@ -814,6 +811,39 @@ function PostRideScreenInner() {
           <View style={{ flex: 1 }}>
             <Text style={styles.headerTitle}>Post a Ride</Text>
             <Text style={styles.headerSubtitle}>Post in seconds, save instantly</Text>
+          </View>
+        </Animated.View>
+
+        {/* Mode Switcher: Car Pool vs Taxi Pool */}
+        <Animated.View style={[{ opacity: headerAnim.opacity, transform: [{ translateY: headerAnim.translateY }], paddingHorizontal: 16, marginBottom: 8 }]}>
+          <View style={styles.modeSwitcherContainer}>
+            <TouchableOpacity
+              style={[styles.modeSwitcherTab, postMode === 'car' && styles.modeSwitcherTabActive]}
+              onPress={() => setPostMode('car')}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons
+                name="car"
+                size={16}
+                color={postMode === 'car' ? WARM_CORE.white : WARM_CORE.textSecondary}
+              />
+              <Text style={[styles.modeSwitcherText, postMode === 'car' && styles.modeSwitcherTextActive]}>Car Pool</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.modeSwitcherTab, postMode === 'taxi' && styles.modeSwitcherTabTaxi]}
+              onPress={() => {
+                setPostMode('taxi');
+                router.push('/create-taxi-pool' as any);
+              }}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons
+                name="taxi"
+                size={16}
+                color={postMode === 'taxi' ? WARM_CORE.white : WARM_CORE.textSecondary}
+              />
+              <Text style={[styles.modeSwitcherText, postMode === 'taxi' && styles.modeSwitcherTextActive]}>Taxi Pool</Text>
+            </TouchableOpacity>
           </View>
         </Animated.View>
 
@@ -1068,7 +1098,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    marginBottom: 32,
+    marginBottom: 12,
   },
   backButton: {
     width: 40,
@@ -1093,10 +1123,56 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
 
+  /* MODE SWITCHER */
+  modeSwitcherContainer: {
+    flexDirection: 'row',
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    padding: 4,
+    marginBottom: 20,
+    gap: 4,
+  },
+  modeSwitcherTab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    gap: 6,
+  },
+  modeSwitcherTabActive: {
+    backgroundColor: WARM_CORE.primary,
+    shadowColor: WARM_CORE.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  modeSwitcherTabTaxi: {
+    backgroundColor: '#7C3AED',
+    shadowColor: '#7C3AED',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  modeSwitcherText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: WARM_CORE.textSecondary,
+  },
+  modeSwitcherTextActive: {
+    color: WARM_CORE.white,
+  },
+
   /* SECTIONS */
   section: {
     marginBottom: 28,
   },
+
   sectionTitle: {
     fontSize: 11,
     fontWeight: '700',
