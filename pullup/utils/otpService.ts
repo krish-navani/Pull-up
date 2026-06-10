@@ -1,7 +1,20 @@
 import { collection, deleteDoc, doc, getDoc, getDocs, query, where, setDoc } from 'firebase/firestore';
 import { Alert } from 'react-native';
+import { signInAnonymously } from 'firebase/auth';
 import { sendOTPViaBackend, verifyOTPViaBackend } from './backendApiClient';
-import { db } from './firebase';
+import { auth, db } from './firebase';
+
+/**
+ * Ensure the client is authenticated (anonymously) with Firebase before making Firestore calls.
+ * This satisfies security rules (e.g. request.auth != null) required by the live database.
+ */
+const ensureAuthenticated = async (): Promise<void> => {
+  if (!auth.currentUser) {
+    console.log('[OTP] No active Firebase Auth session. Signing in anonymously...');
+    const userCredential = await signInAnonymously(auth);
+    console.log('[OTP] ✅ Anonymous authentication successful, UID:', userCredential.user.uid);
+  }
+};
 
 const OTP_LENGTH = process.env.EXPO_PUBLIC_OTP_LENGTH ? parseInt(process.env.EXPO_PUBLIC_OTP_LENGTH, 10) : 4;
 const OTP_EXPIRY_MINUTES = process.env.EXPO_PUBLIC_OTP_EXPIRY_MINUTES ? parseInt(process.env.EXPO_PUBLIC_OTP_EXPIRY_MINUTES, 10) : 10;
@@ -34,8 +47,9 @@ export const sendOTPEmail = async (email: string): Promise<{ success: boolean; m
     
     try {
       // Local dev mode fallback
+      await ensureAuthenticated();
       const otp = generateOTP();
-      const otpDocId = fullEmail.replace(/[.@]/g, '_');
+      const otpDocId = fullEmail.replace(/[.@]/g, '_').toLowerCase();
       const otpDocRef = doc(collection(db, 'otpVerification'), otpDocId);
       
       const now = new Date();
@@ -91,7 +105,8 @@ export const verifyOTP = async (email: string, otp: string): Promise<boolean> =>
     console.warn('[OTP] ❌ Backend verification failed, attempting direct Firestore verification...', error.message);
     
     try {
-      const otpDocId = fullEmail.replace(/[.@]/g, '_');
+      await ensureAuthenticated();
+      const otpDocId = fullEmail.replace(/[.@]/g, '_').toLowerCase();
       const otpDocRef = doc(collection(db, 'otpVerification'), otpDocId);
       const otpDocSnapshot = await getDoc(otpDocRef);
 
@@ -137,6 +152,7 @@ export const deleteOTP = async (email: string): Promise<void> => {
   try {
     const fullEmail = email.includes('@') ? email : email + UNIVERSITY_DOMAIN;
     const otpDocId = fullEmail.replace(/[.@]/g, '_');
+    await ensureAuthenticated();
     await deleteDoc(doc(collection(db, 'otpVerification'), otpDocId));
   } catch (error) {
     // Silent fail
@@ -151,6 +167,8 @@ export const checkEmailExists = async (email: string): Promise<boolean> => {
     const fullEmail = email.includes('@') ? email : email + UNIVERSITY_DOMAIN;
     
     console.log('[OTP] checkEmailExists: Querying for email =', fullEmail);
+    
+    await ensureAuthenticated();
     
     const usersQuery = query(
       collection(db, 'users'),
@@ -179,7 +197,10 @@ export const checkEmailExists = async (email: string): Promise<boolean> => {
 export const validateVerifiedOTP = async (email: string, otp: string): Promise<boolean> => {
   try {
     const fullEmail = email.includes('@') ? email : email + UNIVERSITY_DOMAIN;
-    const otpDocId = fullEmail.replace(/[.@]/g, '_');
+    const otpDocId = fullEmail.replace(/[.@]/g, '_').toLowerCase();
+    
+    await ensureAuthenticated();
+    
     const otpDocRef = doc(collection(db, 'otpVerification'), otpDocId);
     const otpDocSnapshot = await getDoc(otpDocRef);
 

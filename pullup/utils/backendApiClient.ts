@@ -2,7 +2,7 @@ import axios, { AxiosInstance } from 'axios';
 import { Platform } from 'react-native';
 
 const REMOTE_BACKEND_URL =
-  process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pullup-backend-otp.vercel.app';
+  process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pull-up-phi.vercel.app';
 
 // Web dev: same-origin proxy in metro.config.js avoids CORS on the Vercel OTP API
 const BACKEND_URL =

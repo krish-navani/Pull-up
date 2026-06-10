@@ -3,17 +3,52 @@ import { config } from './config.js';
 
 let transporter: nodemailer.Transporter | null = null;
 
-export const initializeMailer = () => {
+export const initializeMailer = (): nodemailer.Transporter => {
   if (!transporter) {
+    // === ENHANCED DEBUGGING ===
+    console.log('=== SMTP CONFIG DEBUG ===');
+    console.log('MAIL_USER:', process.env.MAIL_USER);
+    console.log('MAIL_USER trimmed:', process.env.MAIL_USER ? process.env.MAIL_USER.trim() : '');
+    console.log('MAIL_USER length:', process.env.MAIL_USER ? process.env.MAIL_USER.length : 0);
+    console.log('MAIL_HOST:', process.env.MAIL_HOST);
+    console.log('MAIL_PORT:', process.env.MAIL_PORT);
+    console.log('MAIL_PASSWORD length:', config.mail.password ? config.mail.password.length : 0);
+    if (config.mail.password && config.mail.password.length > 0) {
+      console.log('MAIL_PASSWORD first 3 chars:', config.mail.password.substring(0, 3));
+      console.log('MAIL_PASSWORD last 3 chars:', config.mail.password.substring(config.mail.password.length - 3));
+    }
+    console.log('=========================');
+
+    // Trim credentials
+    const mailUser = config.mail.user ? config.mail.user.trim() : '';
+    const mailPass = config.mail.password ? config.mail.password.trim() : '';
+
+    // TITAN MAIL SPECIFIC CONFIG
     transporter = nodemailer.createTransport({
-      service: config.mail.service,
+      host: process.env.MAIL_HOST || 'smtp.titan.email',
+      port: Number(process.env.MAIL_PORT || 465),
+      secure: process.env.MAIL_PORT === '587' ? false : true,
       auth: {
-        user: config.mail.user,
-        pass: config.mail.password,
+        user: mailUser,
+        pass: mailPass,
+      },
+      tls: {
+        rejectUnauthorized: false,
       },
     });
 
-    console.log('[EMAIL] Service initialized');
+    transporter.verify((error: Error | null, success: boolean) => {
+      if (error) {
+        console.error('SMTP Verify Error:', error);
+        console.error('Error code:', (error as any).code);
+        console.error('Error command:', (error as any).command);
+        console.error('Error response:', (error as any).response);
+      } else {
+        console.log('SMTP Server Ready - Configuration successful!');
+      }
+    });
+
+    console.log('[EMAIL] Service initialized with Titan Mail');
   }
   return transporter;
 };
@@ -72,8 +107,12 @@ export const sendOTPEmail = async (
       </div>
     `;
 
+    const fromAddress = config.mail.user ? config.mail.user.trim() : '';
+    console.log(`[EMAIL] Sending from: "${config.mail.fromName}" <${fromAddress}>`);
+    console.log(`[EMAIL] Sending to: ${email}`);
+
     const info = await mailer.sendMail({
-      from: `"${config.mail.fromName}" <${config.mail.user}>`,
+      from: `"${config.mail.fromName}" <${fromAddress}>`,
       to: email,
       subject: `Your PullUp OTP: ${otp}`,
       html: htmlContent,
@@ -82,8 +121,10 @@ export const sendOTPEmail = async (
 
     console.log(`[EMAIL] Sent to ${email}:`, info.messageId);
     return true;
-  } catch (error: any) {
-    console.error(`[EMAIL] Failed to send to ${email}:`, error.message);
+  } catch (error: unknown) {
+    const err = error as Error;
+    console.error(`[EMAIL] Failed to send to ${email}:`, err.message);
+    console.error('[EMAIL] Full error:', JSON.stringify(err, null, 2));
     throw error;
   }
 };
@@ -94,8 +135,9 @@ export const verifyMailerConfig = async (): Promise<boolean> => {
     await mailer.verify();
     console.log('[EMAIL] Configuration verified');
     return true;
-  } catch (error: any) {
-    console.error('[EMAIL] Configuration verification failed:', error.message);
+  } catch (error: unknown) {
+    const err = error as Error;
+    console.error('[EMAIL] Verification failed:', err.message);
     return false;
   }
 };

@@ -9,3 +9,4 @@ dist
 private_key.txt
 private_key.pem
 *.pem
+.vercel

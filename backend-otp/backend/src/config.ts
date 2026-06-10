@@ -1,13 +1,17 @@
-import dotenv from 'dotenv';
-import path from 'path';
-
-// Get project root - in CommonJS __dirname is available
+// Get project root
 const projectRoot = process.cwd();
 
 // Load .env only in development (Vercel uses its own env system)
 if (process.env.NODE_ENV !== 'production') {
-  dotenv.config({ path: path.join(projectRoot, 'backend', '.env.local') });
-  dotenv.config({ path: path.join(projectRoot, 'backend', '.env') });
+  try {
+    // Dynamic import to avoid issues in production builds
+    const dotenv = require('dotenv');
+    const path = require('path');
+    dotenv.config({ path: path.join(projectRoot, 'backend', '.env.local') });
+    dotenv.config({ path: path.join(projectRoot, 'backend', '.env') });
+  } catch (e) {
+    // Ignore errors in production
+  }
 }
 
 export const config = {
@@ -16,11 +20,11 @@ export const config = {
 
   // Firebase
   firebase: {
-    projectId: process.env.FIREBASE_PROJECT_ID?.trim() || '',
+    projectId: (process.env.FIREBASE_PROJECT_ID || '').trim(),
     privateKey: process.env.FIREBASE_PRIVATE_KEY
       ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n')
       : '',
-    clientEmail: process.env.FIREBASE_CLIENT_EMAIL?.trim() || '',
+    clientEmail: (process.env.FIREBASE_CLIENT_EMAIL || '').trim(),
   },
 
   // Email
@@ -46,9 +50,9 @@ export const config = {
 
   corsOrigin: process.env.CORS_ORIGIN || '*',
   universityDomain: process.env.UNIVERSITY_DOMAIN || '@atlasskilltech.university',
-} as const;
+};
 
-// 🔐 Strict validation (fail fast)
+// Strict validation (fail fast)
 export const validateConfig = () => {
   const required = [
     'FIREBASE_PROJECT_ID',
