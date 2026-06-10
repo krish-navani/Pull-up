@@ -5,11 +5,13 @@ import {
     getDoc,
     getDocs,
     query,
+    setDoc,
     updateDoc,
     where
 } from 'firebase/firestore';
 import { Booking, Ride, User } from '../types';
-import { db } from './firebase';
+import { auth, db } from './firebase';
+import { signInAnonymously } from 'firebase/auth';
 
 /**
  * Get profile statistics for a driver
@@ -213,6 +215,18 @@ const ensureUserDefaults = (firestoreData: Record<string, any>): User => {
 };
 
 /**
+ * Ensures a valid Firebase Auth session is active before performing Firestore write/update operations.
+ * If auth.currentUser is null, it re-establishes an anonymous session.
+ */
+const ensureAuthSession = async () => {
+  if (!auth.currentUser) {
+    console.log('[PROFILE] No active Firebase Auth session. Signing in anonymously...');
+    const credential = await signInAnonymously(auth);
+    console.log('[PROFILE] ✅ Anonymous session established:', credential.user.uid);
+  }
+};
+
+/**
  * Update user profile
  */
 export const updateUserProfile = async (
@@ -221,6 +235,7 @@ export const updateUserProfile = async (
 ) => {
   try {
     console.log('[PROFILE] Updating user profile:', userId);
+    await ensureAuthSession();
 
     const userRef = doc(db, 'users', userId);
     const updateData = {
@@ -228,8 +243,8 @@ export const updateUserProfile = async (
       updatedAt: new Date().toISOString(),
     };
 
-    await updateDoc(userRef, updateData);
-    console.log('[PROFILE] ✅ Profile updated successfully');
+    await setDoc(userRef, updateData, { merge: true });
+    console.log('[PROFILE] ✅ Profile updated/created successfully');
 
     // Return updated user with safe defaults
     const userDoc = await getDoc(userRef);
@@ -379,6 +394,7 @@ function formatTime(date: Date): string {
 export const switchUserRole = async (userId: string, newRole: 'driver' | 'passenger') => {
   try {
     console.log('[PROFILE] 📍 Switching role for user:', userId, 'to:', newRole);
+    await ensureAuthSession();
     console.log('[PROFILE] 📍 User ID type:', typeof userId, 'Value:', userId);
 
     const userRef = doc(db, 'users', userId);
@@ -406,11 +422,34 @@ export const switchUserRole = async (userId: string, newRole: 'driver' | 'passen
           console.log('[PROFILE] 📍 Switching to driver (already verified) - keeping verified status');
         }
       }
+    } else {
+      // Document does not exist in database (e.g. wiped) - initialize it with defaults from AsyncStorage local user
+      console.log('[PROFILE] 📍 User document does not exist in Firestore. Initializing with defaults.');
+      updateData.licenseVerified = false;
+      updateData.licenseVerificationStatus = null;
+      updateData.profileComplete = true;
+      updateData.createdAt = new Date().toISOString();
+      
+      try {
+        const storedStr = await AsyncStorage.getItem('pullup_user_data');
+        if (storedStr) {
+          const storedUser = JSON.parse(storedStr);
+          updateData.email = storedUser.email;
+          updateData.fullName = storedUser.fullName;
+          updateData.phone = storedUser.phone || '';
+          updateData.year = storedUser.year;
+          updateData.course = storedUser.course;
+          updateData.division = storedUser.division;
+          updateData.profileImage = storedUser.profileImage || null;
+        }
+      } catch (storageError) {
+        console.error('[PROFILE] Failed to load user from AsyncStorage for recovery:', storageError);
+      }
     }
     
-    console.log('[PROFILE] 📍 Attempting to update with data:', updateData);
+    console.log('[PROFILE] 📍 Attempting to update/create with data:', updateData);
     
-    await updateDoc(userRef, updateData);
+    await setDoc(userRef, updateData, { merge: true });
 
     console.log('[PROFILE] ✅ Role switched successfully');
 

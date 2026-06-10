@@ -415,6 +415,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           });
           dispatch({ type: 'SET_USER', payload: storedUser });
           dispatch({ type: 'SET_AUTH_INITIALIZING', payload: false });
+
+          // Ensure Firebase Auth is signed in anonymously if there's no current user.
+          // This keeps the user authenticated in Firebase so write operations don't get permission-denied.
+          try {
+            const { auth } = require('../utils/firebase');
+            const { signInAnonymously } = require('firebase/auth');
+            // Wait a brief moment for Firebase Auth to initialize and try auto-restoring session
+            await new Promise(resolve => setTimeout(resolve, 500));
+            if (!auth.currentUser) {
+              console.log('[CONTEXT] ℹ️ Firebase Auth is null. Re-establishing anonymous session...');
+              await signInAnonymously(auth);
+              console.log('[CONTEXT] ✅ Anonymous session re-established.');
+            } else {
+              console.log('[CONTEXT] ✅ Firebase Auth session is active:', auth.currentUser.uid);
+            }
+          } catch (authError) {
+            console.error('[CONTEXT] ⚠️ Failed to re-establish Firebase Auth session:', authError);
+          }
           
           // Always refresh from Firestore in the background to pick up any changes
           // (e.g., admin verified license, role changes, profile updates)

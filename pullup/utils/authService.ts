@@ -241,9 +241,21 @@ export const getCurrentUser = async (): Promise<User | null> => {
   try {
     const storedUser = await loadUserFromStorage();
     if (storedUser?.id) {
-      const userDoc = await getDoc(doc(db, 'users', storedUser.id));
+      const userRef = doc(db, 'users', storedUser.id);
+      const userDoc = await getDoc(userRef);
       if (userDoc.exists()) {
         return ensureUserDefaults(userDoc.data());
+      } else {
+        // Self-healing: Re-create the user document in Firestore using the local cached user data.
+        // This handles cases where the database was wiped but the local app is still logged in.
+        console.log('[AUTH] ℹ️ Stored user document not found in Firestore. Re-creating document for:', storedUser.id);
+        const userData: User = {
+          ...storedUser,
+          updatedAt: new Date().toISOString(),
+        };
+        await setDoc(userRef, userData);
+        console.log('[AUTH] ✅ Re-created user document in Firestore.');
+        return userData;
       }
     }
   } catch (error) {
@@ -257,9 +269,24 @@ export const getCurrentUser = async (): Promise<User | null> => {
   }
 
   try {
-    const userDoc = await getDoc(doc(db, 'users', firebaseUser.uid));
+    const userRef = doc(db, 'users', firebaseUser.uid);
+    const userDoc = await getDoc(userRef);
 
     if (!userDoc.exists()) {
+      // If Firebase user is authenticated but no Firestore doc exists,
+      // try to recover by copying the local storedUser to this UID.
+      const storedUser = await loadUserFromStorage();
+      if (storedUser) {
+        console.log('[AUTH] ℹ️ Firestore user doc not found. Re-creating on UID:', firebaseUser.uid);
+        const userData: User = {
+          ...storedUser,
+          id: firebaseUser.uid, // Sync ID with active Auth UID
+          updatedAt: new Date().toISOString(),
+        };
+        await setDoc(userRef, userData);
+        console.log('[AUTH] ✅ Re-created user document on active UID.');
+        return userData;
+      }
       return null;
     }
 
