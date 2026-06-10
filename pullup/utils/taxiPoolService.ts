@@ -69,10 +69,27 @@ export const createTaxiPool = async (
 ): Promise<string> => {
   try {
     const poolsRef = collection(db, 'taxiPools');
-    
+
+    // Strip undefined values — Firestore rejects them (e.g. creatorImage: undefined)
+    const sanitize = (obj: Record<string, any>): Record<string, any> => {
+      return Object.fromEntries(
+        Object.entries(obj).filter(([, v]) => v !== undefined)
+      );
+    };
+
+    // Sanitize destination sub-object too
+    const sanitizedData = {
+      ...sanitize(poolData as Record<string, any>),
+      destination: sanitize(poolData.destination as Record<string, any>),
+      // Ensure optional fields use null instead of undefined
+      creatorImage: poolData.creatorImage ?? null,
+      notes: (poolData as any).notes ?? null,
+      price: (poolData as any).price ?? 40,
+    };
+
     // 1. Add Taxi Pool document
     const docRef = await addDoc(poolsRef, {
-      ...poolData,
+      ...sanitizedData,
       memberCount: 1, // Creator starts as the first member
       status: 'OPEN',
       createdAt: serverTimestamp()
@@ -86,7 +103,7 @@ export const createTaxiPool = async (
       poolId,
       passengerId: poolData.creatorId,
       passengerName: poolData.creatorName,
-      passengerImage: poolData.creatorImage || null,
+      passengerImage: poolData.creatorImage ?? null,
       passengerCourse: poolData.creatorCourse,
       passengerDivision: poolData.creatorDivision,
       joinedAt: new Date().toISOString()
@@ -107,12 +124,12 @@ export const subscribeToActivePools = (
   onUpdate: (pools: TaxiPool[]) => void
 ): Unsubscribe => {
   const poolsRef = collection(db, 'taxiPools');
-  
-  // We want to fetch pools that are OPEN or FULL, sorted by departureTime
+
+  // NOTE: Only filtering by status (single field) to avoid composite index requirements.
+  // Sorting by createdAt is done client-side below.
   const q = query(
-    poolsRef, 
-    where('status', 'in', ['OPEN', 'FULL']),
-    orderBy('createdAt', 'desc')
+    poolsRef,
+    where('status', 'in', ['OPEN', 'FULL'])
   );
 
   return onSnapshot(
@@ -128,6 +145,14 @@ export const subscribeToActivePools = (
           createdAt: data.createdAt ? (data.createdAt.toDate ? data.createdAt.toDate().toISOString() : data.createdAt) : null
         } as TaxiPool);
       });
+
+      // Sort by createdAt descending (most recent first) client-side
+      pools.sort((a, b) => {
+        if (!a.createdAt) return 1;
+        if (!b.createdAt) return -1;
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+
       console.log(`[TAXI POOL SERVICE] 🔄 Pools updated: ${pools.length} active pools`);
       onUpdate(pools);
     },
@@ -174,7 +199,8 @@ export const subscribeToPoolRequests = (
   onUpdate: (requests: PoolRequest[]) => void
 ): Unsubscribe => {
   const requestsRef = collection(db, 'poolRequests');
-  const q = query(requestsRef, where('poolId', '==', poolId), orderBy('createdAt', 'desc'));
+  // NOTE: Single field filter only — composite index not available. Sort client-side.
+  const q = query(requestsRef, where('poolId', '==', poolId));
 
   return onSnapshot(
     q,
@@ -187,6 +213,12 @@ export const subscribeToPoolRequests = (
           ...data,
           createdAt: data.createdAt ? (data.createdAt.toDate ? data.createdAt.toDate().toISOString() : data.createdAt) : null
         } as PoolRequest);
+      });
+      // Sort by createdAt descending client-side
+      requests.sort((a, b) => {
+        if (!a.createdAt) return 1;
+        if (!b.createdAt) return -1;
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
       });
       onUpdate(requests);
     },
@@ -234,7 +266,8 @@ export const subscribeToPoolMembers = (
   onUpdate: (members: PoolMember[]) => void
 ): Unsubscribe => {
   const membersRef = collection(db, 'poolMembers');
-  const q = query(membersRef, where('poolId', '==', poolId), orderBy('joinedAt', 'asc'));
+  // NOTE: Single field filter only — composite index not available. Sort client-side.
+  const q = query(membersRef, where('poolId', '==', poolId));
 
   return onSnapshot(
     q,
@@ -246,10 +279,53 @@ export const subscribeToPoolMembers = (
           ...doc.data()
         } as PoolMember);
       });
+      // Sort by joinedAt ascending client-side
+      members.sort((a, b) => {
+        if (!a.joinedAt) return 1;
+        if (!b.joinedAt) return -1;
+        return new Date(a.joinedAt).getTime() - new Date(b.joinedAt).getTime();
+      });
       onUpdate(members);
     },
     (error) => {
       console.error('[TAXI POOL SERVICE] Error subscribing to pool members:', error);
+    }
+  );
+};
+
+/**
+ * Subscribe to taxi pools created by a specific user (for creator dashboard)
+ */
+export const subscribeToCreatorPools = (
+  creatorId: string,
+  onUpdate: (pools: TaxiPool[]) => void
+): Unsubscribe => {
+  const poolsRef = collection(db, 'taxiPools');
+  const q = query(poolsRef, where('creatorId', '==', creatorId));
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const pools: TaxiPool[] = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        pools.push({
+          id: docSnap.id,
+          ...data,
+          createdAt: data.createdAt ? (data.createdAt.toDate ? data.createdAt.toDate().toISOString() : data.createdAt) : null
+        } as TaxiPool);
+      });
+      // Sort newest first
+      pools.sort((a, b) => {
+        if (!a.createdAt) return 1;
+        if (!b.createdAt) return -1;
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      });
+      console.log(`[TAXI POOL SERVICE] 🔄 Creator pools updated: ${pools.length}`);
+      onUpdate(pools);
+    },
+    (error) => {
+      console.error('[TAXI POOL SERVICE] Error subscribing to creator pools:', error);
     }
   );
 };
