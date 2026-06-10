@@ -15,6 +15,9 @@ import {
     ViewStyle,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { subscribeToCreatorPools, TaxiPool } from '@/utils/taxiPoolService';
+import { WARM_CORE } from '@/constants/theme';
+import { useRouter } from 'expo-router';
 
 const getTimeRemaining = (departureTimeStr: string) => {
   try {
@@ -84,10 +87,12 @@ function SpringButton({ style, onPress, disabled, children }: any) {
 
 export default function MyRidesScreen() {
   const { bookings, rides, auth, acceptBooking, rejectBooking, cancelRide, loadDriverRides } = useAppContext();
+  const router = useRouter();
   const [expandedRideId, setExpandedRideId] = useState<string | null>(null);
   const [processingBooking, setProcessingBooking] = useState<string | null>(null);
   const [cancelRideId, setCancelRideId] = useState<string | null>(null);
   const [isCancelingRide, setIsCancelingRide] = useState(false);
+  const [myTaxiPools, setMyTaxiPools] = useState<TaxiPool[]>([]);
 
   // Animation refs
   const listFade = useRef(new Animated.Value(0)).current;
@@ -100,6 +105,15 @@ export default function MyRidesScreen() {
       loadDriverRides(auth.user.id);
     }
   }, [auth.user?.id, loadDriverRides]);
+
+  // Subscribe to creator's taxi pools in real-time
+  useEffect(() => {
+    if (!auth.user?.id) return;
+    const unsub = subscribeToCreatorPools(auth.user.id, (pools) => {
+      setMyTaxiPools(pools);
+    });
+    return () => unsub();
+  }, [auth.user?.id]);
 
   // Get rides where current user is the driver  
   const driverRides = (rides ?? []).filter(r => r.driverId === auth.user?.id);
@@ -511,7 +525,7 @@ export default function MyRidesScreen() {
         {/* Screen Title */}
         <View style={styles.header}>
           <Text style={styles.headerTitle}>My Rides</Text>
-          <Text style={styles.headerSubtitle}>Manage your active rides</Text>
+          <Text style={styles.headerSubtitle}>Manage your active rides &amp; pools</Text>
         </View>
 
         {/* Error Banner */}
@@ -528,20 +542,75 @@ export default function MyRidesScreen() {
           contentContainerStyle={styles.contentContainer}
           showsVerticalScrollIndicator={false}
         >
-          {driverRides.length === 0 ? (
-            <View style={styles.emptyState}>
-              <Animated.View style={{ transform: [{ scale: emptyIconScale }] }}>
-                <MaterialCommunityIcons 
-                  name="plus-circle-outline" 
-                  size={64} 
-                  color="#D1D5DB" 
-                />
-              </Animated.View>
-              <Text style={styles.emptyStateText}>No active rides</Text>
-              <Text style={styles.emptyStateSubText}>
-                Post a ride to start earning
-              </Text>
+          {/* MY TAXI POOLS SECTION */}
+          {myTaxiPools.length > 0 && (
+            <View style={{ marginBottom: 24 }}>
+              <Text style={styles.sectionGroupTitle}>My Taxi Pools</Text>
+              {myTaxiPools.map((pool) => {
+                const seatsLeft = pool.maxMembers - pool.memberCount;
+                const isOpen = pool.status === 'OPEN';
+                const isFull = pool.status === 'FULL';
+                const isCancelled = pool.status === 'CANCELLED';
+                const statusColor = isCancelled ? '#EF4444' : isFull ? '#D97706' : '#10B981';
+                const statusBg = isCancelled ? '#FEE2E2' : isFull ? '#FEF3C7' : '#D1FAE5';
+                const depTime = new Date(pool.departureTime);
+                return (
+                  <TouchableOpacity
+                    key={pool.id}
+                    style={styles.taxiPoolCard}
+                    onPress={() => router.push({ pathname: '/taxi-pool-details', params: { poolId: pool.id } } as any)}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.taxiPoolCardTop}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.taxiPoolDest} numberOfLines={1}>{pool.destination.address.split(',')[0]}</Text>
+                        <Text style={styles.taxiPoolTime}>
+                          {depTime.toLocaleDateString([], { month: 'short', day: 'numeric' })} · {depTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </Text>
+                      </View>
+                      <View style={[styles.taxiStatusBadge, { backgroundColor: statusBg }]}>
+                        <Text style={[styles.taxiStatusText, { color: statusColor }]}>{pool.status}</Text>
+                      </View>
+                    </View>
+                    <View style={styles.taxiPoolCardBottom}>
+                      <View style={styles.taxiPoolStat}>
+                        <MaterialCommunityIcons name="account-group" size={15} color={WARM_CORE.primary} />
+                        <Text style={styles.taxiPoolStatText}>{pool.memberCount}/{pool.maxMembers} members</Text>
+                      </View>
+                      <View style={styles.taxiPoolStat}>
+                        <MaterialCommunityIcons name="taxi" size={15} color="#7C3AED" />
+                        <Text style={[styles.taxiPoolStatText, { color: '#7C3AED' }]}>{seatsLeft} seats left</Text>
+                      </View>
+                      <View style={{ flex: 1 }} />
+                      <MaterialCommunityIcons name="chevron-right" size={18} color={WARM_CORE.textSecondary} />
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
+          )}
+
+          {/* MY CAR POOL RIDES SECTION */}
+          {(driverRides.length > 0 || myTaxiPools.length === 0) && (
+            <Text style={styles.sectionGroupTitle}>My Car Pool Rides</Text>
+          )}
+
+          {driverRides.length === 0 ? (
+            myTaxiPools.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Animated.View style={{ transform: [{ scale: emptyIconScale }] }}>
+                  <MaterialCommunityIcons
+                    name="plus-circle-outline"
+                    size={64}
+                    color="#D1D5DB"
+                  />
+                </Animated.View>
+                <Text style={styles.emptyStateText}>No active rides or pools</Text>
+                <Text style={styles.emptyStateSubText}>
+                  Post a car ride or create a taxi pool
+                </Text>
+              </View>
+            ) : null
           ) : (
             <Animated.View style={{ opacity: listFade, transform: [{ translateY: listSlide }] }}>
               {driverRides.map(ride => renderHostingRideCard(ride))}
@@ -1166,4 +1235,84 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#FFFFFF',
   } as TextStyle,
+
+  /* Section group titles */
+  sectionGroupTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#64748B',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+    marginBottom: 12,
+    marginTop: 4,
+  } as TextStyle,
+
+  /* Taxi Pool Card */
+  taxiPoolCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    marginBottom: 12,
+    padding: 16,
+    shadowColor: '#7C3AED',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 3,
+    borderWidth: 1,
+    borderColor: 'rgba(124,58,237,0.12)',
+  } as ViewStyle,
+
+  taxiPoolCardTop: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  } as ViewStyle,
+
+  taxiPoolDest: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#0F172A',
+    marginBottom: 3,
+  } as TextStyle,
+
+  taxiPoolTime: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: '#94A3B8',
+  } as TextStyle,
+
+  taxiStatusBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+    marginLeft: 8,
+  } as ViewStyle,
+
+  taxiStatusText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  } as TextStyle,
+
+  taxiPoolCardBottom: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    borderTopWidth: 1,
+    borderTopColor: '#F1F5F9',
+    paddingTop: 10,
+  } as ViewStyle,
+
+  taxiPoolStat: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  } as ViewStyle,
+
+  taxiPoolStatText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#475569',
+  } as TextStyle,
 });
+
