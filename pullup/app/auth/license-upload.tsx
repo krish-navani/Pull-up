@@ -395,12 +395,13 @@ export default function LicenseUploadScreen() {
             setUploadStatus('Submitting for verification...');
             
             // Update user profile with license image URL and set licenseVerified to false
-            await updateUserProfile(auth.user.id, {
+            await updateProfileData(auth.user.id, {
                 licenseImageUri: licenseImageUrl,
                 licenseVerified: false,
                 licenseVerificationStatus: 'pending',
                 licenseUploadedAt: new Date().toISOString(),
                 licenseConfirmed: true,
+                role: 'driver',
             });
             
             console.log('[LICENSE] Profile updated with pending verification');

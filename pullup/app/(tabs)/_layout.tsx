@@ -17,51 +17,34 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WARM_CORE } from '@/constants/theme';
 import { useRouter } from 'expo-router';
 
-import DriverTabLayout from './driver-layout';
 import HomeScreen from './home';
 import MyBookingsScreen from './my-bookings';
 import ProfileScreen from './profile';
 import RideHistoryScreen from './ride-history';
+import PostRideScreen from './post-ride';
 
 const Tab = createBottomTabNavigator();
 const DummyScreen = () => null;
 
 export default function TabLayout() {
-  const { auth, switchRolePersistent } = useAppContext();
+  const { auth } = useAppContext();
   const insets = useSafeAreaInsets();
   const router = useRouter();
 
   const [showPostMenu, setShowPostMenu] = useState(false);
   const [selectedMode, setSelectedMode] = useState<'taxi' | 'car'>('taxi');
-  const [showRolePrompt, setShowRolePrompt] = useState(false);
-
-  // Show driver layout if user role is driver
-  if (auth.user?.role === 'driver') {
-    return <DriverTabLayout />;
-  }
 
   const handleContinue = () => {
     setShowPostMenu(false);
     if (selectedMode === 'taxi') {
       router.push('/create-taxi-pool' as any);
     } else {
-      if (auth.user?.role === 'driver') {
+      const isLicenseVerified = auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'verified';
+      if (isLicenseVerified) {
         router.push('/(tabs)/post-ride' as any);
       } else {
-        setShowRolePrompt(true);
+        router.push('/auth/license-upload' as any);
       }
-    }
-  };
-
-  const handleSwitchToDriver = async () => {
-    setShowRolePrompt(false);
-    try {
-      if (switchRolePersistent) {
-        await switchRolePersistent('driver');
-        router.replace('/(tabs)/driver-home' as any);
-      }
-    } catch (err) {
-      console.error('[LAYOUT] Failed to switch role:', err);
     }
   };
 
@@ -171,6 +154,15 @@ export default function TabLayout() {
             ),
           }}
         />
+
+        {/* Hidden Post Ride Screen Tab so we can still navigate to it */}
+        <Tab.Screen
+          name="post-ride"
+          component={PostRideScreen}
+          options={{
+            tabBarButton: () => null,
+          }}
+        />
       </Tab.Navigator>
 
       {/* Post a Ride / Taxi Pool Selection Bottom Sheet Modal */}
@@ -235,33 +227,6 @@ export default function TabLayout() {
           </View>
         </View>
       </Modal>
-
-      {/* Role Prompt Modal */}
-      {showRolePrompt && (
-        <View style={styles.rolePromptOverlay}>
-          <View style={styles.rolePromptModal}>
-            <MaterialCommunityIcons name="car-cog" size={44} color={WARM_CORE.primary} style={{ alignSelf: 'center', marginBottom: 16 }} />
-            <Text style={styles.rolePromptTitle}>Switch to Driver Mode?</Text>
-            <Text style={styles.rolePromptDesc}>
-              Posting a Car Pool requires Driver Mode. Would you like to switch to Driver Mode now?
-            </Text>
-            <View style={styles.rolePromptButtons}>
-              <TouchableOpacity 
-                style={[styles.rolePromptButton, { backgroundColor: WARM_CORE.card }]}
-                onPress={() => setShowRolePrompt(false)}
-              >
-                <Text style={[styles.rolePromptButtonText, { color: WARM_CORE.textSecondary }]}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.rolePromptButton, { backgroundColor: WARM_CORE.primary, borderColor: WARM_CORE.primary }]}
-                onPress={handleSwitchToDriver}
-              >
-                <Text style={[styles.rolePromptButtonText, { color: WARM_CORE.white }]}>Yes, Switch</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      )}
     </View>
   );
 }

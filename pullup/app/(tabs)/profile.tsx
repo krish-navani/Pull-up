@@ -25,7 +25,8 @@ import { WARM_CORE } from '@/constants/theme';
 interface ProfileState {
   driverStats: DriverStats | null;
   passengerStats: PassengerStats | null;
-  upcomingRide: UpcomingRide | null;
+  upcomingRidePassenger: UpcomingRide | null;
+  upcomingRideDriver: UpcomingRide | null;
   isLoading: boolean;
   error: string | null;
 }
@@ -354,14 +355,15 @@ function RoleSwitchingAnimation({ targetRole }: { targetRole: 'driver' | 'passen
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { auth, switchRolePersistent, logout, getDriverStats, getPassengerStats, getUpcomingRide } = useAppContext();
+  const { auth, logout, getDriverStats, getPassengerStats, getUpcomingRide } = useAppContext();
 
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isSwitching, setIsSwitching] = useState(false);
   const [profileState, setProfileState] = useState<ProfileState>({
     driverStats: null,
     passengerStats: null,
-    upcomingRide: null,
+    upcomingRidePassenger: null,
+    upcomingRideDriver: null,
     isLoading: true,
     error: null,
   });
@@ -388,18 +390,21 @@ export default function ProfileScreen() {
     
     setProfileState(prev => ({ ...prev, isLoading: true, error: null }));
     try {
-      if (auth.user.role === 'driver') {
-        const stats = await getDriverStats(auth.user.id);
-        setProfileState(prev => ({ ...prev, driverStats: stats }));
-      } else {
-        const stats = await getPassengerStats(auth.user.id);
-        setProfileState(prev => ({ ...prev, passengerStats: stats }));
-      }
-
-      const upcomingRide = await getUpcomingRide(auth.user.id, auth.user.role);
-      setProfileState(prev => ({ ...prev, upcomingRide }));
-
-      setProfileState(prev => ({ ...prev, isLoading: false }));
+      const [passengerStats, driverStats, upcomingRidePassenger, upcomingRideDriver] = await Promise.all([
+        getPassengerStats(auth.user.id),
+        getDriverStats(auth.user.id),
+        getUpcomingRide(auth.user.id, 'passenger'),
+        getUpcomingRide(auth.user.id, 'driver'),
+      ]);
+      
+      setProfileState(prev => ({
+        ...prev,
+        passengerStats,
+        driverStats,
+        upcomingRidePassenger,
+        upcomingRideDriver,
+        isLoading: false,
+      }));
     } catch (error: any) {
       console.error('[PROFILE] Error loading data:', error);
       setProfileState(prev => ({
@@ -522,46 +527,9 @@ export default function ProfileScreen() {
     );
   };
 
-  const handleRoleSwitch = async () => {
+  const handleRoleSwitch = () => {
     const newRole = isDriver ? 'passenger' : 'driver';
-    
-    if (newRole === 'driver' && auth.user?.licenseVerified !== true && auth.user?.licenseVerificationStatus !== 'verified') {
-      Alert.alert(
-        'License Required',
-        'Switching to Car Owner mode requires a verified driving license. You\'ll be asked to upload your license for verification.',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          {
-            text: 'Continue',
-            onPress: () => performRoleSwitch(newRole),
-          },
-        ]
-      );
-      return;
-    }
-    
-    await performRoleSwitch(newRole);
-  };
-
-  const performRoleSwitch = async (newRole: 'driver' | 'passenger') => {
-    setIsSwitching(true);
-    // Optimistically update the active role to trigger immediate sliding animation
     setActiveRole(newRole);
-    try {
-      console.log('[PROFILE_SCREEN] 📍 Role switch initiated. Current role:', auth.user?.role, '-> New role:', newRole);
-      await switchRolePersistent(newRole);
-      console.log('[PROFILE_SCREEN] ✅ Role switched successfully');
-    } catch (error: any) {
-      console.error('[PROFILE_SCREEN] ❌ Role switch error:', error);
-      // Revert sliding state to previous role on failure
-      setActiveRole(auth.user?.role === 'driver' ? 'driver' : 'passenger');
-      Alert.alert(
-        'Error', 
-        `Failed to switch role: ${error.message || 'Unknown error'}. Please try again.`
-      );
-    } finally {
-      setIsSwitching(false);
-    }
   };
 
   const handleEditProfile = () => {
@@ -570,7 +538,7 @@ export default function ProfileScreen() {
 
   const driverStats = profileState.driverStats;
   const passengerStats = profileState.passengerStats;
-  const upcomingRide = profileState.upcomingRide;
+  const upcomingRide = isDriver ? profileState.upcomingRideDriver : profileState.upcomingRidePassenger;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -710,6 +678,57 @@ export default function ProfileScreen() {
                     </View>
                   </View>
                 )}
+                {(auth.user?.licenseVerificationStatus === null || auth.user?.licenseVerificationStatus === undefined) && (
+                  <TouchableOpacity
+                    style={[styles.licenseStatusBadge, styles.licensePending]}
+                    onPress={() => router.push('/auth/license-upload')}
+                  >
+                    <MaterialCommunityIcons name="file-document-outline" size={18} color={WARM_CORE.accent} />
+                    <View style={styles.licenseStatusContent}>
+                      <Text style={styles.licenseStatusTitle}>Verification Required</Text>
+                      <Text style={styles.licenseStatusText}>
+                        Tap here to upload your driving license and start hosting rides.
+                      </Text>
+                    </View>
+                    <MaterialCommunityIcons name="chevron-right" size={20} color={WARM_CORE.accent} style={{ alignSelf: 'center' }} />
+                  </TouchableOpacity>
+                )}
+              </Animated.View>
+            )}
+
+            {/* LICENSE VERIFICATION PROMPT CARD FOR PASSENGER */}
+            {!isDriver && !(auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'verified') && (
+              <Animated.View
+                style={{
+                  opacity: actionRowAnim.opacity,
+                  transform: [{ translateY: actionRowAnim.translateY }],
+                }}
+              >
+                <TouchableOpacity
+                  style={styles.licensePromoCard}
+                  onPress={() => router.push('/auth/license-upload')}
+                >
+                  <View style={styles.licensePromoGradient} />
+                  <View style={styles.licensePromoHeader}>
+                    <MaterialCommunityIcons name="steering" size={24} color={WARM_CORE.primary} />
+                    <Text style={styles.licensePromoTitle}>Share Your Empty Seats!</Text>
+                  </View>
+                  <Text style={styles.licensePromoText}>
+                    {auth.user?.licenseVerificationStatus === 'pending'
+                      ? 'Your license is under review. Once verified, you will be able to host car pools.'
+                      : 'Verify your driving license to host car pools, share fuel costs, and earn rewards.'}
+                  </Text>
+                  <View style={styles.licensePromoButton}>
+                    <Text style={styles.licensePromoButtonText}>
+                      {auth.user?.licenseVerificationStatus === 'pending' ? 'Verification Pending' : 'Get Verified'}
+                    </Text>
+                    <MaterialCommunityIcons 
+                      name={auth.user?.licenseVerificationStatus === 'pending' ? 'clock-outline' : 'arrow-right'} 
+                      size={16} 
+                      color={WARM_CORE.white} 
+                    />
+                  </View>
+                </TouchableOpacity>
               </Animated.View>
             )}
 
@@ -1391,5 +1410,63 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 18,
     maxWidth: 240,
+  } as TextStyle,
+  licensePromoCard: {
+    backgroundColor: WARM_CORE.card,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 20,
+    position: 'relative',
+    overflow: 'hidden',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.02,
+    shadowRadius: 6,
+    elevation: 2,
+  } as ViewStyle,
+  licensePromoGradient: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 4,
+    backgroundColor: WARM_CORE.primary,
+  } as ViewStyle,
+  licensePromoHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  } as ViewStyle,
+  licensePromoTitle: {
+    fontSize: 15,
+    fontWeight: '800',
+    color: WARM_CORE.text,
+    letterSpacing: -0.2,
+  } as TextStyle,
+  licensePromoText: {
+    fontSize: 12,
+    color: WARM_CORE.textSecondary,
+    lineHeight: 18,
+    fontWeight: '500',
+    marginBottom: 12,
+  } as TextStyle,
+  licensePromoButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    backgroundColor: WARM_CORE.primary,
+    borderRadius: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    alignSelf: 'flex-start',
+  } as ViewStyle,
+  licensePromoButtonText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: WARM_CORE.white,
   } as TextStyle,
 });

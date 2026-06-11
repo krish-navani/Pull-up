@@ -288,7 +288,20 @@ const getTimeRemaining = (departureTimeStr: string) => {
 
 export default function MyBookingsScreen() {
   const router = useRouter();
-  const { bookings, rides, auth, cancelBooking, loadPassengerBookings, loadAllAvailableRides } = useAppContext();
+  const { 
+    bookings, 
+    rides, 
+    auth, 
+    cancelBooking, 
+    loadPassengerBookings, 
+    loadAllAvailableRides,
+    loadDriverRides,
+    acceptBooking,
+    rejectBooking,
+    cancelRide,
+    startRide,
+    completeRide
+  } = useAppContext();
   const [cancelBookingId, setCancelBookingId] = useState<string | null>(null);
   const [isCancelingBooking, setIsCancelingBooking] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -297,6 +310,8 @@ export default function MyBookingsScreen() {
   // Switcher states for Rides screen
   const [activeTab, setActiveTab] = useState<'riding' | 'hosting'>('riding');
   const [subTab, setSubTab] = useState<'car' | 'taxi'>('car');
+  const [selectedRideForDetails, setSelectedRideForDetails] = useState<string | null>(null);
+  const [selectedStatus, setSelectedStatus] = useState<'active' | 'in_progress' | 'completed' | 'cancelled'>('active');
   const [joinedTaxiPools, setJoinedTaxiPools] = useState<TaxiPool[]>([]);
   const [createdTaxiPools, setCreatedTaxiPools] = useState<TaxiPool[]>([]);
 
@@ -356,7 +371,7 @@ export default function MyBookingsScreen() {
     ).start();
   }, []);
 
-  // Load passenger bookings AND rides on screen focus
+  // Load passenger bookings AND driver rides on screen focus
   useFocusEffect(
     useCallback(() => {
       const loadData = async () => {
@@ -365,6 +380,7 @@ export default function MyBookingsScreen() {
             setIsLoading(true);
             await Promise.all([
               loadPassengerBookings(auth.user.id),
+              loadDriverRides(auth.user.id),
               loadAllAvailableRides(),
             ]);
           } catch (error) {
@@ -375,7 +391,7 @@ export default function MyBookingsScreen() {
         }
       };
       loadData();
-    }, [auth.user?.id, loadPassengerBookings, loadAllAvailableRides])
+    }, [auth.user?.id, loadPassengerBookings, loadDriverRides, loadAllAvailableRides])
   );
 
   // Handle pull-to-refresh
@@ -385,6 +401,7 @@ export default function MyBookingsScreen() {
       if (auth.user?.id) {
         await Promise.all([
           loadPassengerBookings(auth.user.id),
+          loadDriverRides(auth.user.id),
           loadAllAvailableRides(),
         ]);
       }
@@ -433,6 +450,11 @@ export default function MyBookingsScreen() {
     }
     return result;
   })();
+
+  const hostedCarPools = (rides ?? []).filter(r => r.driverId === auth.user?.id);
+  const filteredHostedCarPools = hostedCarPools
+    .filter(ride => ride.status === selectedStatus)
+    .sort((a, b) => new Date(a.departureTime).getTime() - new Date(b.departureTime).getTime());
 
   // Empty state animations
   useEffect(() => {
@@ -499,6 +521,155 @@ export default function MyBookingsScreen() {
     const minutesBefore = (departureTime.getTime() - now.getTime()) / (1000 * 60);
     const penalty = minutesBefore <= 20 ? 50 : 0;
     return { minutesBefore, penalty };
+  };
+
+  const getDriverStatusBadge = (status: string) => {
+    switch (status) {
+      case 'active':
+        return { label: 'Upcoming', color: WARM_CORE.primary, bgColor: 'rgba(212, 80, 10, 0.1)' };
+      case 'in_progress':
+        return { label: 'Ongoing', color: '#F59E0B', bgColor: 'rgba(245, 158, 11, 0.1)' };
+      case 'completed':
+        return { label: 'Completed', color: WARM_CORE.success, bgColor: 'rgba(16, 185, 129, 0.1)' };
+      case 'cancelled':
+        return { label: 'Cancelled', color: WARM_CORE.error, bgColor: 'rgba(239, 68, 68, 0.1)' };
+      default:
+        return { label: status, color: WARM_CORE.textSecondary, bgColor: WARM_CORE.border };
+    }
+  };
+
+  const getDriverTimeRemaining = (departureTimeStr: string) => {
+    try {
+      const departureDate = new Date(departureTimeStr);
+      const nowMs = new Date().getTime();
+      const diffMs = departureDate.getTime() - nowMs;
+      
+      if (diffMs <= 0) return 'Ride starts soon';
+      
+      const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+      const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+      const diffDays = Math.floor(diffHours / 24);
+      
+      if (diffDays > 0) {
+        return `Starts in ${diffDays}d ${diffHours % 24}h`;
+      }
+      if (diffHours > 0) {
+        return `Starts in ${diffHours}h ${diffMins}m`;
+      }
+      return `Starts in ${diffMins}m`;
+    } catch (e) {
+      return '';
+    }
+  };
+
+  const getDriverRideEarnings = (ride: any) => {
+    const acceptedSeatsCount = ride.bookedSeats
+      .filter((bs: any) => bs.status === 'accepted')
+      .reduce((sum: number, bs: any) => sum + bs.seatsBooked, 0);
+    return acceptedSeatsCount * ride.price;
+  };
+
+  const getDetailedRide = (rideId: string) => {
+    return rides.find(r => r.id === rideId);
+  };
+
+  const getCurrentRidePassengers = (rideId: string) => {
+    return bookings.filter(b => b.rideId === rideId);
+  };
+
+  // Render hosted car pools (driver view)
+  const renderHostedCarPoolCard = (ride: any, index: number) => {
+    const statusBadge = getDriverStatusBadge(ride.status);
+    const confirmedSeats = ride.totalSeats - ride.availableSeats;
+    const earnings = getDriverRideEarnings(ride);
+    const pendingCount = ride.bookedSeats.filter((b: any) => b.status === 'pending').length;
+
+    return (
+      <PressableCard
+        key={ride.id}
+        index={index}
+        style={styles.rideCard}
+        onPress={() => setSelectedRideForDetails(ride.id)}
+      >
+        {/* Top Section: Status Badge and Time */}
+        <View style={styles.cardTopSection}>
+          <View style={styles.timeSection}>
+            <Text style={styles.departureTime}>{formatTime(ride.departureTime)}</Text>
+            <Text style={styles.departureDate}>
+              {new Date(ride.departureTime).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+            </Text>
+          </View>
+
+          <View style={[styles.statusBadge, { backgroundColor: statusBadge.bgColor }]}>
+            {ride.status === 'in_progress' && (
+              <View style={styles.statusDot} />
+            )}
+            <Text style={[styles.statusText, { color: statusBadge.color }]}>
+              {statusBadge.label}
+            </Text>
+          </View>
+        </View>
+
+        {/* Middle Section: Route with indicator */}
+        <View style={styles.routeSection}>
+          <View style={styles.routeIndicator}>
+            <View style={[styles.routeDot, { backgroundColor: WARM_CORE.primary, borderColor: WARM_CORE.primary }]} />
+            <View style={styles.routeLine} />
+            <View style={[styles.routeDot, { backgroundColor: WARM_CORE.textSecondary, borderColor: WARM_CORE.textSecondary }]} />
+          </View>
+
+          <View style={styles.routeDetails}>
+            <View style={styles.locationDetail}>
+              <Text style={styles.locationLabel}>PICKUP</Text>
+              <Text style={styles.locationName} numberOfLines={1}>
+                {ride.pickupLocation.address.split(',')[0]}
+              </Text>
+            </View>
+            <View style={styles.locationDetail}>
+              <Text style={[styles.locationLabel, { color: WARM_CORE.textSecondary }]}>DROP-OFF</Text>
+              <Text style={styles.locationName} numberOfLines={1}>
+                {ride.dropLocation.address.split(',')[0]}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Time Remaining Badge */}
+        {ride.status === 'active' && (
+          <View style={{ paddingHorizontal: 16, marginBottom: 12 }}>
+            <TimeRemainingBadge text={getDriverTimeRemaining(ride.departureTime)} />
+          </View>
+        )}
+
+        {/* Bottom Section: Seats & Earnings */}
+        <View style={styles.cardBottomSection}>
+          <View style={styles.driverSection}>
+            <View style={styles.driverAvatar}>
+              <MaterialCommunityIcons name="account-group" size={20} color={WARM_CORE.primary} />
+            </View>
+            <View style={styles.driverInfo}>
+              <Text style={styles.driverName}>{confirmedSeats} / {ride.totalSeats} seats booked</Text>
+              <Text style={styles.carModel}>{ride.carModel}</Text>
+            </View>
+          </View>
+
+          <View style={styles.priceSection}>
+            <Text style={styles.price}>₹{earnings.toFixed(0)}</Text>
+            <Text style={styles.priceLabel}>Earnings</Text>
+          </View>
+        </View>
+
+        {/* Pending Requests Alert Banner */}
+        {ride.status === 'active' && pendingCount > 0 && (
+          <View style={styles.pendingRequestsBanner}>
+            <MaterialCommunityIcons name="bell-alert" size={13} color="#D97706" />
+            <Text style={styles.pendingRequestsText}>
+              {pendingCount} pending request{pendingCount > 1 ? 's' : ''} — Tap to manage
+            </Text>
+          </View>
+        )}
+      </PressableCard>
+    );
   };
 
   // Render booked rides (passenger view)
@@ -924,25 +1095,49 @@ export default function MyBookingsScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Sub-tab selector (Only visible if Riding is active) */}
-          {activeTab === 'riding' && (
-            <View style={styles.subTabContainer}>
-              <TouchableOpacity
-                style={[styles.subTabButton, subTab === 'car' && styles.subTabButtonActive]}
-                onPress={() => setSubTab('car')}
-                activeOpacity={0.8}
-              >
-                <MaterialCommunityIcons name="car" size={16} color={subTab === 'car' ? WARM_CORE.white : WARM_CORE.textSecondary} style={{ marginRight: 6 }} />
-                <Text style={[styles.subTabText, subTab === 'car' && styles.subTabTextActive]}>Car Pools</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.subTabButton, subTab === 'taxi' && styles.subTabButtonActive]}
-                onPress={() => setSubTab('taxi')}
-                activeOpacity={0.8}
-              >
-                <MaterialCommunityIcons name="taxi" size={16} color={subTab === 'taxi' ? WARM_CORE.white : WARM_CORE.textSecondary} style={{ marginRight: 6 }} />
-                <Text style={[styles.subTabText, subTab === 'taxi' && styles.subTabTextActive]}>Taxi Pools</Text>
-              </TouchableOpacity>
+          {/* Sub-tab selector */}
+          <View style={styles.subTabContainer}>
+            <TouchableOpacity
+              style={[styles.subTabButton, subTab === 'car' && styles.subTabButtonActive]}
+              onPress={() => setSubTab('car')}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons name="car" size={16} color={subTab === 'car' ? WARM_CORE.white : WARM_CORE.textSecondary} style={{ marginRight: 6 }} />
+              <Text style={[styles.subTabText, subTab === 'car' && styles.subTabTextActive]}>Car Pools</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.subTabButton, subTab === 'taxi' && styles.subTabButtonActive]}
+              onPress={() => setSubTab('taxi')}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons name="taxi" size={16} color={subTab === 'taxi' ? WARM_CORE.white : WARM_CORE.textSecondary} style={{ marginRight: 6 }} />
+              <Text style={[styles.subTabText, subTab === 'taxi' && styles.subTabTextActive]}>Taxi Pools</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* Status Tab Filter (Only if Hosting -> Car Pools is active) */}
+          {activeTab === 'hosting' && subTab === 'car' && (
+            <View style={styles.driverTabContainer}>
+              {(['active', 'in_progress', 'completed', 'cancelled'] as const).map(status => {
+                const isSelected = selectedStatus === status;
+                let statusLabel = '';
+                if (status === 'active') statusLabel = 'Upcoming';
+                else if (status === 'in_progress') statusLabel = 'Ongoing';
+                else statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+                
+                return (
+                  <TouchableOpacity
+                    key={status}
+                    style={[styles.driverTab, isSelected && styles.driverTabActive]}
+                    onPress={() => setSelectedStatus(status)}
+                  >
+                    <Text style={[styles.driverTabLabel, isSelected && styles.driverTabLabelActive]}>
+                      {statusLabel}
+                    </Text>
+                    {isSelected && <View style={styles.driverTabUnderline} />}
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           )}
 
@@ -1023,38 +1218,416 @@ export default function MyBookingsScreen() {
                 )
               )
             ) : (
-              createdTaxiPools.length === 0 ? (
-                <View style={styles.emptyState}>
-                  <Animated.View
-                    style={[
-                      styles.emptyIconContainer,
-                      { transform: [{ scale: emptyIconScale }, { translateY: emptyIconFloat }] },
-                    ]}
-                  >
-                    <MaterialCommunityIcons name="plus-circle-outline" size={48} color={WARM_CORE.textSecondary} />
-                  </Animated.View>
-                  <Text style={styles.emptyStateText}>No Hosted Taxi Pools</Text>
-                  <Text style={styles.emptyStateSubText}>
-                    You haven't created any taxi pools yet
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.bookNowButton}
-                    onPress={() => router.push('/create-taxi-pool')}
-                  >
-                    <MaterialCommunityIcons name="plus" size={18} color={WARM_CORE.white} style={{ marginRight: 6 }} />
-                    <Text style={styles.bookNowButtonText}>Create a Taxi Pool</Text>
-                  </TouchableOpacity>
-                </View>
+              subTab === 'car' ? (
+                filteredHostedCarPools.length === 0 ? (
+                  <View style={styles.emptyState}>
+                    <Animated.View
+                      style={[
+                        styles.emptyIconContainer,
+                        { transform: [{ scale: emptyIconScale }, { translateY: emptyIconFloat }] },
+                      ]}
+                    >
+                      <MaterialCommunityIcons name="car-off" size={48} color={WARM_CORE.textSecondary} />
+                    </Animated.View>
+                    <Text style={styles.emptyStateText}>
+                      {selectedStatus === 'active' ? 'No Upcoming Car Pools' : `No ${selectedStatus} Car Pools`}
+                    </Text>
+                    <Text style={styles.emptyStateSubText}>
+                      {selectedStatus === 'active'
+                        ? 'Post a car pool from the + option to get started'
+                        : 'Your rides will appear here'}
+                    </Text>
+                  </View>
+                ) : (
+                  <View>
+                    {filteredHostedCarPools.map((ride, index) => renderHostedCarPoolCard(ride, index))}
+                  </View>
+                )
               ) : (
-                <View>
-                  {createdTaxiPools.map((pool) => renderTaxiPoolCard(pool, true))}
-                </View>
+                createdTaxiPools.length === 0 ? (
+                  <View style={styles.emptyState}>
+                    <Animated.View
+                      style={[
+                        styles.emptyIconContainer,
+                        { transform: [{ scale: emptyIconScale }, { translateY: emptyIconFloat }] },
+                      ]}
+                    >
+                      <MaterialCommunityIcons name="plus-circle-outline" size={48} color={WARM_CORE.textSecondary} />
+                    </Animated.View>
+                    <Text style={styles.emptyStateText}>No Hosted Taxi Pools</Text>
+                    <Text style={styles.emptyStateSubText}>
+                      You haven't created any taxi pools yet
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.bookNowButton}
+                      onPress={() => router.push('/create-taxi-pool')}
+                    >
+                      <MaterialCommunityIcons name="plus" size={18} color={WARM_CORE.white} style={{ marginRight: 6 }} />
+                      <Text style={styles.bookNowButtonText}>Create a Taxi Pool</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View>
+                    {createdTaxiPools.map((pool) => renderTaxiPoolCard(pool, true))}
+                  </View>
+                )
               )
             )}
           </ScrollView>
         </Animated.View>
       </SafeAreaView>
+
+      {/* RIDE DETAILS MODAL */}
+      {selectedRideForDetails && (
+        <RideDetailsModal
+          ride={getDetailedRide(selectedRideForDetails)!}
+          passengers={getCurrentRidePassengers(selectedRideForDetails)}
+          earnings={getDriverRideEarnings(getDetailedRide(selectedRideForDetails)!)}
+          onClose={() => setSelectedRideForDetails(null)}
+          onAcceptPassenger={async (passengerId) => {
+            if (selectedRideForDetails) {
+              await acceptBooking(selectedRideForDetails, passengerId);
+            }
+          }}
+          onRejectPassenger={async (passengerId) => {
+            if (selectedRideForDetails) {
+              await rejectBooking(selectedRideForDetails, passengerId);
+            }
+          }}
+          onCancelRide={async (rideId) => {
+            await cancelRide(rideId);
+            setSelectedRideForDetails(null);
+          }}
+          onStartRide={async (rideId) => {
+            await startRide(rideId);
+          }}
+          onCompleteRide={async (rideId) => {
+            await completeRide(rideId);
+          }}
+          router={router}
+        />
+      )}
     </>
+  );
+}
+
+// RIDE DETAILS MODAL COMPONENT (FOR DRIVER)
+interface RideDetailsModalProps {
+  ride: any;
+  passengers: any[];
+  earnings: number;
+  onClose: () => void;
+  onAcceptPassenger: (bookingId: string) => Promise<void>;
+  onRejectPassenger: (bookingId: string) => Promise<void>;
+  onCancelRide: (rideId: string) => Promise<void>;
+  onStartRide: (rideId: string) => Promise<void>;
+  onCompleteRide: (rideId: string) => Promise<void>;
+  router: any;
+}
+
+function RideDetailsModal({ ride, passengers, earnings, onClose, onAcceptPassenger, onRejectPassenger, onCancelRide, onStartRide, onCompleteRide, router }: RideDetailsModalProps) {
+  const [processingBooking, setProcessingBooking] = useState<string | null>(null);
+  const [isCanceling, setIsCanceling] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isCompleting, setIsCompleting] = useState(false);
+
+  const formatModalTime = (timeString: string) => {
+    try {
+      const date = new Date(timeString);
+      return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+    } catch (e) {
+      return '';
+    }
+  };
+
+  return (
+    <Modal
+      visible={true}
+      animationType="slide"
+      transparent={true}
+      onRequestClose={onClose}
+    >
+      <SafeAreaView style={styles.driverModalContainer}>
+        <ScrollView
+          style={styles.driverModalContent}
+          contentContainerStyle={styles.driverModalContentPadded}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Header */}
+          <View style={styles.driverModalHeader}>
+            <TouchableOpacity onPress={onClose} style={styles.driverCloseButton}>
+              <MaterialCommunityIcons name="chevron-down" size={28} color={WARM_CORE.text} />
+            </TouchableOpacity>
+            <Text style={styles.driverModalTitle}>Ride Details</Text>
+            <View style={{ width: 28 }} />
+          </View>
+
+          {/* RIDE INFO SECTION */}
+          <View style={styles.driverModalSection}>
+            <Text style={styles.driverSectionTitle}>ROUTE & TIMING</Text>
+            
+            <View style={styles.driverRouteBox}>
+              <View style={styles.driverFullRouteIndicator}>
+                <View style={styles.driverFullRouteDot} />
+                <View style={styles.driverFullRouteLine} />
+                <View style={styles.driverFullRouteDot} />
+              </View>
+
+              <View style={styles.driverFullLocationsContainer}>
+                <View>
+                  <Text style={styles.driverRouteLabelBold}>PICKUP</Text>
+                  <Text style={styles.driverRouteValueText}>{ride.pickupLocation.address}</Text>
+                </View>
+                <View style={styles.driverRouteSpacing} />
+                <View>
+                  <Text style={styles.driverRouteLabelBold}>DROP-OFF</Text>
+                  <Text style={styles.driverRouteValueText}>{ride.dropLocation.address}</Text>
+                </View>
+              </View>
+            </View>
+          </View>
+
+          {/* DATE, TIME & PRICE */}
+          <View style={styles.driverModalSection}>
+            <View style={styles.driverInfoGridRow}>
+              <View style={styles.driverInfoGridItem}>
+                <Text style={styles.driverInfoGridLabel}>Date & Time</Text>
+                <Text style={styles.driverInfoGridValue}>{formatModalTime(ride.departureTime)}</Text>
+              </View>
+              <View style={styles.driverInfoGridItem}>
+                <Text style={styles.driverInfoGridLabel}>Price/Seat</Text>
+                <Text style={styles.driverInfoGridValue}>₹{ride.price}</Text>
+              </View>
+              <View style={styles.driverInfoGridItem}>
+                <Text style={styles.driverInfoGridLabel}>Total Seats</Text>
+                <Text style={styles.driverInfoGridValue}>{ride.totalSeats}</Text>
+              </View>
+            </View>
+          </View>
+
+          {/* PASSENGER LIST SECTION */}
+          <View style={styles.driverModalSection}>
+            <Text style={styles.driverSectionTitle}>PASSENGERS ({passengers.length})</Text>
+            
+            {passengers.length > 0 ? (
+              <View style={styles.driverPassengersList}>
+                {passengers.map((passenger, index) => (
+                  <View key={index} style={styles.driverPassengerCard}>
+                    <View style={styles.driverPassengerAvatar}>
+                      <Text style={styles.driverPassengerAvatarText}>
+                        {passenger.passengerName.charAt(0)}
+                      </Text>
+                    </View>
+
+                    <View style={styles.driverPassengerInfo}>
+                      <Text style={styles.driverPassengerName}>{passenger.passengerName}</Text>
+                      <Text style={styles.driverPassengerDetail}>{passenger.year} • {passenger.course}</Text>
+                    </View>
+
+                    {passenger.status === 'pending' ? (
+                      <View style={styles.driverPassengerActions}>
+                        <TouchableOpacity
+                          style={[styles.driverActionButton, styles.driverAcceptButton]}
+                          onPress={async () => {
+                            setProcessingBooking(passenger.passengerId);
+                            try {
+                              await onAcceptPassenger(passenger.passengerId);
+                            } finally {
+                              setProcessingBooking(null);
+                            }
+                          }}
+                          disabled={processingBooking === passenger.passengerId}
+                        >
+                          <MaterialCommunityIcons name="check" size={16} color={WARM_CORE.white} />
+                          <Text style={styles.driverSuccessButtonText}>Accept</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={[styles.driverActionButton, styles.driverRejectButton]}
+                          onPress={async () => {
+                            setProcessingBooking(passenger.passengerId);
+                            try {
+                              await onRejectPassenger(passenger.passengerId);
+                            } finally {
+                              setProcessingBooking(null);
+                            }
+                          }}
+                          disabled={processingBooking === passenger.passengerId}
+                        >
+                          <MaterialCommunityIcons name="close" size={16} color={WARM_CORE.white} />
+                          <Text style={styles.driverDangerButtonText}>Reject</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
+                      <View
+                        style={[
+                          styles.driverStatusIndicator,
+                          {
+                            backgroundColor:
+                              passenger.status === 'accepted'
+                                ? 'rgba(16, 185, 129, 0.15)'
+                                : passenger.status === 'pending'
+                                ? 'rgba(245, 158, 11, 0.15)'
+                                : 'rgba(239, 68, 68, 0.15)',
+                          },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.driverStatusIndicatorText,
+                            {
+                              color:
+                                passenger.status === 'accepted'
+                                  ? WARM_CORE.success
+                                  : passenger.status === 'pending'
+                                  ? '#F59E0B'
+                                  : WARM_CORE.error,
+                            },
+                          ]}
+                        >
+                          {passenger.status === 'pending' ? 'Ride Requested' : passenger.status.charAt(0).toUpperCase() + passenger.status.slice(1)}
+                        </Text>
+                      </View>
+                    )}
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <View style={styles.driverNoPssengerState}>
+                <MaterialCommunityIcons name="account-off" size={40} color={WARM_CORE.textSecondary} />
+                <Text style={styles.driverNoPassengerText}>No passengers yet</Text>
+              </View>
+            )}
+          </View>
+
+          {/* EARNINGS SECTION */}
+          <View style={styles.driverModalSection}>
+            <Text style={styles.driverSectionTitle}>EARNINGS BREAKDOWN</Text>
+            
+            <View style={styles.driverEarningsBreakdown}>
+              <View style={styles.driverEarningsRow}>
+                <Text style={styles.driverEarningsRowLabel}>Confirmed Passengers</Text>
+                <Text style={styles.driverEarningsRowValue}>
+                  {passengers.filter(p => p.status === 'accepted').length}
+                </Text>
+              </View>
+              
+              <View style={styles.driverEarningsRow}>
+                <Text style={styles.driverEarningsRowLabel}>Price per Seat</Text>
+                <Text style={styles.driverEarningsRowValue}>₹{ride.price}</Text>
+              </View>
+
+              <View style={styles.driverEarningsDivider} />
+
+              <View style={styles.driverEarningsRow}>
+                <Text style={styles.driverEarningsTotalLabel}>Total Savings</Text>
+                <Text style={styles.driverEarningsTotalValue}>₹{earnings}</Text>
+              </View>
+            </View>
+          </View>
+
+          {/* ACTION BUTTONS */}
+          <View style={styles.driverActionButtonsSection}>
+            {/* START RIDE BUTTON */}
+            {ride.status === 'active' && (
+              <TouchableOpacity 
+                style={[styles.driverSuccessButton, { flex: 1, marginBottom: 12 }, isStarting && { opacity: 0.6 }]}
+                onPress={async () => {
+                  setIsStarting(true);
+                  try {
+                    await onStartRide(ride.id);
+                    onClose();
+                  } catch (error) {
+                    console.error('Failed to start ride:', error);
+                  } finally {
+                    setIsStarting(false);
+                  }
+                }}
+                disabled={isStarting || isCanceling}
+              >
+                <MaterialCommunityIcons 
+                  name={isStarting ? "loading" : "play-circle-outline"} 
+                  size={18} 
+                  color={WARM_CORE.success} 
+                />
+                <Text style={styles.driverSuccessButtonText}>{isStarting ? 'Starting...' : 'Start Ride'}</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* CHAT BUTTON */}
+            {(ride.status === 'active' || ride.status === 'in_progress') && passengers.some(p => p.status === 'accepted') && (
+              <TouchableOpacity 
+                style={[styles.driverInfoButton, { flex: 1, marginBottom: 12 }]}
+                onPress={() => {
+                  const firstAcceptedPassenger = passengers.find(p => p.status === 'accepted');
+                  if (firstAcceptedPassenger) {
+                    onClose();
+                    router.push({
+                      pathname: '/chat',
+                      params: {
+                        rideId: ride.id,
+                        bookingId: firstAcceptedPassenger.passengerId,
+                      },
+                    });
+                  }
+                }}
+              >
+                <MaterialCommunityIcons name="message-outline" size={18} color="#0EA5E9" />
+                <Text style={styles.driverInfoButtonText}>Chat with Passenger</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* FINISH RIDE BUTTON */}
+            {ride.status === 'in_progress' && (
+              <TouchableOpacity 
+                style={[styles.driverSuccessButton, { flex: 1, marginBottom: 12 }, isCompleting && { opacity: 0.6 }]}
+                onPress={async () => {
+                  setIsCompleting(true);
+                  try {
+                    await onCompleteRide(ride.id);
+                    onClose();
+                  } catch (error) {
+                    console.error('Failed to complete ride:', error);
+                  } finally {
+                    setIsCompleting(false);
+                  }
+                }}
+                disabled={isCompleting || isCanceling}
+              >
+                <MaterialCommunityIcons 
+                  name={isCompleting ? "loading" : "check-circle-outline"} 
+                  size={18} 
+                  color={WARM_CORE.success}
+                />
+                <Text style={styles.driverSuccessButtonText}>{isCompleting ? 'Completing...' : 'Finish Ride'}</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* CANCEL RIDE BUTTON */}
+            {ride.status !== 'completed' && (
+              <TouchableOpacity 
+                style={[styles.driverDangerButton, { flex: 1 }, isCanceling && { opacity: 0.6 }]}
+                onPress={async () => {
+                  setIsCanceling(true);
+                  try {
+                    await onCancelRide(ride.id);
+                  } finally {
+                    setIsCanceling(false);
+                  }
+                }}
+                disabled={isCanceling || isStarting || isCompleting}
+              >
+                <MaterialCommunityIcons 
+                  name={isCanceling ? "loading" : "trash-can-outline"} 
+                  size={18} 
+                  color={WARM_CORE.error} 
+                />
+                <Text style={styles.driverDangerButtonText}>{isCanceling ? 'Canceling...' : 'Cancel Ride'}</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    </Modal>
   );
 }
 
@@ -1822,6 +2395,346 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
     color: WARM_CORE.primary,
+  } as TextStyle,
+
+  // ===== DRIVER & MODAL STYLES =====
+  driverTabContainer: {
+    flexDirection: 'row',
+    gap: 0,
+    marginBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: WARM_CORE.border,
+  } as ViewStyle,
+  driverTab: {
+    flex: 1,
+    paddingVertical: 12,
+    alignItems: 'center',
+    position: 'relative',
+  } as ViewStyle,
+  driverTabActive: {
+    borderBottomWidth: 2,
+    borderBottomColor: WARM_CORE.primary,
+    marginBottom: -1,
+  } as ViewStyle,
+  driverTabLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: WARM_CORE.textSecondary,
+  } as TextStyle,
+  driverTabLabelActive: {
+    color: WARM_CORE.primary,
+  } as TextStyle,
+  driverTabUnderline: {
+    position: 'absolute',
+    bottom: -1,
+    height: 2,
+    width: '100%',
+    backgroundColor: WARM_CORE.primary,
+  } as ViewStyle,
+
+  pendingRequestsBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+    backgroundColor: 'rgba(217, 119, 6, 0.08)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(217, 119, 6, 0.18)',
+    marginTop: 8,
+    marginHorizontal: 16,
+    marginBottom: 12,
+  } as ViewStyle,
+  pendingRequestsText: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#D97706',
+    lineHeight: 17,
+  } as TextStyle,
+
+  driverModalContainer: {
+    flex: 1,
+    backgroundColor: WARM_CORE.background,
+  } as ViewStyle,
+  driverModalContent: {
+    flex: 1,
+    backgroundColor: WARM_CORE.background,
+  } as ViewStyle,
+  driverModalContentPadded: {
+    paddingHorizontal: 16,
+    paddingBottom: 40,
+  } as ViewStyle,
+  driverModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 16,
+    marginBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: WARM_CORE.border,
+  } as ViewStyle,
+  driverCloseButton: {
+    width: 28,
+    height: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+  } as ViewStyle,
+  driverModalTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  } as TextStyle,
+  driverModalSection: {
+    marginBottom: 24,
+  } as ViewStyle,
+  driverSectionTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: WARM_CORE.primary,
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  } as TextStyle,
+  driverRouteBox: {
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    padding: 16,
+    flexDirection: 'row',
+    gap: 16,
+  } as ViewStyle,
+  driverFullRouteIndicator: {
+    alignItems: 'center',
+    gap: 8,
+  } as ViewStyle,
+  driverFullRouteDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: WARM_CORE.primary,
+  } as ViewStyle,
+  driverFullRouteLine: {
+    width: 2,
+    height: 48,
+    backgroundColor: WARM_CORE.border,
+  } as ViewStyle,
+  driverFullLocationsContainer: {
+    flex: 1,
+    justifyContent: 'space-between',
+  } as ViewStyle,
+  driverRouteLabelBold: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: WARM_CORE.primary,
+    marginBottom: 4,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  } as TextStyle,
+  driverRouteValueText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: WARM_CORE.text,
+  } as TextStyle,
+  driverRouteSpacing: {
+    height: 8,
+  } as ViewStyle,
+  driverInfoGridRow: {
+    flexDirection: 'row',
+    gap: 12,
+  } as ViewStyle,
+  driverInfoGridItem: {
+    flex: 1,
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    padding: 12,
+    alignItems: 'center',
+  } as ViewStyle,
+  driverInfoGridLabel: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: WARM_CORE.textSecondary,
+    marginBottom: 6,
+    textTransform: 'uppercase',
+  } as TextStyle,
+  driverInfoGridValue: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  } as TextStyle,
+  driverPassengersList: {
+    gap: 10,
+  } as ViewStyle,
+  driverPassengerCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    padding: 14,
+    gap: 12,
+  } as ViewStyle,
+  driverPassengerAvatar: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: WARM_CORE.border,
+    justifyContent: 'center',
+    alignItems: 'center',
+  } as ViewStyle,
+  driverPassengerAvatarText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: WARM_CORE.primary,
+  } as TextStyle,
+  driverPassengerInfo: {
+    flex: 1,
+  } as ViewStyle,
+  driverPassengerName: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+    marginBottom: 2,
+  } as TextStyle,
+  driverPassengerDetail: {
+    fontSize: 11,
+    color: WARM_CORE.textSecondary,
+  } as TextStyle,
+  driverPassengerActions: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+  } as ViewStyle,
+  driverActionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    gap: 6,
+  } as ViewStyle,
+  driverAcceptButton: {
+    backgroundColor: WARM_CORE.success,
+  } as ViewStyle,
+  driverRejectButton: {
+    backgroundColor: WARM_CORE.error,
+  } as ViewStyle,
+  driverSuccessButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.2)',
+    gap: 8,
+  } as ViewStyle,
+  driverSuccessButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: WARM_CORE.success,
+  } as TextStyle,
+  driverDangerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.2)',
+    gap: 8,
+  } as ViewStyle,
+  driverDangerButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: WARM_CORE.error,
+  } as TextStyle,
+  driverInfoButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: 'rgba(14, 165, 233, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(14, 165, 233, 0.2)',
+    gap: 8,
+  } as ViewStyle,
+  driverInfoButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#0EA5E9',
+  } as TextStyle,
+  driverEarningsBreakdown: {
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    padding: 16,
+    gap: 12,
+  } as ViewStyle,
+  driverEarningsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  } as ViewStyle,
+  driverEarningsRowLabel: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: WARM_CORE.textSecondary,
+  } as TextStyle,
+  driverEarningsRowValue: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  } as TextStyle,
+  driverEarningsDivider: {
+    height: 1,
+    backgroundColor: WARM_CORE.border,
+  } as ViewStyle,
+  driverEarningsTotalLabel: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: WARM_CORE.text,
+  } as TextStyle,
+  driverEarningsTotalValue: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: WARM_CORE.success,
+  } as TextStyle,
+  driverActionButtonsSection: {
+    marginTop: 8,
+  } as ViewStyle,
+  driverNoPssengerState: {
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    padding: 24,
+    alignItems: 'center',
+    gap: 8,
+  } as ViewStyle,
+  driverNoPassengerText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: WARM_CORE.textSecondary,
+  } as TextStyle,
+  driverStatusIndicator: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 8,
+  } as ViewStyle,
+  driverStatusIndicatorText: {
+    fontSize: 12,
+    fontWeight: '700',
   } as TextStyle,
 });
 
