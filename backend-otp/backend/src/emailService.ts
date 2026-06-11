@@ -35,6 +35,9 @@ export const initializeMailer = (): nodemailer.Transporter => {
       tls: {
         rejectUnauthorized: false,
       },
+      connectionTimeout: 5000, // 5 seconds connect timeout
+      greetingTimeout: 5000,   // 5 seconds greeting timeout
+      socketTimeout: 10000,    // 10 seconds idle socket timeout
     });
 
     transporter.verify((error: Error | null, success: boolean) => {
