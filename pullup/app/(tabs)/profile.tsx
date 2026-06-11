@@ -369,6 +369,7 @@ export default function ProfileScreen() {
   });
 
   const [activeRole, setActiveRole] = useState<'driver' | 'passenger'>(auth.user?.role === 'driver' ? 'driver' : 'passenger');
+  const [isWiping, setIsWiping] = useState(false);
 
   // Sync with auth.user.role if it changes from outside
   useEffect(() => {
@@ -499,7 +500,7 @@ export default function ProfileScreen() {
     ]);
   };
 
-  const [isWiping, setIsWiping] = useState(false);
+
 
   const handleWipeData = async () => {
     Alert.alert(

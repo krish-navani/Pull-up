@@ -1173,7 +1173,7 @@ export default function MyBookingsScreen() {
                     </Animated.View>
                     <Text style={styles.emptyStateText}>No Joined Car Pools</Text>
                     <Text style={styles.emptyStateSubText}>
-                      You haven't booked any car pool seats yet
+                      {"You haven't booked any car pool seats yet"}
                     </Text>
                     <TouchableOpacity
                       style={styles.bookNowButton}
@@ -1201,7 +1201,7 @@ export default function MyBookingsScreen() {
                     </Animated.View>
                     <Text style={styles.emptyStateText}>No Joined Taxi Pools</Text>
                     <Text style={styles.emptyStateSubText}>
-                      You haven't joined any taxi pools yet
+                      {"You haven't joined any taxi pools yet"}
                     </Text>
                     <TouchableOpacity
                       style={styles.bookNowButton}
@@ -1256,7 +1256,7 @@ export default function MyBookingsScreen() {
                     </Animated.View>
                     <Text style={styles.emptyStateText}>No Hosted Taxi Pools</Text>
                     <Text style={styles.emptyStateSubText}>
-                      You haven't created any taxi pools yet
+                      {"You haven't created any taxi pools yet"}
                     </Text>
                     <TouchableOpacity
                       style={styles.bookNowButton}

@@ -444,7 +444,7 @@ export default function HomeScreen() {
     try {
       if (switchRolePersistent) {
         await switchRolePersistent('driver');
-        router.replace('/(tabs)/driver-home' as any);
+        router.replace('/(tabs)/home' as any);
       }
     } catch (err) {
       console.error('[HOME] Failed to switch role:', err);

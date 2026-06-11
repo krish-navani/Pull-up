@@ -661,7 +661,7 @@ function PostRideScreenInner() {
 
   const handleViewMyRides = () => {
     setShowSuccess(false);
-    router.navigate('/(tabs)/driver-rides' as any);
+    router.navigate('/(tabs)/my-bookings' as any);
   };
 
   const handleCreateRide = async () => {
