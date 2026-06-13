@@ -13,6 +13,7 @@ import {
 } from 'firebase/firestore';
 import { Location, Ride } from '../types';
 import { db } from './firebase';
+import apiClient from './backendApiClient';
 
 /**
  * Create a new ride in Firestore
@@ -461,28 +462,9 @@ export const startRide = async (rideId: string): Promise<void> => {
  */
 export const completeRide = async (rideId: string): Promise<void> => {
   try {
-    console.log('[RIDE SERVICE] Completing ride:', rideId);
-
-    const docRef = doc(db, 'rides', rideId);
-    const docSnap = await getDoc(docRef);
-
-    if (!docSnap.exists()) {
-      throw new Error('Ride not found');
-    }
-
-    const ride = docSnap.data();
-    if (ride.status !== 'in_progress') {
-      throw new Error(`Cannot complete ride with status: ${ride.status}`);
-    }
-
-    const now = Timestamp.now();
-    await updateDoc(docRef, {
-      status: 'completed',
-      completedAt: new Date().toISOString(),
-      updatedAt: now,
-    });
-
-    console.log('[RIDE SERVICE] ✅ Ride completed');
+    console.log('[RIDE SERVICE] Completing ride via backend API:', rideId);
+    await apiClient.post('/complete-ride', { rideId });
+    console.log('[RIDE SERVICE] ✅ Ride completed successfully via backend');
   } catch (error: any) {
     console.error('[RIDE SERVICE] ❌ Failed to complete ride:', error);
     throw {

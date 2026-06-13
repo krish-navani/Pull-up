@@ -14,8 +14,12 @@ import {
     Text,
     TouchableOpacity,
     View,
+    Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import * as Linking from 'expo-linking';
+import * as WebBrowser from 'expo-web-browser';
+import apiClient from '@/utils/backendApiClient';
 
 // ─── Shared route marker token (same everywhere in the app) ──────────────────
 const ROUTE = {
@@ -261,13 +265,38 @@ function SuccessScreen({ ride, seatsSelected, totalPrice, onGoToBookings }: any)
 export default function BookingConfirmationScreen() {
   const router = useRouter();
   const { rideId } = useLocalSearchParams();
-  const { getRideById, requestRide } = useAppContext();
+  const { getRideById, requestRide, auth } = useAppContext();
   const [isConfirming, setIsConfirming] = useState(false);
   const [showSuccess,  setShowSuccess]  = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const ride          = getRideById(rideId as string);
   const seatsSelected = 1;
+
+  useEffect(() => {
+    const handleDeepLink = (event: { url: string }) => {
+      console.log('[BOOKING DEEP LINK] URL received:', event.url);
+      
+      if (event.url.includes('booking-success')) {
+        WebBrowser.dismissBrowser();
+        setShowSuccess(true);
+        setIsConfirming(false);
+      } else if (event.url.includes('payment-cancelled')) {
+        WebBrowser.dismissBrowser();
+        setIsConfirming(false);
+        Alert.alert('Booking Cancelled', 'Your payment was cancelled and the seat was released.');
+      } else if (event.url.includes('payment-failed')) {
+        WebBrowser.dismissBrowser();
+        setIsConfirming(false);
+        Alert.alert('Payment Failed', 'Payment verification failed. Please try booking again.');
+      }
+    };
+
+    const sub = Linking.addEventListener('url', handleDeepLink);
+    return () => {
+      sub.remove();
+    };
+  }, []);
 
   // Staggered entrance
   const headerAnim = useFadeSlideIn(0,   14);
@@ -337,13 +366,39 @@ export default function BookingConfirmationScreen() {
   const totalPrice = ride.price * seatsSelected;
 
   const handleConfirm = async () => {
+    if (!auth.user) {
+      Alert.alert('Error', 'Please log in to book a ride.');
+      return;
+    }
+
+    if (auth.user.id === ride.driverId) {
+      setErrorMessage('You cannot book your own ride.');
+      return;
+    }
+
     setIsConfirming(true);
     setErrorMessage(null);
     try {
-      await requestRide(ride.id, seatsSelected);
-      setShowSuccess(true);
+      // Call create-order to reserve the seat and create a pending booking
+      const res = await apiClient.post('/create-order', {
+        rideId: ride.id,
+        passengerId: auth.user.id,
+        passengerName: auth.user.fullName,
+        passengerEmail: auth.user.email || '',
+        seatsBooked: seatsSelected,
+      });
+
+      if (res.data?.success) {
+        const { orderId, amount, bookingId } = res.data;
+        const REMOTE_BACKEND_URL = process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pull-up-phi.vercel.app';
+        const checkoutUrl = `${REMOTE_BACKEND_URL}/api/otp/checkout-page?type=booking&orderId=${orderId}&amount=${amount}&bookingId=${bookingId}`;
+        console.log('[BOOKING] Launching checkout URL:', checkoutUrl);
+        await WebBrowser.openBrowserAsync(checkoutUrl);
+      } else {
+        throw new Error(res.data?.message || 'Failed to create payment order');
+      }
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Failed to book ride. Please try again.');
+      setErrorMessage(err?.message || 'Failed to initiate booking payment.');
       setIsConfirming(false);
     }
   };

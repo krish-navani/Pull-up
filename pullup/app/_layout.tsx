@@ -184,6 +184,14 @@ function RootLayoutContent() {
             headerShown: false,
             presentation: 'card',
           }} />
+          <Stack.Screen name="wallet" options={{
+            headerShown: false,
+            presentation: 'card',
+          }} />
+          <Stack.Screen name="driver-subscription" options={{
+            headerShown: false,
+            presentation: 'card',
+          }} />
           <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
         </Stack>
         <StatusBar style="auto" />

@@ -10,6 +10,16 @@ export const initializeFirebase = () => {
       !config.firebase.privateKey ||
       !config.firebase.clientEmail
     ) {
+      console.error('\n==================================================================');
+      console.error('❌ ERROR: Firebase configuration is incomplete!');
+      console.error('==================================================================');
+      console.error('To run the backend locally, you must provide Firebase credentials.');
+      console.error('Please create/update `backend-otp/backend/.env.local` and add:');
+      console.error('  FIREBASE_PROJECT_ID=...');
+      console.error('  FIREBASE_PRIVATE_KEY="..."');
+      console.error('  FIREBASE_CLIENT_EMAIL=...');
+      console.error('See `VERCEL_ENV_SETUP.md` for a step-by-step guide.');
+      console.error('==================================================================\n');
       throw new Error('Firebase config is incomplete');
     }
 

@@ -883,9 +883,39 @@ export default function ProfileScreen() {
                 </PressableCard>
 
                 <PressableCard
-                  onPress={handleEditProfile}
+                  onPress={() => router.push('/wallet')}
                   style={styles.menuItemCard}
                   index={3}
+                >
+                  <View style={styles.menuItemContent}>
+                    <View style={[styles.menuItemIconBox, { backgroundColor: 'rgba(16, 185, 129, 0.08)' }]}>
+                      <MaterialCommunityIcons name="wallet-outline" size={20} color={WARM_CORE.success} />
+                    </View>
+                    <Text style={styles.menuItemText}>My Wallet</Text>
+                    <MaterialCommunityIcons name="chevron-right" size={20} color={WARM_CORE.textSecondary} />
+                  </View>
+                </PressableCard>
+
+                {isDriver && (
+                  <PressableCard
+                    onPress={() => router.push('/driver-subscription')}
+                    style={styles.menuItemCard}
+                    index={4}
+                  >
+                    <View style={styles.menuItemContent}>
+                      <View style={[styles.menuItemIconBox, { backgroundColor: 'rgba(212, 80, 10, 0.08)' }]}>
+                        <MaterialCommunityIcons name="card-account-details-star-outline" size={20} color={WARM_CORE.primary} />
+                      </View>
+                      <Text style={styles.menuItemText}>Driver Subscription</Text>
+                      <MaterialCommunityIcons name="chevron-right" size={20} color={WARM_CORE.textSecondary} />
+                    </View>
+                  </PressableCard>
+                )}
+
+                <PressableCard
+                  onPress={handleEditProfile}
+                  style={styles.menuItemCard}
+                  index={5}
                 >
                   <View style={styles.menuItemContent}>
                     <View style={[styles.menuItemIconBox, { backgroundColor: 'rgba(163, 58, 8, 0.08)' }]}>
@@ -899,7 +929,7 @@ export default function ProfileScreen() {
                 <PressableCard
                   onPress={() => Alert.alert('Support', 'For support, please contact the campus coordinator at support@pullup.edu')}
                   style={styles.menuItemCard}
-                  index={4}
+                  index={6}
                 >
                   <View style={styles.menuItemContent}>
                     <View style={[styles.menuItemIconBox, { backgroundColor: 'rgba(110, 86, 80, 0.1)' }]}>
@@ -913,7 +943,7 @@ export default function ProfileScreen() {
                 <PressableCard
                   onPress={handleWipeData}
                   style={styles.menuItemCard}
-                  index={5}
+                  index={7}
                   disabled={isWiping}
                 >
                   <View style={styles.menuItemContent}>

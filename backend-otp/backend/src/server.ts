@@ -122,3 +122,15 @@ export default async function handler(req: Request, res: Response) {
     }
   }
 }
+
+// Start server locally (outside Vercel environment)
+if (!process.env.VERCEL) {
+  init().then(() => {
+    const port = config.port || 3000;
+    app.listen(port, () => {
+      console.log(`[SERVER] 🚀 Local server listening on http://localhost:${port}`);
+    });
+  }).catch((err) => {
+    console.error('[SERVER] ❌ Failed to initialize local server:', err);
+  });
+}

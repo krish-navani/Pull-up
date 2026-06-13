@@ -42,6 +42,9 @@ export const sendOTP = async (email: string): Promise<{ success: boolean; messag
 
     // Generate new OTP
     const otp = generateOTP();
+    if (config.nodeEnv !== 'production') {
+      console.log(`\n[DEV ONLY] 🔑 Generated OTP Code: ${otp} for email: ${email}\n`);
+    }
     const now = Timestamp.now();
     const expiresAt = Timestamp.fromDate(
       new Date(now.toDate().getTime() + config.otp.expiryMinutes * 60 * 1000)
