@@ -6,6 +6,10 @@
     "orientation": "portrait",
     "icon": "./assets/logo.jpeg",
     "scheme": "pullup",
+    "updates": {
+      "enabled": false,
+      "checkAutomatically": "NEVER"
+    },
     "userInterfaceStyle": "automatic",
     "newArchEnabled": false,
     "ios": {
