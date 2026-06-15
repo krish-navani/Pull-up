@@ -19,13 +19,368 @@ router.get('/health', (req: Request, res: Response) => {
   });
 });
 
+// GET HTML CHECKOUT PAGE (Razorpay Web Checkout integration)
+router.get('/checkout-page', (req: Request, res: Response) => {
+  const { type, orderId, amount, userId, planId, bookingId } = req.query;
+
+  if (!orderId || !amount) {
+    return res.status(400).send('<h1>Error</h1><p>Missing required payment parameters (orderId, amount).</p>');
+  }
+
+  const keyId = config.razorpay.keyId;
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Securing Payment - PullUp</title>
+  <style>
+    body {
+      background-color: #1e120d;
+      color: #fffbf7;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      padding: 24px;
+      box-sizing: border-box;
+      text-align: center;
+    }
+    .container {
+      max-width: 400px;
+      padding: 32px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 24px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.24);
+    }
+    .spinner {
+      width: 56px;
+      height: 56px;
+      border: 4px solid rgba(212, 80, 10, 0.15);
+      border-top-color: #D4500A;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      margin: 0 auto 24px;
+    }
+    h1 {
+      font-size: 20px;
+      margin: 0 0 12px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+    p {
+      color: #a89f9b;
+      font-size: 14px;
+      margin: 0 0 24px;
+      line-height: 1.5;
+    }
+    .btn {
+      background-color: #D4500A;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      display: none;
+      transition: background-color 0.2s;
+    }
+    .btn:hover {
+      background-color: #bb4307;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="spinner" id="loader"></div>
+    <h1 id="status-title">Preparing Checkout</h1>
+    <p id="status-desc">Redirecting you to the secure payment gateway...</p>
+    <button class="btn" id="retry-btn" onclick="openPayment()">Pay Now</button>
+  </div>
+
+  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+  <script>
+    const type = "${type || ''}";
+    const orderId = "${orderId}";
+    const amount = parseInt("${amount}", 10);
+    const userId = "${userId || ''}";
+    const planId = "${planId || ''}";
+    const bookingId = "${bookingId || ''}";
+    const keyId = "${keyId}";
+
+    if (!orderId || !amount) {
+      showError("Invalid payment configuration. Missing order parameters.");
+    } else {
+      setTimeout(openPayment, 800);
+    }
+
+    function showError(msg) {
+      document.getElementById('loader').style.animation = 'none';
+      document.getElementById('loader').style.borderTopColor = '#e53e3e';
+      document.getElementById('status-title').innerText = "Payment Error";
+      document.getElementById('status-title').style.color = '#e53e3e';
+      document.getElementById('status-desc').innerText = msg;
+      setTimeout(() => {
+        window.location.href = "pullup://payment-failed";
+      }, 3000);
+    }
+
+    let rzp;
+    function openPayment() {
+      const options = {
+        key: keyId,
+        amount: amount,
+        currency: "INR",
+        name: "PullUp",
+        description: type === 'subscription' ? "Driver Subscription (" + planId + ")" : "Ride Booking",
+        order_id: orderId,
+        theme: { color: "#D4500A" },
+        modal: {
+          ondismiss: function() {
+            window.location.href = "pullup://payment-cancelled";
+          }
+        },
+        handler: function(response) {
+          verifyPayment(response);
+        }
+      };
+      
+      try {
+        rzp = new Razorpay(options);
+        rzp.on('payment.failed', function (resp) {
+          showError("Transaction failed: " + (resp.error.description || "Unknown error"));
+        });
+        rzp.open();
+        
+        document.getElementById('status-title').innerText = "Waiting for Payment";
+        document.getElementById('status-desc').innerText = "Please complete the payment in the secure overlay.";
+        document.getElementById('retry-btn').style.display = 'inline-block';
+      } catch(err) {
+        showError("Could not initialize payment: " + err.message);
+      }
+    }
+
+    function verifyPayment(rzpResponse) {
+      document.getElementById('retry-btn').style.display = 'none';
+      document.getElementById('loader').style.animation = 'spin 1s linear infinite';
+      document.getElementById('loader').style.borderTopColor = '#D4500A';
+      document.getElementById('status-title').innerText = "Verifying Payment";
+      document.getElementById('status-desc').innerText = "Almost done! Confirming transaction with our servers...";
+
+      const verifyUrl = type === 'subscription' ? '/api/otp/verify-subscription' : '/api/otp/verify-payment';
+      const payload = type === 'subscription' 
+        ? {
+            razorpay_payment_id: rzpResponse.razorpay_payment_id,
+            razorpay_order_id: rzpResponse.razorpay_order_id,
+            razorpay_signature: rzpResponse.razorpay_signature,
+            userId: userId,
+            planId: planId
+          }
+        : {
+            razorpay_payment_id: rzpResponse.razorpay_payment_id,
+            razorpay_order_id: rzpResponse.razorpay_order_id,
+            razorpay_signature: rzpResponse.razorpay_signature,
+            bookingId: bookingId
+          };
+
+      fetch(verifyUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          document.getElementById('loader').style.borderTopColor = '#38a169';
+          document.getElementById('status-title').innerText = "Payment Successful!";
+          document.getElementById('status-title').style.color = '#38a169';
+          document.getElementById('status-desc').innerText = "Redirecting you back to the app...";
+          
+          setTimeout(() => {
+            window.location.href = type === 'subscription' ? "pullup://subscription-success" : "pullup://booking-success";
+          }, 1500);
+        } else {
+          showError(data.message || "Verification failed");
+        }
+      })
+      .catch(err => {
+        showError("Server validation failed: " + err.message);
+      });
+    }
+  </script>
+</body>
+</html>`;
+
+  res.send(html);
+});
+
+// NOTIFY ADMIN — new license submission
+router.post('/notify-license-submission', async (req: Request, res: Response) => {
+  try {
+    const { userId, userName, userEmail, licenseImageUrl } = req.body;
+
+    if (!userId || !licenseImageUrl) {
+      return res.status(400).json({ success: false, message: 'userId and licenseImageUrl are required' });
+    }
+
+    const { getMailer } = await import('./emailService.js');
+    const mailer = getMailer();
+    const fromAddress = (config.mail.user || '').trim();
+    const submittedAt = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="margin:0;padding:0;background:#f0f4f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f0f4f8;padding:40px 20px;">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+        <!-- Header -->
+        <tr>
+          <td style="background:linear-gradient(135deg,#D4500A 0%,#b33d08 100%);padding:32px 40px;">
+            <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:800;letter-spacing:-0.5px;">🚗 PullUp Admin</h1>
+            <p style="margin:8px 0 0;color:rgba(255,255,255,0.85);font-size:14px;">License Verification Request</p>
+          </td>
+        </tr>
+        <!-- Body -->
+        <tr>
+          <td style="padding:36px 40px;">
+            <p style="margin:0 0 4px;color:#64748b;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">New Submission</p>
+            <h2 style="margin:0 0 24px;color:#1e293b;font-size:20px;font-weight:800;">Action Required: Review Driver License</h2>
+
+            <!-- User Details -->
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border-radius:12px;padding:20px;margin-bottom:24px;">
+              <tr>
+                <td style="padding:6px 0;">
+                  <span style="color:#64748b;font-size:13px;font-weight:600;">Driver Name</span><br>
+                  <span style="color:#1e293b;font-size:15px;font-weight:700;">${userName || 'Unknown'}</span>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;border-top:1px solid #e2e8f0;">
+                  <span style="color:#64748b;font-size:13px;font-weight:600;">Email</span><br>
+                  <span style="color:#1e293b;font-size:15px;">${userEmail || 'Not provided'}</span>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;border-top:1px solid #e2e8f0;">
+                  <span style="color:#64748b;font-size:13px;font-weight:600;">User ID</span><br>
+                  <span style="color:#94a3b8;font-size:13px;font-family:monospace;">${userId}</span>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding:6px 0;border-top:1px solid #e2e8f0;">
+                  <span style="color:#64748b;font-size:13px;font-weight:600;">Submitted At</span><br>
+                  <span style="color:#1e293b;font-size:15px;">${submittedAt} IST</span>
+                </td>
+              </tr>
+            </table>
+
+            <!-- License Image -->
+            <p style="margin:0 0 12px;color:#64748b;font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">License Image</p>
+            <a href="${licenseImageUrl}" target="_blank" style="display:block;margin-bottom:24px;border-radius:12px;overflow:hidden;border:2px solid #e2e8f0;text-decoration:none;">
+              <img src="${licenseImageUrl}" alt="Driver License" style="width:100%;max-height:280px;object-fit:cover;display:block;" />
+              <div style="background:#f8fafc;padding:10px 16px;text-align:center;">
+                <span style="color:#D4500A;font-size:13px;font-weight:600;">🔍 Click to view full image</span>
+              </div>
+            </a>
+
+            <!-- CTA -->
+            <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px;">
+              <tr>
+                <td width="48%" style="padding-right:8px;">
+                  <a href="http://localhost:8000" target="_blank"
+                     style="display:block;background:#D4500A;color:#ffffff;text-align:center;padding:14px 20px;border-radius:10px;text-decoration:none;font-weight:700;font-size:14px;">
+                    ✅ Open Admin Panel
+                  </a>
+                </td>
+                <td width="4%"></td>
+                <td width="48%" style="padding-left:8px;">
+                  <a href="${licenseImageUrl}" target="_blank"
+                     style="display:block;background:#f8fafc;color:#1e293b;text-align:center;padding:14px 20px;border-radius:10px;text-decoration:none;font-weight:700;font-size:14px;border:1.5px solid #e2e8f0;">
+                    🖼 View License
+                  </a>
+                </td>
+              </tr>
+            </table>
+
+            <p style="margin:24px 0 0;color:#94a3b8;font-size:12px;text-align:center;">
+              This is an automated notification from PullUp. Please log into the admin panel to approve or reject this submission.
+            </p>
+          </td>
+        </tr>
+        <!-- Footer -->
+        <tr>
+          <td style="background:#f8fafc;padding:20px 40px;border-top:1px solid #e2e8f0;">
+            <p style="margin:0;color:#94a3b8;font-size:12px;text-align:center;">
+              PullUp Admin • License Management System
+            </p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+    await mailer.sendMail({
+      from: `"PullUp Admin" <${fromAddress}>`,
+      to: 'krish@pullupapp.in',
+      subject: `🚗 License Review Required — ${userName || 'New Driver'} (${submittedAt})`,
+      html,
+      text: `New license submission from ${userName || 'Unknown'} (${userEmail}). User ID: ${userId}. Submitted at: ${submittedAt} IST. License image: ${licenseImageUrl}. Open admin panel to approve/reject.`,
+    });
+
+    // Log to Firestore audit trail
+    try {
+      const db = getDb();
+      await db.collection('adminNotifications').add({
+        type: 'license_submission',
+        userId,
+        userName: userName || null,
+        userEmail: userEmail || null,
+        licenseImageUrl,
+        notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
+        notifiedTo: 'krish@pullupapp.in',
+      });
+    } catch (auditErr) {
+      console.warn('[NOTIFY] Audit log failed (non-fatal):', auditErr);
+    }
+
+    console.log(`[NOTIFY] License submission email sent for user ${userId}`);
+    res.json({ success: true, message: 'Admin notified' });
+  } catch (error: any) {
+    console.error('[NOTIFY] /notify-license-submission error:', error);
+    // Return success anyway — don't fail the upload if email fails
+    res.json({ success: false, message: 'Notification failed but upload is saved', error: error.message });
+  }
+});
+
 // Send OTP endpoint
+
 router.post('/send-otp', rateLimiter, async (req: Request, res: Response) => {
+  const requestReceivedTime = Date.now();
+  console.log(`[OTP REQUEST RECEIVED] [${new Date(requestReceivedTime).toISOString()}] Email: ${req.body?.email}`);
   try {
     const { email } = req.body;
 
     // Validate input
     if (!email || typeof email !== 'string') {
+      const responseTime = Date.now();
+      console.log(`[RESPONSE SENT TO CLIENT] [${new Date(responseTime).toISOString()}] Status: 400 (Invalid email, total time: ${responseTime - requestReceivedTime}ms)`);
       return res.status(400).json({
         success: false,
         code: 'INVALID_EMAIL',
@@ -37,6 +392,8 @@ router.post('/send-otp', rateLimiter, async (req: Request, res: Response) => {
 
     // Validate email format
     if (!validateEmail(fullEmail)) {
+      const responseTime = Date.now();
+      console.log(`[RESPONSE SENT TO CLIENT] [${new Date(responseTime).toISOString()}] Status: 400 (Invalid email format, total time: ${responseTime - requestReceivedTime}ms)`);
       return res.status(400).json({
         success: false,
         code: 'INVALID_EMAIL_FORMAT',
@@ -44,31 +401,39 @@ router.post('/send-otp', rateLimiter, async (req: Request, res: Response) => {
       });
     }
 
-    console.log(`[API] /send-otp request for: ${fullEmail}`);
-
     // Generate and save OTP
     const otpResult = await sendOTP(fullEmail);
+    const otpGeneratedTime = Date.now();
+    console.log(`[OTP GENERATED] [${new Date(otpGeneratedTime).toISOString()}] Code: ${otpResult.otp} (took ${otpGeneratedTime - requestReceivedTime}ms)`);
 
-    // Send OTP via email
+    // Send OTP via email (acting as SMS/delivery provider)
     try {
+      const emailStartTime = Date.now();
+      console.log(`[SMS/EMAIL PROVIDER CALLED] [${new Date(emailStartTime).toISOString()}] Sending to: ${fullEmail}`);
       await sendOTPEmail(fullEmail, otpResult.otp, config.otp.expiryMinutes);
-      console.log(`[API] ✅ OTP email queued for: ${fullEmail}`);
+      const emailEndTime = Date.now();
+      console.log(`[SMS/EMAIL PROVIDER SUCCESS] [${new Date(emailEndTime).toISOString()}] Sent successfully (took ${emailEndTime - emailStartTime}ms)`);
     } catch (emailError: any) {
-      console.error(`[API] ⚠️  OTP saved but email sending failed:`, emailError.message);
-      // Still return success because OTP was generated
-      return res.json({
-        success: true,
-        message: 'OTP generated. Email delivery delayed - check spam folder.',
-        note: 'OTP has been created and will be sent shortly',
+      console.error(`[SMS/EMAIL PROVIDER ERROR] [${new Date().toISOString()}] Failed:`, emailError.message);
+      const responseTime = Date.now();
+      console.log(`[RESPONSE SENT TO CLIENT] [${new Date(responseTime).toISOString()}] Status: 500 (Email sending failed, total time: ${responseTime - requestReceivedTime}ms)`);
+      return res.status(500).json({
+        success: false,
+        code: 'EMAIL_SEND_FAILED',
+        message: `OTP was generated in database, but email delivery failed: ${emailError.message}`,
       });
     }
 
+    const finalResponseTime = Date.now();
+    console.log(`[RESPONSE SENT TO CLIENT] [${new Date(finalResponseTime).toISOString()}] Status: 200 (Success, total time: ${finalResponseTime - requestReceivedTime}ms)`);
     res.json({
       success: true,
       message: 'OTP sent to your email',
     });
   } catch (error: any) {
     console.error('[API] /send-otp error:', error);
+    const responseTime = Date.now();
+    console.log(`[RESPONSE SENT TO CLIENT] [${new Date(responseTime).toISOString()}] Status: 500 (Server error, total time: ${responseTime - requestReceivedTime}ms)`);
     res.status(500).json({
       success: false,
       code: error.code || 'OTP_SEND_ERROR',
@@ -124,9 +489,38 @@ router.post('/verify-otp', rateLimiter, async (req: Request, res: Response) => {
     // Verify OTP
     const result = await verifyOTP(fullEmail, otp);
 
+    // Generate custom token and userId if OTP is valid
+    let firebaseToken: string | undefined;
+    let userId: string | undefined;
+
+    try {
+      const db = getDb();
+      const usersRef = db.collection('users');
+      const snapshot = await usersRef.where('email', '==', fullEmail).get();
+
+      if (!snapshot.empty) {
+        // Existing user: get their current document ID (uid)
+        userId = snapshot.docs[0].id;
+        console.log(`[API] Found existing user ID: ${userId} for ${fullEmail}`);
+      } else {
+        // New user: generate a new unique user ID
+        userId = 'usr_' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+        console.log(`[API] Generated new user ID: ${userId} for ${fullEmail}`);
+      }
+
+      // Mint a custom Firebase token for this userId
+      firebaseToken = await admin.auth().createCustomToken(userId);
+      console.log(`[API] Generated custom token successfully for user: ${userId}`);
+    } catch (authErr: any) {
+      console.error('[API] Error generating custom Firebase token:', authErr);
+      // Non-fatal, do not block verification success
+    }
+
     res.json({
       success: true,
       message: result.message,
+      userId,
+      firebaseToken,
     });
   } catch (error: any) {
     console.error('[API] /verify-otp error:', error);
@@ -956,9 +1350,11 @@ const clearPendingBalances = async (db: admin.firestore.Firestore, userId: strin
 
 // REFRESH WALLET: Clears pending balances and returns wallet data
 router.post('/refresh-wallet', async (req: Request, res: Response) => {
+  const userId = req.body?.userId;
+  console.log(`[REFRESH-WALLET START] UserId: ${userId}`);
   try {
-    const { userId } = req.body;
     if (!userId) {
+      console.log('[REFRESH-WALLET QUERY FAILED] Error: User ID is required');
       return res.status(400).json({ success: false, message: 'User ID is required' });
     }
 
@@ -971,12 +1367,15 @@ router.post('/refresh-wallet', async (req: Request, res: Response) => {
       walletData = walletSnap.data()!;
     }
 
+    console.log('[REFRESH-WALLET QUERY SUCCESS] Successfully cleared and fetched wallet document.');
+    console.log('[REFRESH-WALLET COMPLETED] Returning wallet data.');
     res.json({
       success: true,
       cleared: clearingResult,
       wallet: walletData
     });
   } catch (error: any) {
+    console.error('[REFRESH-WALLET QUERY FAILED] Error:', error.message);
     console.error('[API] /refresh-wallet error:', error);
     res.status(500).json({ success: false, message: error.message || 'Failed to refresh wallet' });
   }

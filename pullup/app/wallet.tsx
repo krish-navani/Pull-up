@@ -20,7 +20,7 @@ import { doc, onSnapshot, collection, query, where, orderBy, Timestamp } from 'f
 
 import { useAppContext } from '@/context/AppContext';
 import { WARM_CORE } from '@/constants/theme';
-import { db } from '@/utils/firebase';
+import { db, auth as firebaseAuth } from '@/utils/firebase';
 import apiClient from '@/utils/backendApiClient';
 
 interface Transaction {
@@ -59,8 +59,17 @@ export default function WalletScreen() {
   useEffect(() => {
     if (!auth.user) return;
 
+    // Part A & B: UID Match Verification Tracing
+    const firebaseUid = firebaseAuth.currentUser?.uid;
+    const profileId = auth.user?.id;
+    console.log('Firebase UID:', firebaseUid);
+    console.log('Profile ID:', profileId);
+    console.log('Wallet Query UserId:', profileId);
+    console.log('UID_MATCH =', firebaseUid === profileId);
+
     const triggerClear = async () => {
       try {
+        console.log('[WALLET] Triggering clear balance clearance check via API...');
         await apiClient.post('/refresh-wallet', { userId: auth.user!.id });
       } catch (error) {
         console.warn('[WALLET] Initial clearance check failed:', error);
@@ -68,8 +77,10 @@ export default function WalletScreen() {
     };
     triggerClear();
 
-    // Listen to driver's wallet document
+    // 1. Listen to driver's wallet document
     const walletRef = doc(db, 'wallets', auth.user.id);
+    console.log('[COLLECTION] wallets');
+    console.log('[QUERY] doc(db, "wallets", "' + auth.user.id + '")');
     const unsubWallet = onSnapshot(walletRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
@@ -78,10 +89,16 @@ export default function WalletScreen() {
         setLockedBalance(data.lockedBalance || 0);
         setLifetimeEarnings(data.lifetimeEarnings || 0);
       }
+    }, (error) => {
+      console.log('[COLLECTION] wallets');
+      console.log('[QUERY] doc(db, "wallets", "' + auth.user!.id + '")');
+      console.error('[PERMISSION ERROR] ' + error.message);
     });
 
-    // Listen to driver's user document to get UPI status
+    // 2. Listen to driver's user document to get UPI status
     const userRef = doc(db, 'users', auth.user.id);
+    console.log('[COLLECTION] users');
+    console.log('[QUERY] doc(db, "users", "' + auth.user.id + '")');
     const unsubUser = onSnapshot(userRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
@@ -90,14 +107,20 @@ export default function WalletScreen() {
           setIsUpiVerified(data.payoutMethod.verified || false);
         }
       }
+    }, (error) => {
+      console.log('[COLLECTION] users');
+      console.log('[QUERY] doc(db, "users", "' + auth.user!.id + '")');
+      console.error('[PERMISSION ERROR] ' + error.message);
     });
 
-    // Listen to driver's transactions
+    // 3. Listen to driver's transactions
     const txQuery = query(
       collection(db, 'walletTransactions'),
       where('userId', '==', auth.user.id),
       orderBy('createdAt', 'desc')
     );
+    console.log('[COLLECTION] walletTransactions');
+    console.log('[QUERY] query(collection(db, "walletTransactions"), where("userId", "==", "' + auth.user.id + '"), orderBy("createdAt", "desc"))');
 
     const unsubTx = onSnapshot(txQuery, (snap) => {
       const txs: Transaction[] = [];
@@ -116,7 +139,9 @@ export default function WalletScreen() {
       setTransactions(txs);
       setLoadingTransactions(false);
     }, (error) => {
-      console.error('[WALLET] Transactions listener failed:', error);
+      console.log('[COLLECTION] walletTransactions');
+      console.log('[QUERY] query(collection(db, "walletTransactions"), where("userId", "==", "' + auth.user!.id + '"), orderBy("createdAt", "desc"))');
+      console.error('[PERMISSION ERROR] ' + error.message);
       setLoadingTransactions(false);
     });
 

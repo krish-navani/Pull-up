@@ -14,6 +14,18 @@ const init = async () => {
   if (initialized) return;
 
   console.log('[INIT] Starting server initialization...');
+  
+  console.log('[SMTP-STARTUP-CHECK] Primary configuration presence:');
+  console.log('MAIL_HOST present?:', !!process.env.MAIL_HOST);
+  console.log('MAIL_PORT present?:', !!process.env.MAIL_PORT);
+  console.log('MAIL_USER present?:', !!process.env.MAIL_USER);
+  console.log('MAIL_PASSWORD present?:', !!process.env.MAIL_PASSWORD);
+
+  console.log('[SMTP-STARTUP-CHECK] Secondary configuration presence:');
+  console.log('SECONDARY_MAIL_HOST present?:', !!process.env.SECONDARY_MAIL_HOST);
+  console.log('SECONDARY_MAIL_PORT present?:', !!process.env.SECONDARY_MAIL_PORT);
+  console.log('SECONDARY_MAIL_USER present?:', !!process.env.SECONDARY_MAIL_USER);
+  console.log('SECONDARY_MAIL_PASSWORD present?:', !!process.env.SECONDARY_MAIL_PASSWORD);
 
   try {
     validateConfig();
@@ -81,8 +93,31 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-// Routes
+// Routes — log registrations so they appear in Vercel function logs
+const logRouteRegistrations = () => {
+  const routeList = [
+    { method: 'GET',  path: '/health' },
+    { method: 'GET',  path: '/checkout-page' },
+    { method: 'POST', path: '/send-otp' },
+    { method: 'POST', path: '/verify-otp' },
+    { method: 'POST', path: '/create-subscription' },
+    { method: 'POST', path: '/verify-subscription' },
+    { method: 'POST', path: '/create-order' },
+    { method: 'POST', path: '/verify-payment' },
+    { method: 'POST', path: '/cancel-pending-booking' },
+    { method: 'POST', path: '/complete-ride' },
+    { method: 'POST', path: '/refresh-wallet' },
+    { method: 'POST', path: '/verify-upi' },
+    { method: 'POST', path: '/request-withdrawal' },
+  ];
+  routeList.forEach(({ method, path }) => {
+    console.log(`[ROUTE REGISTERED] ${method} /api/otp${path}`);
+  });
+};
+
+logRouteRegistrations();
 app.use('/api/otp', routes);
+
 
 // 404
 app.use((req: Request, res: Response) => {

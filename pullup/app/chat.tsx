@@ -2,7 +2,8 @@ import { useAppContext } from '@/context/AppContext';
 import { getMessagesForRide, markAllMessagesAsRead, sendMessage, subscribeToMessages } from '@/utils/chatService';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Timestamp } from 'firebase/firestore';
+import { Timestamp, doc, onSnapshot } from 'firebase/firestore';
+import { db } from '@/utils/firebase';
 import { WARM_CORE } from '@/constants/theme';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
@@ -224,50 +225,7 @@ export default function ChatScreen() {
           setUserPhone(auth.user.phone);
         }
 
-        // Set recipient info and fetch phone numbers (available when ride is in_progress or completed)
-        if (isDriver) {
-          // Driver: get passenger name from ride's accepted booking
-          const acceptedBooking = ride.bookedSeats?.find(b => b.status === 'accepted');
-          const passengerName = acceptedBooking?.passengerName || 'Passenger';
-          setRecipientName(passengerName);
-          setRecipientAvatar('');
-          
-          // Fetch recipient phone (available when chat is allowed)
-          if (booking && booking.passengerId && isChatAllowed) {
-            try {
-              const { getDoc, doc } = await import('firebase/firestore');
-              const { db } = await import('@/utils/firebase');
-              const userDoc = await getDoc(doc(db, 'users', booking.passengerId));
-              if (userDoc.exists()) {
-                const phoneNum = userDoc.data()?.phone || '';
-                setRecipientPhone(phoneNum);
-                console.log('[CHAT] ✅ Passenger phone available for messaging');
-              }
-            } catch (err) {
-              console.log('[CHAT] Could not fetch passenger phone:', err);
-            }
-          }
-        } else if (isPassenger) {
-          // Passenger: get driver name from ride
-          setRecipientName(ride.driverName || 'Car Owner');
-          setRecipientAvatar('');
-          
-          // Fetch driver phone (available when chat is allowed)
-          if (ride.driverId && isChatAllowed) {
-            try {
-              const { getDoc, doc } = await import('firebase/firestore');
-              const { db } = await import('@/utils/firebase');
-              const userDoc = await getDoc(doc(db, 'users', ride.driverId));
-              if (userDoc.exists()) {
-                const phoneNum = userDoc.data()?.phone || '';
-                setRecipientPhone(phoneNum);
-                console.log('[CHAT] ✅ Driver phone available for messaging');
-              }
-            } catch (err) {
-              console.log('[CHAT] Could not fetch driver phone:', err);
-            }
-          }
-        }
+        // Recipient details will be fetched and updated in real-time by the recipient profile listener useEffect.
 
         // Load initial messages from Firestore
         const initialMessages = await getMessagesForRide(rideId);
@@ -302,6 +260,48 @@ export default function ChatScreen() {
       }
     };
   }, [rideId, bookingId, ride, booking, auth.user]);
+
+  // Real-time recipient profile fetching
+  useEffect(() => {
+    if (!ride || !auth.user) return;
+
+    const isDriver = ride.driverId === auth.user.id;
+    const recipientId = isDriver
+      ? (booking?.passengerId || ride.bookedSeats?.find(b => b.status === 'accepted')?.passengerId)
+      : ride.driverId;
+
+    if (!recipientId) return;
+
+    // Set initial fallback name before firebase snapshot returns
+    if (isDriver) {
+      const acceptedBooking = ride.bookedSeats?.find(b => b.status === 'accepted');
+      setRecipientName(acceptedBooking?.passengerName || 'Passenger');
+    } else {
+      setRecipientName(ride.driverName || 'Car Owner');
+    }
+
+    console.log('[CHAT] Subscribing to recipient profile:', recipientId);
+    const userRef = doc(db, 'users', recipientId);
+    const unsub = onSnapshot(
+      userRef,
+      (docSnap) => {
+        if (docSnap.exists()) {
+          const userData = docSnap.data();
+          setRecipientName(userData.fullName || 'User');
+          setRecipientAvatar(userData.profileImage || '');
+          if (userData.phone) {
+            setRecipientPhone(userData.phone);
+          }
+          console.log('[CHAT] ✅ Recipient profile updated in real-time');
+        }
+      },
+      (error) => {
+        console.error('[CHAT] Error listening to recipient profile:', error);
+      }
+    );
+
+    return () => unsub();
+  }, [ride, booking, auth.user]);
 
   const handlePhoneCall = useCallback(() => {
     if (!isChatAllowed) {

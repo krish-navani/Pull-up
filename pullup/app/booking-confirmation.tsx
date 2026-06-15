@@ -390,7 +390,7 @@ export default function BookingConfirmationScreen() {
 
       if (res.data?.success) {
         const { orderId, amount, bookingId } = res.data;
-        const REMOTE_BACKEND_URL = process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pull-up-phi.vercel.app';
+        const REMOTE_BACKEND_URL = process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://backend-eight-gamma-77.vercel.app';
         const checkoutUrl = `${REMOTE_BACKEND_URL}/api/otp/checkout-page?type=booking&orderId=${orderId}&amount=${amount}&bookingId=${bookingId}`;
         console.log('[BOOKING] Launching checkout URL:', checkoutUrl);
         await WebBrowser.openBrowserAsync(checkoutUrl);

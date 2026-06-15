@@ -43,46 +43,54 @@ export const sendOTPEmail = async (email: string): Promise<{ success: boolean; m
     console.log('[OTP] ✅ Backend returned:', result);
     return result;
   } catch (error: any) {
-    console.warn('[OTP] ❌ Backend OTP send failed, attempting direct Firestore fallback...', error.message);
-    
-    try {
-      // Local dev mode fallback
-      await ensureAuthenticated();
-      const otp = generateOTP();
-      const otpDocId = fullEmail.replace(/[.@]/g, '_').toLowerCase();
-      const otpDocRef = doc(collection(db, 'otpVerification'), otpDocId);
+    if (__DEV__) {
+      console.warn('[OTP] ❌ Backend OTP send failed, attempting direct Firestore fallback...', error.message);
       
-      const now = new Date();
-      const expiresAt = new Date(now.getTime() + OTP_EXPIRY_MINUTES * 60 * 1000);
-      
-      await setDoc(otpDocRef, {
-        email: fullEmail,
-        otp,
-        createdAt: now,
-        expiresAt: expiresAt,
-        attempts: 0,
-        maxAttempts: 5,
-        used: false,
-      });
+      try {
+        // Local dev mode fallback
+        await ensureAuthenticated();
+        const otp = generateOTP();
+        const otpDocId = fullEmail.replace(/[.@]/g, '_').toLowerCase();
+        const otpDocRef = doc(collection(db, 'otpVerification'), otpDocId);
+        
+        const now = new Date();
+        const expiresAt = new Date(now.getTime() + OTP_EXPIRY_MINUTES * 60 * 1000);
+        
+        await setDoc(otpDocRef, {
+          email: fullEmail,
+          otp,
+          createdAt: now,
+          expiresAt: expiresAt,
+          attempts: 0,
+          maxAttempts: 5,
+          used: false,
+        });
 
-      console.log(`[OTP] ⚠️ [Dev Mode Bypass] Created OTP ${otp} in Firestore for ${fullEmail}`);
-      
-      // Show Alert popup with the OTP so developer can copy it
-      Alert.alert(
-        'Dev Mode: OTP Generated',
-        `Since the Vercel backend is not running/configured, a local OTP has been generated:\n\nOTP Code: ${otp}\n\n(This code has been saved to Firestore)`,
-        [{ text: 'OK' }]
-      );
+        console.log(`[OTP] ⚠️ [Dev Mode Bypass] Created OTP ${otp} in Firestore for ${fullEmail}`);
+        
+        // Show Alert popup with the OTP so developer can copy it
+        Alert.alert(
+          'Dev Mode: OTP Generated',
+          `Since the Vercel backend is not running/configured, a local OTP has been generated:\n\nOTP Code: ${otp}\n\n(This code has been saved to Firestore)`,
+          [{ text: 'OK' }]
+        );
 
-      return {
-        success: true,
-        message: `[Dev Mode] Local OTP ${otp} generated in database (check terminal/popup).`,
-      };
-    } catch (fallbackError: any) {
-      console.error('[OTP] ❌ Firestore fallback failed:', fallbackError.message);
+        return {
+          success: true,
+          message: `[Dev Mode] Local OTP ${otp} generated in database (check terminal/popup).`,
+        };
+      } catch (fallbackError: any) {
+        console.error('[OTP] ❌ Firestore fallback failed:', fallbackError.message);
+        throw {
+          code: 'SEND_OTP_ERROR',
+          message: error.message || 'Failed to send OTP',
+        };
+      }
+    } else {
+      console.error('[OTP] ❌ Backend OTP send failed in production:', error.message);
       throw {
-        code: 'SEND_OTP_ERROR',
-        message: error.message || 'Failed to send OTP',
+        code: error.code || 'SEND_OTP_ERROR',
+        message: error.message || 'Failed to send OTP. Please try again.',
       };
     }
   }
@@ -91,16 +99,19 @@ export const sendOTPEmail = async (email: string): Promise<{ success: boolean; m
 /**
  * Verify OTP via backend
  */
-export const verifyOTP = async (email: string, otp: string): Promise<boolean> => {
+export const verifyOTP = async (
+  email: string,
+  otp: string
+): Promise<{ success: boolean; firebaseToken?: string; userId?: string }> => {
   const fullEmail = email.includes('@') ? email : email + UNIVERSITY_DOMAIN;
   try {
     console.log('[OTP] Verifying OTP via backend for:', fullEmail);
 
     // Call backend to verify OTP
-    await verifyOTPViaBackend(fullEmail, otp);
+    const result = await verifyOTPViaBackend(fullEmail, otp);
     
     console.log('[OTP] ✅ Backend verified OTP');
-    return true;
+    return result;
   } catch (error: any) {
     console.warn('[OTP] ❌ Backend verification failed, attempting direct Firestore verification...', error.message);
     
@@ -134,7 +145,7 @@ export const verifyOTP = async (email: string, otp: string): Promise<boolean> =>
       // Mark as used
       await setDoc(otpDocRef, { ...otpData, used: true, verifiedAt: now }, { merge: true });
       console.log('[OTP] ✅ Locally verified OTP in Firestore');
-      return true;
+      return { success: true };
     } catch (fallbackError: any) {
       console.error('[OTP] ❌ Firestore verification failed:', fallbackError.message);
       throw {

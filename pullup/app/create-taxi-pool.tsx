@@ -91,6 +91,9 @@ export default function CreateTaxiPoolScreen() {
         const userSnap = await getDoc(userRef);
         if (userSnap.exists()) {
           const userData = userSnap.data();
+
+          // TaxiPool does NOT require license/driver verification.
+          // Only a subscription check is needed here.
           if (userData?.subscriptionStatus !== 'active') {
             Alert.alert(
               'Subscription Required',

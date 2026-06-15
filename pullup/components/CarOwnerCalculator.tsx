@@ -9,10 +9,19 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { CalculatorInputs, CalculatorResults, CarOwnerCalculatorService } from '@/utils/carOwnerCalculatorService';
 
-const A = '#22C55E'; const G = '#10B981'; const R = '#EF4444';
-const BG = '#0A0A0A'; const CARD = '#141414'; const CARD2 = '#1C1C1C';
-const B = '#252525'; const M = '#6B7280'; const S = '#A1A1AA'; const W = '#FFFFFF';
-const TRACK_BG = '#2A2A2A'; // subtle dark grey for inactive track
+import { WARM_CORE } from '@/constants/theme';
+
+const A = WARM_CORE.primary; // '#D4500A' - Burnt Orange
+const G = WARM_CORE.success; // '#10B981' - Success Green
+const R = WARM_CORE.error;   // '#EF4444' - Error Red
+const BG = WARM_CORE.background; // '#FFF8F0' - Cream background
+const CARD = WARM_CORE.card;     // '#F4E9D9' - Sand card
+const CARD2 = WARM_CORE.white;   // '#FFFFFF' - White secondary
+const B = WARM_CORE.border;      // '#E8DCCB' - Sand-Cream border
+const M = WARM_CORE.textSecondary; // '#6E5650' - Warm brown labels
+const S = WARM_CORE.text;          // '#1E120D' - Dark brown body text
+const W = WARM_CORE.white;         // '#FFFFFF'
+const TRACK_BG = '#E8DCCB';       // Border color for track background
 
 // Count-up animation hook
 function useCountUp(target: number, duration = 800, active = true) {
@@ -271,7 +280,7 @@ export default function CarOwnerCalculator() {
         <SafeAreaView style={st.safe} edges={['top', 'left', 'right']}>
             <View style={st.hdr}>
                 <TouchableOpacity onPress={() => router.back()} style={st.iconBtn}>
-                    <MaterialCommunityIcons name="arrow-left" size={20} color={W} />
+                    <MaterialCommunityIcons name="arrow-left" size={20} color={S} />
                 </TouchableOpacity>
                 <View style={{ alignItems: 'center' }}>
                     <Text style={st.hTitle}>Carpool Calculator</Text>
@@ -357,14 +366,14 @@ function Results({ results, onBack, onShare }: { results: CalculatorResults; onB
         <SafeAreaView style={st.safe} edges={['top', 'left', 'right']}>
             <View style={st.hdr}>
                 <TouchableOpacity onPress={onBack} style={st.iconBtn}>
-                    <MaterialCommunityIcons name="arrow-left" size={20} color={W} />
+                    <MaterialCommunityIcons name="arrow-left" size={20} color={S} />
                 </TouchableOpacity>
                 <View style={{ alignItems: 'center' }}>
                     <Text style={st.hTitle}>Your Savings</Text>
                     <Text style={st.hSub}>Carpool analysis</Text>
                 </View>
                 <TouchableOpacity onPress={onShare} style={st.iconBtn}>
-                    <MaterialCommunityIcons name="share-variant-outline" size={20} color={W} />
+                    <MaterialCommunityIcons name="share-variant-outline" size={20} color={S} />
                 </TouchableOpacity>
             </View>
 
@@ -483,8 +492,8 @@ function RRow({ label, val, c, bold, strike }: { label: string; val: string; c: 
 const st = StyleSheet.create({
     safe: { flex: 1, backgroundColor: BG },
     scroll: { padding: 16, paddingBottom: 44, gap: 10 },
-    hdr: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: '#1A1A1A' },
-    hTitle: { fontSize: 15, fontWeight: '700', color: W },
+    hdr: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingVertical: 13, borderBottomWidth: 1, borderBottomColor: B },
+    hTitle: { fontSize: 15, fontWeight: '700', color: S },
     hSub: { fontSize: 11, color: M, marginTop: 1 },
     iconBtn: { width: 38, height: 38, borderRadius: 11, backgroundColor: CARD2, borderWidth: 1, borderColor: B, justifyContent: 'center', alignItems: 'center' },
 
@@ -498,8 +507,8 @@ const st = StyleSheet.create({
     flbl: { fontSize: 11, fontWeight: '600', color: S, letterSpacing: 0.2 },
     funit: { fontSize: 10, color: M, fontWeight: '600' },
     frow: { flexDirection: 'row', alignItems: 'center' },
-    finput: { flex: 1, fontSize: 24, fontWeight: '700', color: W, paddingVertical: 0, letterSpacing: -0.5 },
-    clearBtn: { width: 22, height: 22, borderRadius: 11, backgroundColor: B, borderWidth: 1, borderColor: '#333', justifyContent: 'center', alignItems: 'center' },
+    finput: { flex: 1, fontSize: 24, fontWeight: '700', color: S, paddingVertical: 0, letterSpacing: -0.5 },
+    clearBtn: { width: 22, height: 22, borderRadius: 11, backgroundColor: B, borderWidth: 1, borderColor: B, justifyContent: 'center', alignItems: 'center' },
 
     sliderWrap: { paddingHorizontal: 16, paddingTop: 14, paddingBottom: 14 },
     sliderTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
@@ -538,7 +547,7 @@ const st = StyleSheet.create({
 
     bottomBlock: { gap: 10 },
     previewCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: CARD, borderRadius: 16, borderWidth: 1, borderColor: A + '35', paddingHorizontal: 18, paddingVertical: 16 },
-    previewLbl: { fontSize: 13, fontWeight: '600', color: W },
+    previewLbl: { fontSize: 13, fontWeight: '600', color: S },
     previewVal: { fontSize: 28, fontWeight: '800', color: A, letterSpacing: -1 },
 
     cta: { backgroundColor: A, borderRadius: 16, paddingVertical: 18, alignItems: 'center', flexDirection: 'row', justifyContent: 'center', shadowColor: A, shadowOpacity: 0.35, shadowRadius: 14, shadowOffset: { width: 0, height: 5 }, elevation: 8 },
@@ -556,8 +565,8 @@ const st = StyleSheet.create({
     cmpCard: { flex: 1, backgroundColor: CARD, borderRadius: 16, borderWidth: 1, padding: 16, alignItems: 'center' },
     cmpIconBox: { width: 32, height: 32, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
     cmpDivider: { width: 24, alignItems: 'center', justifyContent: 'center', gap: 6 },
-    cmpDividerLine: { flex: 1, width: 1, backgroundColor: '#2A2A2A' },
-    cmpVs: { width: 22, height: 22, borderRadius: 11, backgroundColor: B, borderWidth: 1, borderColor: '#333', alignItems: 'center', justifyContent: 'center' },
+    cmpDividerLine: { flex: 1, width: 1, backgroundColor: B },
+    cmpVs: { width: 22, height: 22, borderRadius: 11, backgroundColor: B, borderWidth: 1, borderColor: B, alignItems: 'center', justifyContent: 'center' },
     cmpVsTxt: { fontSize: 7, fontWeight: '800', color: M, letterSpacing: 0.5 },
     cmpEye: { fontSize: 9, fontWeight: '700', color: M, letterSpacing: 1.6, marginBottom: 4, marginTop: 2 },
     cmpAmt: { fontSize: 30, fontWeight: '800', letterSpacing: -1.2 },
@@ -569,11 +578,11 @@ const st = StyleSheet.create({
 
     tiles: { flexDirection: 'row', gap: 8 },
     tile: { flex: 1, backgroundColor: CARD, borderRadius: 14, borderWidth: 1, padding: 14, alignItems: 'center' },
-    tileVal: { fontSize: 18, fontWeight: '800', color: W, letterSpacing: -0.5 },
+    tileVal: { fontSize: 18, fontWeight: '800', color: S, letterSpacing: -0.5 },
     tileUnit: { fontSize: 9, fontWeight: '600', color: M, marginTop: 4, textAlign: 'center' },
 
     actions: { flexDirection: 'column', gap: 8 },
-    secBtn: { paddingVertical: 15, borderRadius: 14, alignItems: 'center', backgroundColor: CARD2, borderWidth: 1, borderColor: '#2E2E2E', flexDirection: 'row', justifyContent: 'center' },
+    secBtn: { paddingVertical: 15, borderRadius: 14, alignItems: 'center', backgroundColor: CARD2, borderWidth: 1, borderColor: B, flexDirection: 'row', justifyContent: 'center' },
     secTxt: { fontSize: 14, fontWeight: '600', color: S },
     priBtn: { paddingVertical: 17, borderRadius: 14, alignItems: 'center', backgroundColor: A, flexDirection: 'row', justifyContent: 'center', shadowColor: A, shadowOpacity: 0.35, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 6 },
     priTxt: { fontSize: 15, fontWeight: '800', color: W },

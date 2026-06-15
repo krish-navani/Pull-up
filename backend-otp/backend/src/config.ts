@@ -44,6 +44,13 @@ export const config = {
     user: process.env.MAIL_USER || '',
     password: process.env.MAIL_PASSWORD || '',
     fromName: process.env.MAIL_FROM_NAME || 'PullUp',
+    secondary: {
+      host: process.env.SECONDARY_MAIL_HOST || 'smtp.gmail.com',
+      port: parseInt(process.env.SECONDARY_MAIL_PORT || '465', 10),
+      user: process.env.SECONDARY_MAIL_USER || '',
+      password: process.env.SECONDARY_MAIL_PASSWORD || '',
+      fromName: process.env.SECONDARY_MAIL_FROM_NAME || 'PullUp Support',
+    },
   },
 
   // OTP
@@ -85,8 +92,6 @@ export const validateConfig = () => {
     'FIREBASE_PROJECT_ID',
     'FIREBASE_PRIVATE_KEY',
     'FIREBASE_CLIENT_EMAIL',
-    'MAIL_USER',
-    'MAIL_PASSWORD',
     'RAZORPAY_KEY_ID',
     'RAZORPAY_KEY_SECRET'
   ];

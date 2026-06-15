@@ -9,6 +9,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
     ActivityIndicator,
+    Alert,
     Animated,
     Easing,
     Platform,
@@ -666,11 +667,22 @@ function PostRideScreenInner() {
 
   const handleCreateRide = async () => {
     // Check if driver license is verified
-    if (auth.user?.licenseVerificationStatus && auth.user.licenseVerificationStatus !== 'verified') {
-      if (auth.user.licenseVerificationStatus === 'pending') {
+    const isLicenseVerified = auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'verified';
+    if (!isLicenseVerified) {
+      if (auth.user?.licenseVerificationStatus === 'pending') {
         setError('Your driving license is still under verification. You will be able to post rides once approved.');
-      } else if (auth.user.licenseVerificationStatus === 'rejected') {
-        setError('Your license was not approved. Please contact support for more information.');
+      } else if (auth.user?.licenseVerificationStatus === 'rejected') {
+        setError('Your license was not approved. Please re-upload your license.');
+      } else {
+        setError('You must upload and verify your driving license to offer seats.');
+        Alert.alert(
+          'License Verification Required',
+          'You need to upload and verify your driving license to offer seats.',
+          [
+            { text: 'Upload License', onPress: () => router.push('/auth/license-upload') },
+            { text: 'Cancel', style: 'cancel' }
+          ]
+        );
       }
       return;
     }

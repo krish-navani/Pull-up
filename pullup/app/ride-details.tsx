@@ -543,30 +543,53 @@ export default function RideDetailsScreen() {
           <Text style={styles.totalAmount}>₹{ride.price}</Text>
         </View>
 
-        <Animated.View style={{ transform: [{ scale: buttonInfo.disabled ? new Animated.Value(1) : ctaBreath }] }}>
+        {ride && auth.user && (ride.driverId === auth.user.id || requestStatus === 'accepted') ? (
           <TouchableOpacity
             style={[
               styles.ctaButton,
               {
-                backgroundColor: buttonInfo.bgColor,
-                opacity: buttonInfo.disabled ? 0.7 : 1,
+                backgroundColor: WARM_CORE.primary,
               },
             ]}
-            onPress={handleBookRide}
-            disabled={buttonInfo.disabled}
-            activeOpacity={buttonInfo.disabled ? 1 : 0.82}
+            onPress={() => router.push({ pathname: '/group-chat' as any, params: { rideId: ride.id, rideType: 'carpool' } })}
+            activeOpacity={0.8}
           >
             <MaterialCommunityIcons
-              name={buttonInfo.icon as any}
+              name="message-text"
               size={18}
-              color={buttonInfo.color}
+              color={WARM_CORE.white}
               style={{ marginRight: 8 }}
             />
-            <Text style={[styles.ctaText, { color: buttonInfo.color }]}>
-              {buttonInfo.text}
+            <Text style={[styles.ctaText, { color: WARM_CORE.white }]}>
+              Group Chat
             </Text>
           </TouchableOpacity>
-        </Animated.View>
+        ) : (
+          <Animated.View style={{ transform: [{ scale: buttonInfo.disabled ? new Animated.Value(1) : ctaBreath }] }}>
+            <TouchableOpacity
+              style={[
+                styles.ctaButton,
+                {
+                  backgroundColor: buttonInfo.bgColor,
+                  opacity: buttonInfo.disabled ? 0.7 : 1,
+                },
+              ]}
+              onPress={handleBookRide}
+              disabled={buttonInfo.disabled}
+              activeOpacity={buttonInfo.disabled ? 1 : 0.82}
+            >
+              <MaterialCommunityIcons
+                name={buttonInfo.icon as any}
+                size={18}
+                color={buttonInfo.color}
+                style={{ marginRight: 8 }}
+              />
+              <Text style={[styles.ctaText, { color: buttonInfo.color }]}>
+                {buttonInfo.text}
+              </Text>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
       </View>
 
       {/* ECO IMPACT MODAL */}

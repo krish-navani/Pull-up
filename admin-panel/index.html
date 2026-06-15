@@ -8,6 +8,106 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <style>
+        /* ── PIN Lock ── */
+        #pinOverlay {
+            position: fixed;
+            inset: 0;
+            z-index: 99999;
+            background: #0a0f1e;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        #pinOverlay.hidden { display: none; }
+        .pin-card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 20px;
+            padding: 48px 40px;
+            width: 100%;
+            max-width: 380px;
+            text-align: center;
+            box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+        }
+        .pin-logo {
+            font-size: 36px;
+            margin-bottom: 8px;
+        }
+        .pin-title {
+            font-size: 22px;
+            font-weight: 800;
+            color: #f1f5f9;
+            margin-bottom: 6px;
+            letter-spacing: -0.5px;
+        }
+        .pin-subtitle {
+            font-size: 13px;
+            color: #64748b;
+            margin-bottom: 32px;
+        }
+        .pin-dots {
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+            margin-bottom: 28px;
+        }
+        .pin-dot {
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            border: 2px solid #334155;
+            background: transparent;
+            transition: all 0.15s;
+        }
+        .pin-dot.filled {
+            background: #D4500A;
+            border-color: #D4500A;
+            transform: scale(1.15);
+        }
+        .pin-dot.error {
+            background: #ef4444;
+            border-color: #ef4444;
+        }
+        .pin-keypad {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-bottom: 16px;
+        }
+        .pin-key {
+            background: #334155;
+            border: none;
+            border-radius: 12px;
+            color: #f1f5f9;
+            font-size: 20px;
+            font-weight: 700;
+            padding: 18px;
+            cursor: pointer;
+            transition: background 0.12s, transform 0.08s;
+            user-select: none;
+        }
+        .pin-key:hover { background: #475569; }
+        .pin-key:active { transform: scale(0.93); background: #D4500A; }
+        .pin-key.del { font-size: 18px; color: #94a3b8; }
+        .pin-key.empty { background: transparent; cursor: default; }
+        .pin-key.empty:hover { background: transparent; }
+        .pin-error {
+            font-size: 12px;
+            color: #ef4444;
+            font-weight: 600;
+            min-height: 18px;
+            margin-top: 4px;
+        }
+        .pin-lockout {
+            font-size: 13px;
+            color: #f59e0b;
+            font-weight: 600;
+            margin-top: 8px;
+        }
+        #mainContent { display: none; }
+    </style>
+    <style>
         * {
             margin: 0;
             padding: 0;
@@ -438,7 +538,45 @@
     </style>
 </head>
 <body>
+
+    <!-- ── PIN Lock Overlay ── -->
+    <div id="pinOverlay">
+        <div class="pin-card">
+            <div class="pin-logo">🔐</div>
+            <div class="pin-title">PullUp Admin</div>
+            <div class="pin-subtitle">Enter your 6-digit PIN to continue</div>
+
+            <div class="pin-dots">
+                <div class="pin-dot"></div>
+                <div class="pin-dot"></div>
+                <div class="pin-dot"></div>
+                <div class="pin-dot"></div>
+                <div class="pin-dot"></div>
+                <div class="pin-dot"></div>
+            </div>
+
+            <div class="pin-keypad">
+                <button class="pin-key" onclick="pressKey('1')">1</button>
+                <button class="pin-key" onclick="pressKey('2')">2</button>
+                <button class="pin-key" onclick="pressKey('3')">3</button>
+                <button class="pin-key" onclick="pressKey('4')">4</button>
+                <button class="pin-key" onclick="pressKey('5')">5</button>
+                <button class="pin-key" onclick="pressKey('6')">6</button>
+                <button class="pin-key" onclick="pressKey('7')">7</button>
+                <button class="pin-key" onclick="pressKey('8')">8</button>
+                <button class="pin-key" onclick="pressKey('9')">9</button>
+                <button class="pin-key empty"></button>
+                <button class="pin-key" onclick="pressKey('0')">0</button>
+                <button class="pin-key del" onclick="pressKey('del')">⌫</button>
+            </div>
+
+            <div class="pin-error" id="pinError"></div>
+        </div>
+    </div>
+
+    <div id="mainContent">
     <div class="container">
+
         <header>
             <h1>🚗 PullUp Admin Dashboard</h1>
             <p>Database Management & License Verification</p>
@@ -463,7 +601,6 @@
             </div>
         </div>
 
-        <div id="mainContent" style="display: none;">
             <h2 style="font-size: 20px; margin-bottom: 20px; color: #e2e8f0;">📋 License Management</h2>
             <div class="stats">
                 <div class="stat-card">
@@ -508,7 +645,6 @@
                 <div class="spinner"></div>
                 <p>Loading licenses...</p>
             </div>
-        </div>
     </div>
 
     <!-- Detail Modal -->
@@ -560,6 +696,8 @@
         </div>
     </div>
 
+    </div><!-- /mainContent -->
+
     <script src="dbManager.js"></script>
     <script>
         // Firebase Configuration
@@ -605,9 +743,97 @@
                 console.error('❌ Admin: Authentication error:', error);
             }
         }
-        
-        // Start initialization when DOM is ready
-        document.addEventListener('DOMContentLoaded', initialize);
+
+        // ── PIN Lock Logic ──────────────────────────────────────────────────
+        const CORRECT_PIN = '100726';
+        const SESSION_KEY = 'pullup_admin_auth';
+        let pinBuffer = '';
+        let wrongAttempts = 0;
+        let lockoutUntil = 0;
+
+        function renderDots() {
+            const dots = document.querySelectorAll('.pin-dot');
+            dots.forEach((d, i) => {
+                d.classList.toggle('filled', i < pinBuffer.length);
+                d.classList.remove('error');
+            });
+        }
+
+        function pinShakeError(msg) {
+            const dots = document.querySelectorAll('.pin-dot');
+            dots.forEach(d => { d.classList.remove('filled'); d.classList.add('error'); });
+            document.getElementById('pinError').textContent = msg;
+            pinBuffer = '';
+            setTimeout(() => {
+                dots.forEach(d => d.classList.remove('error'));
+            }, 600);
+        }
+
+        function pressKey(val) {
+            const now = Date.now();
+            if (now < lockoutUntil) {
+                const secs = Math.ceil((lockoutUntil - now) / 1000);
+                document.getElementById('pinError').textContent = `Too many attempts. Wait ${secs}s.`;
+                return;
+            }
+            if (val === 'del') {
+                pinBuffer = pinBuffer.slice(0, -1);
+                renderDots();
+                document.getElementById('pinError').textContent = '';
+                return;
+            }
+            if (pinBuffer.length >= 6) return;
+            pinBuffer += val;
+            renderDots();
+            if (pinBuffer.length === 6) {
+                setTimeout(checkPin, 120);
+            }
+        }
+
+        function checkPin() {
+            if (pinBuffer === CORRECT_PIN) {
+                sessionStorage.setItem(SESSION_KEY, '1');
+                document.getElementById('pinOverlay').classList.add('hidden');
+                initialize();
+            } else {
+                wrongAttempts++;
+                if (wrongAttempts >= 3) {
+                    lockoutUntil = Date.now() + 30000;
+                    pinShakeError('Too many attempts. Locked for 30s.');
+                    wrongAttempts = 0;
+                    startLockoutTimer();
+                } else {
+                    pinShakeError(`Incorrect PIN. ${3 - wrongAttempts} attempt${3 - wrongAttempts === 1 ? '' : 's'} left.`);
+                }
+            }
+        }
+
+        function startLockoutTimer() {
+            const el = document.getElementById('pinError');
+            const interval = setInterval(() => {
+                const remaining = Math.ceil((lockoutUntil - Date.now()) / 1000);
+                if (remaining <= 0) {
+                    clearInterval(interval);
+                    el.textContent = '';
+                } else {
+                    el.textContent = `Too many attempts. Locked for ${remaining}s.`;
+                }
+            }, 1000);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            if (sessionStorage.getItem(SESSION_KEY) === '1') {
+                // Already authenticated this session
+                document.getElementById('pinOverlay').classList.add('hidden');
+                initialize();
+            }
+            // Keyboard support
+            document.addEventListener('keydown', (e) => {
+                if (document.getElementById('pinOverlay').classList.contains('hidden')) return;
+                if (e.key >= '0' && e.key <= '9') pressKey(e.key);
+                if (e.key === 'Backspace') pressKey('del');
+            });
+        });
 
         async function loadLicenses() {
             showLoading();

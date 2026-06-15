@@ -2,7 +2,7 @@ import axios, { AxiosInstance } from 'axios';
 import { Platform } from 'react-native';
 
 const REMOTE_BACKEND_URL =
-  process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pull-up-phi.vercel.app';
+  process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://backend-eight-gamma-77.vercel.app';
 
 // Web dev: same-origin proxy in metro.config.js avoids CORS on the Vercel OTP API
 const BACKEND_URL =
@@ -102,7 +102,7 @@ export const sendOTPViaBackend = async (
 export const verifyOTPViaBackend = async (
   email: string,
   otp: string
-): Promise<{ success: boolean; message: string }> => {
+): Promise<{ success: boolean; message: string; firebaseToken?: string; userId?: string }> => {
   try {
     console.log('[BACKEND-API] Verifying OTP for:', email);
     
@@ -116,6 +116,8 @@ export const verifyOTPViaBackend = async (
       return {
         success: true,
         message: response.data.message || 'OTP verified successfully',
+        firebaseToken: response.data.firebaseToken,
+        userId: response.data.userId,
       };
     } else {
       throw new Error(response.data.message || 'Failed to verify OTP');

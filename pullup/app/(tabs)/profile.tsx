@@ -369,7 +369,6 @@ export default function ProfileScreen() {
   });
 
   const [activeRole, setActiveRole] = useState<'driver' | 'passenger'>(auth.user?.role === 'driver' ? 'driver' : 'passenger');
-  const [isWiping, setIsWiping] = useState(false);
 
   // Sync with auth.user.role if it changes from outside
   useEffect(() => {
@@ -501,32 +500,6 @@ export default function ProfileScreen() {
   };
 
 
-
-  const handleWipeData = async () => {
-    Alert.alert(
-      'Wipe Test Data?',
-      'This will delete all rides, bookings, taxi pools, requests, members, and chat rooms from the Firestore database. Users and profiles will remain intact. This action CANNOT be undone.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Wipe Database',
-          style: 'destructive',
-          onPress: async () => {
-            setIsWiping(true);
-            try {
-              const { wipeAllFirestoreCommutes } = require('@/utils/resetDbService');
-              const res = await wipeAllFirestoreCommutes();
-              Alert.alert('Success', `Database wiped successfully! Deleted ${res.count} documents.`);
-            } catch (error: any) {
-              Alert.alert('Wipe Failed', error.message || 'An error occurred while wiping database.');
-            } finally {
-              setIsWiping(false);
-            }
-          }
-        }
-      ]
-    );
-  };
 
   const handleRoleSwitch = () => {
     const newRole = isDriver ? 'passenger' : 'driver';
@@ -940,24 +913,6 @@ export default function ProfileScreen() {
                   </View>
                 </PressableCard>
 
-                <PressableCard
-                  onPress={handleWipeData}
-                  style={styles.menuItemCard}
-                  index={7}
-                  disabled={isWiping}
-                >
-                  <View style={styles.menuItemContent}>
-                    <View style={[styles.menuItemIconBox, { backgroundColor: 'rgba(239, 68, 68, 0.08)' }]}>
-                      <MaterialCommunityIcons name="database-remove" size={20} color="#EF4444" />
-                    </View>
-                    <Text style={[styles.menuItemText, { color: '#EF4444' }]}>Wipe Test Data</Text>
-                    {isWiping ? (
-                      <ActivityIndicator size="small" color="#EF4444" />
-                    ) : (
-                      <MaterialCommunityIcons name="chevron-right" size={20} color="#EF4444" />
-                    )}
-                  </View>
-                </PressableCard>
               </View>
 
               {/* LOGOUT BUTTON */}

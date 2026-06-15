@@ -6,6 +6,7 @@ import {
     getDocs,
     orderBy,
     query,
+    runTransaction,
     Timestamp,
     updateDoc,
     where,
@@ -13,6 +14,8 @@ import {
 import { Booking } from '../types';
 import { db } from './firebase';
 import { addBookingToRide, updateAvailableSeats, updateBookingStatusInRide } from './rideService';
+import { sendNotification } from './notificationService';
+import { addParticipantToGroupChat, removeParticipantFromGroupChat } from './rideGroupChatService';
 
 /**
  * Create a new booking in Firestore
@@ -335,6 +338,11 @@ export const cancelBookingWithPenalty = async (
   try {
     console.log('[BOOKING SERVICE] Canceling booking:', bookingId);
 
+    // Fetch booking details to get passengerName
+    const bookingRef = doc(db, 'bookings', bookingId);
+    const bookingSnap = await getDoc(bookingRef);
+    const passengerName = bookingSnap.exists() ? bookingSnap.data()?.passengerName || 'Passenger' : 'Passenger';
+
     // Calculate penalty (50 if cancelled within 20 minutes of departure)
     const departureTimeDate = new Date(departureTime);
     const now = new Date();
@@ -343,6 +351,13 @@ export const cancelBookingWithPenalty = async (
 
     // Update booking status to cancelled with penalty
     await updateBookingStatus(bookingId, rideId, passengerId, 'cancelled', penalty);
+
+    // Remove passenger from group chat
+    try {
+      await removeParticipantFromGroupChat(rideId, passengerId, passengerName);
+    } catch (chatErr) {
+      console.warn('[BOOKING SERVICE] Failed to remove passenger from group chat:', chatErr);
+    }
 
     console.log('[BOOKING SERVICE] ✅ Booking cancelled with penalty:', penalty);
     return penalty;
@@ -363,19 +378,76 @@ export const acceptBookingAsDriver = async (
   rideId: string,
   passengerId: string,
   seatsToReduce: number,
-  currentAvailableSeats: number
+  currentAvailableSeats: number,
+  driverId: string,
+  driverName: string
 ): Promise<void> => {
   try {
-    console.log('[BOOKING SERVICE] Driver accepting booking:', bookingId);
+    console.log('[BOOKING SERVICE] Atomic acceptBookingAsDriver:', bookingId);
 
-    // Update booking status to accepted
-    await updateBookingStatus(bookingId, rideId, passengerId, 'accepted');
+    let passengerName = 'Passenger';
 
-    // Reduce available seats in the ride
-    const newAvailableSeats = Math.max(0, currentAvailableSeats - seatsToReduce);
-    await updateAvailableSeats(rideId, newAvailableSeats);
+    await runTransaction(db, async (transaction) => {
+      const bookingRef = doc(db, 'bookings', bookingId);
+      const rideRef = doc(db, 'rides', rideId);
 
-    console.log('[BOOKING SERVICE] ✅ Booking accepted, available seats updated');
+      const bookingSnap = await transaction.get(bookingRef);
+      const rideSnap = await transaction.get(rideRef);
+
+      if (!bookingSnap.exists()) throw new Error('Booking not found');
+      if (!rideSnap.exists()) throw new Error('Ride not found');
+
+      const bookingData = bookingSnap.data()!;
+      passengerName = bookingData.passengerName || 'Passenger';
+
+      const rideData = rideSnap.data()!;
+      const bookedSeats = rideData.bookedSeats || [];
+      const updatedBookedSeats = bookedSeats.map((b: any) => {
+        if (b.passengerId === passengerId) {
+          return { ...b, status: 'accepted' };
+        }
+        return b;
+      });
+
+      transaction.update(bookingRef, {
+        status: 'accepted',
+        updatedAt: Timestamp.now(),
+      });
+
+      const newAvailableSeats = Math.max(0, (rideData.availableSeats || 0) - seatsToReduce);
+      transaction.update(rideRef, {
+        bookedSeats: updatedBookedSeats,
+        availableSeats: newAvailableSeats,
+        updatedAt: Timestamp.now(),
+      });
+    });
+
+    console.log('[BOOKING SERVICE] ✅ Transaction committed. Adding passenger to chat and sending notification...');
+
+    // Add passenger to group chat
+    try {
+      await addParticipantToGroupChat(
+        rideId,
+        passengerId,
+        passengerName,
+        `${passengerName} joined the ride`
+      );
+    } catch (chatErr) {
+      console.warn('[BOOKING SERVICE] Failed to add passenger to group chat:', chatErr);
+    }
+
+    // Send real Firestore notification to passenger
+    await sendNotification(
+      passengerId,
+      'booking_accepted',
+      'Booking Approved 🎉',
+      `${driverName} accepted your booking for the ride.`,
+      rideId,
+      bookingId,
+      driverId,
+      driverName
+    ).catch(err => console.error('[BOOKING SERVICE] Failed to send notification:', err));
+
   } catch (error: any) {
     console.error('[BOOKING SERVICE] ❌ Failed to accept booking:', error);
     throw {
@@ -385,20 +457,60 @@ export const acceptBookingAsDriver = async (
   }
 };
 
-/**
- * Reject a booking as driver
- */
 export const rejectBookingAsDriver = async (
   bookingId: string,
   rideId: string,
-  passengerId: string
+  passengerId: string,
+  driverId: string,
+  driverName: string
 ): Promise<void> => {
   try {
-    console.log('[BOOKING SERVICE] Driver rejecting booking:', bookingId);
+    console.log('[BOOKING SERVICE] Atomic rejectBookingAsDriver:', bookingId);
 
-    await updateBookingStatus(bookingId, rideId, passengerId, 'rejected');
+    await runTransaction(db, async (transaction) => {
+      const bookingRef = doc(db, 'bookings', bookingId);
+      const rideRef = doc(db, 'rides', rideId);
 
-    console.log('[BOOKING SERVICE] ✅ Booking rejected');
+      const bookingSnap = await transaction.get(bookingRef);
+      const rideSnap = await transaction.get(rideRef);
+
+      if (!bookingSnap.exists()) throw new Error('Booking not found');
+      if (!rideSnap.exists()) throw new Error('Ride not found');
+
+      const rideData = rideSnap.data()!;
+      const bookedSeats = rideData.bookedSeats || [];
+      const updatedBookedSeats = bookedSeats.map((b: any) => {
+        if (b.passengerId === passengerId) {
+          return { ...b, status: 'rejected' };
+        }
+        return b;
+      });
+
+      transaction.update(bookingRef, {
+        status: 'rejected',
+        updatedAt: Timestamp.now(),
+      });
+
+      transaction.update(rideRef, {
+        bookedSeats: updatedBookedSeats,
+        updatedAt: Timestamp.now(),
+      });
+    });
+
+    console.log('[BOOKING SERVICE] ✅ Transaction committed. Sending rejection notification to passenger:', passengerId);
+
+    // Send real Firestore notification to passenger
+    await sendNotification(
+      passengerId,
+      'booking_rejected',
+      'Booking Rejected',
+      `${driverName} rejected your booking request.`,
+      rideId,
+      bookingId,
+      driverId,
+      driverName
+    ).catch(err => console.error('[BOOKING SERVICE] Failed to send notification:', err));
+
   } catch (error: any) {
     console.error('[BOOKING SERVICE] ❌ Failed to reject booking:', error);
     throw {

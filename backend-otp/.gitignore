@@ -48,3 +48,4 @@ private_key.pem
 # Temporary
 temp/
 tmp/
+.vercel

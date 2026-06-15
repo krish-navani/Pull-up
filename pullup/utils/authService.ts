@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
     User as FirebaseUser,
     signInAnonymously,
+    signInWithCustomToken,
     signOut,
 } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore';
@@ -124,9 +125,23 @@ export const verifyOTPAndCreateAccount = async (
     // Validate OTP (it was already verified in signup screen, just validate it still exists and is valid)
     await validateVerifiedOTP(email, otp);
 
-    // Create anonymous auth user
-    const userCredential = await signInAnonymously(auth);
-    const firebaseUser = userCredential.user;
+    // Sign in using custom token or anonymous auth
+    let firebaseUser = auth.currentUser;
+    if (!firebaseUser) {
+      console.log('[AUTH] Creating account: No active Firebase Auth session. Re-verifying OTP to get custom token...');
+      const verifyResult = await verifyOTP(email, otp);
+      if (verifyResult.firebaseToken) {
+        console.log('[AUTH] Creating account: Signing in with Custom Token...');
+        const userCredential = await signInWithCustomToken(auth, verifyResult.firebaseToken);
+        firebaseUser = userCredential.user;
+      } else {
+        console.log('[AUTH] Creating account: Falling back to anonymous auth...');
+        const userCredential = await signInAnonymously(auth);
+        firebaseUser = userCredential.user;
+      }
+    }
+
+    console.log('[AUTH] Firebase Auth session user UID:', firebaseUser.uid);
 
     // Create user document in Firestore
     const userData: User = {
@@ -172,7 +187,7 @@ export const verifyOTPAndLogin = async (email: string, otp: string): Promise<Use
     const fullEmail = email.includes('@') ? email : email + UNIVERSITY_DOMAIN;
 
     // Verify OTP
-    await verifyOTP(email, otp);
+    const verifyResult = await verifyOTP(email, otp);
 
     // Get user data from Firestore
     const usersQuery = query(collection(db, 'users'), where('email', '==', fullEmail));
@@ -198,8 +213,16 @@ export const verifyOTPAndLogin = async (email: string, otp: string): Promise<Use
       console.warn('[AUTH] ⚠️ Driver license not verified - navigation guard will redirect to license verification');
     }
 
-    // Sign in anonymously (for persistence)
-    const userCredential = await signInAnonymously(auth);
+    // Sign in using Custom Token or fallback to Anonymous
+    if (verifyResult.firebaseToken) {
+      console.log('[AUTH] Login: Signing in with Custom Token...');
+      await signInWithCustomToken(auth, verifyResult.firebaseToken);
+    } else {
+      console.log('[AUTH] Login: Falling back to Anonymous Auth...');
+      await signInAnonymously(auth);
+    }
+    console.log('[AUTH] Login: Firebase Auth completed. UID:', auth.currentUser?.uid, '| User Profile ID:', userData.id);
+    console.log('[AUTH] Login: UIDs match?', auth.currentUser?.uid === userData.id);
 
     // Delete OTP after successful verification
     await deleteOTP(email);
@@ -330,8 +353,18 @@ export const verifyOTPAndAutoAuth = async (email: string, otp: string): Promise<
     console.log('[AUTH] verifyOTPAndAutoAuth: Checking for email =', fullEmail);
 
     // Verify OTP first
-    await verifyOTP(email, otp);
-    console.log('[AUTH] ✅ OTP verified successfully');
+    const verifyResult = await verifyOTP(email, otp);
+    console.log('[AUTH] ✅ OTP verified successfully', verifyResult);
+
+    // Sign in using Custom Token or fallback to Anonymous immediately
+    if (verifyResult.firebaseToken) {
+      console.log('[AUTH] Auto-Auth: Signing in with Custom Token...');
+      await signInWithCustomToken(auth, verifyResult.firebaseToken);
+    } else {
+      console.log('[AUTH] Auto-Auth: Falling back to Anonymous Auth...');
+      await signInAnonymously(auth);
+    }
+    console.log('[AUTH] Auto-Auth: Firebase Auth completed. UID:', auth.currentUser?.uid);
 
     // Check if email exists
     const emailExists = await checkEmailExists(fullEmail);
@@ -351,6 +384,9 @@ export const verifyOTPAndAutoAuth = async (email: string, otp: string): Promise<
       const userDoc = snapshot.docs[0];
       const userData = ensureUserDefaults(userDoc.data());
       
+      console.log('[AUTH] Auto-Auth: Firebase Auth UID:', auth.currentUser?.uid, '| User Profile ID:', userData.id);
+      console.log('[AUTH] Auto-Auth: UIDs match?', auth.currentUser?.uid === userData.id);
+      
       console.log('[AUTH] Firestore user data:', {
         id: userData.id,
         email: userData.email,
@@ -367,10 +403,6 @@ export const verifyOTPAndAutoAuth = async (email: string, otp: string): Promise<
       if (userData.role === 'driver' && !userData.licenseVerified) {
         console.warn('[AUTH] ⚠️ Driver license not verified yet - user will be redirected to license verification');
       }
-
-      // Sign in anonymously (for persistence)
-      await signInAnonymously(auth);
-      console.log('[AUTH] ✅ Firebase anonymous auth completed');
 
       // Delete OTP after successful verification
       await deleteOTP(email);

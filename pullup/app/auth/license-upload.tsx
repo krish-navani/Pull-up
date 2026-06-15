@@ -28,6 +28,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WARM_CORE } from '@/constants/theme';
+import apiClient from '@/utils/backendApiClient';
+
 
 // Progress Bar Component
 const ProgressBar = ({ step, totalSteps, label }: { step: number; totalSteps: number; label: string }) => {
@@ -418,6 +420,17 @@ export default function LicenseUploadScreen() {
             
             // Show verification success modal
             setShowSuccessModal(true);
+
+            // Notify admin — fire and forget, never block the user
+            apiClient.post('/notify-license-submission', {
+              userId: auth.user.id,
+              userName: auth.user.fullName || null,
+              userEmail: auth.user.email || null,
+              licenseImageUrl,
+            }).catch((notifyErr: any) => {
+              console.warn('[LICENSE] Admin notification failed (non-fatal):', notifyErr?.message);
+            });
+
         } catch (err: any) {
             console.error('[LICENSE] Upload error:', err);
             setError(err.message || 'Failed to submit license. Please try again.');

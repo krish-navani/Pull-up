@@ -5,57 +5,15 @@
     "NODE_ENV": "production"
   },
   "functions": {
-    "api/otp/index.js": {
-      "maxDuration": 30,
-      "memory": 512
-    },
-    "api/otp/send-otp.js": {
+    "api/[...route].js": {
       "maxDuration": 60,
       "memory": 1024
-    },
-    "api/otp/verify-otp.js": {
-      "maxDuration": 30,
-      "memory": 512
-    },
-    "api/otp/create-subscription.js": {
-      "maxDuration": 30,
-      "memory": 512
-    },
-    "api/otp/verify-subscription.js": {
-      "maxDuration": 30,
-      "memory": 512
-    },
-    "api/otp/create-order.js": {
-      "maxDuration": 30,
-      "memory": 512
-    },
-    "api/otp/verify-payment.js": {
-      "maxDuration": 30,
-      "memory": 512
-    },
-    "api/otp/cancel-pending-booking.js": {
-      "maxDuration": 30,
-      "memory": 512
-    },
-    "api/otp/complete-ride.js": {
-      "maxDuration": 30,
-      "memory": 512
-    },
-    "api/otp/verify-upi.js": {
-      "maxDuration": 30,
-      "memory": 512
-    },
-    "api/otp/request-withdrawal.js": {
-      "maxDuration": 30,
-      "memory": 512
-    },
-    "api/otp/refresh-wallet.js": {
-      "maxDuration": 30,
-      "memory": 512
-    },
-    "api/otp/checkout-page.js": {
-      "maxDuration": 30,
-      "memory": 512
     }
-  }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/[...route].js"
+    }
+  ]
 }

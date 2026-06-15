@@ -207,7 +207,9 @@ export const subscribeToMessages = (
         onMessagesUpdate(messages);
       },
       (error) => {
-        console.error('[CHAT SERVICE] ❌ Error subscribing to messages:', error);
+        console.log('[COLLECTION] chatRooms/' + rideId + '/messages');
+        console.log('[QUERY] query(collection(db, "chatRooms", "' + rideId + '", "messages"), orderBy("timestamp", "asc"))');
+        console.error('[PERMISSION ERROR] ' + error.message);
       }
     );
 

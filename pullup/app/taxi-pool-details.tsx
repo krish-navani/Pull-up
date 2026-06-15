@@ -36,6 +36,8 @@ import {
   PoolRequest,
   PoolMember
 } from '@/utils/taxiPoolService';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db } from '@/utils/firebase';
 
 // Custom Map style (reused from ride-details.tsx)
 const warmMapStyle = [
@@ -49,6 +51,184 @@ const warmMapStyle = [
   { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#FFE0CC' }] },
   { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#A33A08' }] }
 ];
+
+// Real-time Pool Creator Row Component
+function TaxiPoolCreatorRow({ creatorId, defaultName, defaultCourse, defaultDivision, defaultImage }: {
+  creatorId: string;
+  defaultName: string;
+  defaultCourse: string;
+  defaultDivision: string;
+  defaultImage?: string | null;
+}) {
+  const [profile, setProfile] = useState<any>(null);
+
+  useEffect(() => {
+    if (!creatorId) return;
+    const userRef = doc(db, 'users', creatorId);
+    const unsub = onSnapshot(
+      userRef,
+      (docSnap) => {
+        if (docSnap.exists()) {
+          setProfile(docSnap.data());
+        }
+      },
+      (error) => {
+        console.error('[REALTIME PROFILE] Error fetching pool creator profile:', creatorId, error);
+      }
+    );
+    return () => unsub();
+  }, [creatorId]);
+
+  const displayName = profile?.fullName || defaultName || 'Creator';
+  const displayCourse = profile?.course || defaultCourse || 'N/A';
+  const displayDivision = profile?.division || defaultDivision || 'N/A';
+  const displayImage = profile?.profileImage || defaultImage;
+
+  return (
+    <View style={styles.personRow}>
+      <View style={styles.avatar}>
+        {displayImage ? (
+          <Image source={{ uri: displayImage }} style={styles.avatarImg} />
+        ) : (
+          <Text style={styles.avatarText}>{displayName.charAt(0).toUpperCase()}</Text>
+        )}
+      </View>
+      <View style={styles.personDetails}>
+        <Text style={styles.personName}>{displayName}</Text>
+        <Text style={styles.personSub}>{displayCourse} • Division {displayDivision}</Text>
+      </View>
+    </View>
+  );
+}
+
+// Real-time Pool Member Row Component
+function TaxiPoolMemberRow({ member, creatorId }: { member: PoolMember; creatorId: string }) {
+  const [profile, setProfile] = useState<any>(null);
+
+  useEffect(() => {
+    if (!member.passengerId) return;
+    const userRef = doc(db, 'users', member.passengerId);
+    const unsub = onSnapshot(
+      userRef,
+      (docSnap) => {
+        if (docSnap.exists()) {
+          setProfile(docSnap.data());
+        }
+      },
+      (error) => {
+        console.error('[REALTIME PROFILE] Error fetching pool member profile:', member.passengerId, error);
+      }
+    );
+    return () => unsub();
+  }, [member.passengerId]);
+
+  const displayName = profile?.fullName || member.passengerName || 'Member';
+  const displayCourse = profile?.course || member.passengerCourse || 'N/A';
+  const displayDivision = profile?.division || member.passengerDivision || 'N/A';
+  const displayImage = profile?.profileImage || member.passengerImage;
+
+  return (
+    <View style={styles.memberRow}>
+      <View style={styles.avatarSmall}>
+        {displayImage ? (
+          <Image source={{ uri: displayImage }} style={styles.avatarImgSmall} />
+        ) : (
+          <Text style={styles.avatarTextSmall}>{displayName.charAt(0).toUpperCase()}</Text>
+        )}
+      </View>
+      <View style={styles.memberDetails}>
+        <Text style={styles.memberName}>
+          {displayName} {member.passengerId === creatorId ? '(Admin)' : ''}
+        </Text>
+        <Text style={styles.memberSub}>{displayCourse} • Div {displayDivision}</Text>
+      </View>
+    </View>
+  );
+}
+
+// Real-time Pool Join Request Row Component
+function TaxiPoolRequestRow({
+  req,
+  actionLoading,
+  handleRejectRequest,
+  handleAcceptRequest,
+}: {
+  req: PoolRequest;
+  actionLoading: string | null;
+  handleRejectRequest: (requestId: string, passengerId: string) => Promise<void>;
+  handleAcceptRequest: (requestId: string, passenger: any) => Promise<void>;
+}) {
+  const [profile, setProfile] = useState<any>(null);
+
+  useEffect(() => {
+    if (!req.passengerId) return;
+    const userRef = doc(db, 'users', req.passengerId);
+    const unsub = onSnapshot(
+      userRef,
+      (docSnap) => {
+        if (docSnap.exists()) {
+          setProfile(docSnap.data());
+        }
+      },
+      (error) => {
+        console.error('[REALTIME PROFILE] Error fetching request passenger profile:', req.passengerId, error);
+      }
+    );
+    return () => unsub();
+  }, [req.passengerId]);
+
+  const displayName = profile?.fullName || req.passengerName || 'Passenger';
+  const displayCourse = profile?.course || req.passengerCourse || 'N/A';
+  const displayDivision = profile?.division || req.passengerDivision || 'N/A';
+  const displayImage = profile?.profileImage || req.passengerImage;
+
+  return (
+    <View style={styles.requestCard}>
+      <View style={styles.requestProfile}>
+        <View style={styles.avatarSmall}>
+          {displayImage ? (
+            <Image source={{ uri: displayImage }} style={styles.avatarImgSmall} />
+          ) : (
+            <Text style={styles.avatarTextSmall}>{displayName.charAt(0).toUpperCase()}</Text>
+          )}
+        </View>
+        <View style={styles.requestMeta}>
+          <Text style={styles.reqName}>{displayName}</Text>
+          <Text style={styles.reqSub}>{displayCourse} • Div {displayDivision}</Text>
+        </View>
+      </View>
+      
+      <View style={styles.requestActions}>
+        {actionLoading === req.id ? (
+          <ActivityIndicator size="small" color={WARM_CORE.primary} style={{ paddingHorizontal: 24 }} />
+        ) : (
+          <>
+            <TouchableOpacity
+              style={[styles.actionBtn, styles.declineBtn]}
+              onPress={() => handleRejectRequest(req.id, req.passengerId)}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.declineBtnText}>Decline</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.actionBtn, styles.approveBtn]}
+              onPress={() => handleAcceptRequest(req.id, {
+                id: req.passengerId,
+                fullName: displayName,
+                profileImage: displayImage || null,
+                course: displayCourse,
+                division: displayDivision
+              })}
+              activeOpacity={0.8}
+            >
+              <Text style={styles.approveBtnText}>Approve</Text>
+            </TouchableOpacity>
+          </>
+        )}
+      </View>
+    </View>
+  );
+}
 
 export default function TaxiPoolDetailsScreen() {
   const router = useRouter();
@@ -358,19 +538,13 @@ export default function TaxiPoolDetailsScreen() {
 
           {/* Creator Details */}
           <Text style={styles.sectionLabel}>Pool Creator</Text>
-          <View style={styles.personRow}>
-            <View style={styles.avatar}>
-              {pool.creatorImage ? (
-                <Image source={{ uri: pool.creatorImage }} style={styles.avatarImg} />
-              ) : (
-                <Text style={styles.avatarText}>{pool.creatorName.charAt(0).toUpperCase()}</Text>
-              )}
-            </View>
-            <View style={styles.personDetails}>
-              <Text style={styles.personName}>{pool.creatorName}</Text>
-              <Text style={styles.personSub}>{pool.creatorCourse} • Division {pool.creatorDivision}</Text>
-            </View>
-          </View>
+          <TaxiPoolCreatorRow
+            creatorId={pool.creatorId}
+            defaultName={pool.creatorName}
+            defaultCourse={pool.creatorCourse}
+            defaultDivision={pool.creatorDivision}
+            defaultImage={pool.creatorImage}
+          />
 
           <View style={styles.divider} />
 
@@ -383,21 +557,11 @@ export default function TaxiPoolDetailsScreen() {
           {members.length > 0 ? (
             <View style={styles.membersList}>
               {members.map((member) => (
-                <View key={member.id} style={styles.memberRow}>
-                  <View style={styles.avatarSmall}>
-                    {member.passengerImage ? (
-                      <Image source={{ uri: member.passengerImage }} style={styles.avatarImgSmall} />
-                    ) : (
-                      <Text style={styles.avatarTextSmall}>{member.passengerName.charAt(0).toUpperCase()}</Text>
-                    )}
-                  </View>
-                  <View style={styles.memberDetails}>
-                    <Text style={styles.memberName}>
-                      {member.passengerName} {member.passengerId === pool.creatorId ? '(Admin)' : ''}
-                    </Text>
-                    <Text style={styles.memberSub}>{member.passengerCourse} • Div {member.passengerDivision}</Text>
-                  </View>
-                </View>
+                <TaxiPoolMemberRow
+                  key={member.id}
+                  member={member}
+                  creatorId={pool.creatorId}
+                />
               ))}
             </View>
           ) : (
@@ -413,50 +577,13 @@ export default function TaxiPoolDetailsScreen() {
               {requests.filter(r => r.status === 'requested').length > 0 ? (
                 <View style={styles.requestsContainer}>
                   {requests.filter(r => r.status === 'requested').map((req) => (
-                    <View key={req.id} style={styles.requestCard}>
-                      <View style={styles.requestProfile}>
-                        <View style={styles.avatarSmall}>
-                          {req.passengerImage ? (
-                            <Image source={{ uri: req.passengerImage }} style={styles.avatarImgSmall} />
-                          ) : (
-                            <Text style={styles.avatarTextSmall}>{req.passengerName.charAt(0).toUpperCase()}</Text>
-                          )}
-                        </View>
-                        <View style={styles.requestMeta}>
-                          <Text style={styles.reqName}>{req.passengerName}</Text>
-                          <Text style={styles.reqSub}>{req.passengerCourse} • Div {req.passengerDivision}</Text>
-                        </View>
-                      </View>
-                      
-                      <View style={styles.requestActions}>
-                        {actionLoading === req.id ? (
-                          <ActivityIndicator size="small" color={WARM_CORE.primary} style={{ paddingHorizontal: 24 }} />
-                        ) : (
-                          <>
-                            <TouchableOpacity
-                              style={[styles.actionBtn, styles.declineBtn]}
-                              onPress={() => handleRejectRequest(req.id, req.passengerId)}
-                              activeOpacity={0.8}
-                            >
-                              <Text style={styles.declineBtnText}>Decline</Text>
-                            </TouchableOpacity>
-                            <TouchableOpacity
-                              style={[styles.actionBtn, styles.approveBtn]}
-                              onPress={() => handleAcceptRequest(req.id, {
-                                id: req.passengerId,
-                                fullName: req.passengerName,
-                                profileImage: req.passengerImage,
-                                course: req.passengerCourse,
-                                division: req.passengerDivision
-                              })}
-                              activeOpacity={0.8}
-                            >
-                              <Text style={styles.approveBtnText}>Approve</Text>
-                            </TouchableOpacity>
-                          </>
-                        )}
-                      </View>
-                    </View>
+                    <TaxiPoolRequestRow
+                      key={req.id}
+                      req={req}
+                      actionLoading={actionLoading}
+                      handleRejectRequest={handleRejectRequest}
+                      handleAcceptRequest={handleAcceptRequest}
+                    />
                   ))}
                 </View>
               ) : (
@@ -467,6 +594,17 @@ export default function TaxiPoolDetailsScreen() {
 
           {/* BOTTOM CTAS */}
           <View style={{ marginTop: 24, marginBottom: 20 }}>
+            {(isCreator || members.some(m => m.passengerId === auth.user?.id)) && (
+              <TouchableOpacity
+                style={[styles.joinButton, { marginBottom: isCreator && pool.status !== 'CANCELLED' ? 12 : 0 }]}
+                onPress={() => router.push({ pathname: '/group-chat' as any, params: { rideId: pool.id, rideType: 'taxipool' } })}
+                activeOpacity={0.85}
+              >
+                <MaterialCommunityIcons name="message-text" size={18} color={WARM_CORE.white} style={{ marginRight: 6 }} />
+                <Text style={styles.joinText}>Group Chat</Text>
+              </TouchableOpacity>
+            )}
+
             {isCreator ? (
               pool.status !== 'CANCELLED' && (
                 <TouchableOpacity

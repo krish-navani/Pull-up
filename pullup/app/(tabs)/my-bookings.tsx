@@ -8,6 +8,7 @@ import {
     ActivityIndicator,
     Animated,
     Easing,
+    Image,
     Modal,
     Pressable,
     RefreshControl,
@@ -22,6 +23,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { subscribeToCreatorPools, subscribeToMemberPools, TaxiPool } from '@/utils/taxiPoolService';
+import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
+import { db } from '@/utils/firebase';
 
 // ---------------------------------------------------------------------------
 // Skeleton shimmer card shown while bookings are loading
@@ -311,6 +314,28 @@ export default function MyBookingsScreen() {
   const [activeTab, setActiveTab] = useState<'riding' | 'hosting'>('riding');
   const [subTab, setSubTab] = useState<'car' | 'taxi'>('car');
   const [selectedRideForDetails, setSelectedRideForDetails] = useState<string | null>(null);
+  const [selectedRideBookings, setSelectedRideBookings] = useState<any[]>([]);
+
+  // Listen to bookings for the selected hosted ride in real-time (bypassing context bookings array)
+  useEffect(() => {
+    if (!selectedRideForDetails) {
+      setSelectedRideBookings([]);
+      return;
+    }
+    const q = query(
+      collection(db, 'bookings'),
+      where('rideId', '==', selectedRideForDetails)
+    );
+    console.log('[MY-BOOKINGS] Subscribing to bookings for hosted ride:', selectedRideForDetails);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const bList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      console.log('[MY-BOOKINGS] Received ride bookings update, count:', bList.length);
+      setSelectedRideBookings(bList);
+    }, (err) => {
+      console.error('[MY-BOOKINGS] Ride bookings subscription error:', err);
+    });
+    return () => unsubscribe();
+  }, [selectedRideForDetails]);
   const [selectedStatus, setSelectedStatus] = useState<'active' | 'in_progress' | 'completed' | 'cancelled'>('active');
   const [joinedTaxiPools, setJoinedTaxiPools] = useState<TaxiPool[]>([]);
   const [createdTaxiPools, setCreatedTaxiPools] = useState<TaxiPool[]>([]);
@@ -790,7 +815,18 @@ export default function MyBookingsScreen() {
                 onPress={() => router.push({ pathname: '/chat', params: { rideId: ride.id, bookingId: booking.id } })}
               >
                 <MaterialCommunityIcons name="message-text-outline" size={16} color={WARM_CORE.white} />
-                <Text style={styles.chatButtonText}>Message Driver</Text>
+                <Text style={styles.chatButtonText}>Message Driver (1-on-1)</Text>
+              </AnimatedPressButton>
+            )}
+
+            {/* Group Chat */}
+            {(ride.status === 'active' || ride.status === 'in_progress') && (
+              <AnimatedPressButton
+                style={[styles.chatButton, { backgroundColor: WARM_CORE.accent, marginTop: 4 }]}
+                onPress={() => router.push({ pathname: '/group-chat' as any, params: { rideId: ride.id, rideType: 'carpool' } })}
+              >
+                <MaterialCommunityIcons name="account-group" size={16} color={WARM_CORE.white} />
+                <Text style={styles.chatButtonText}>Group Chat</Text>
               </AnimatedPressButton>
             )}
 
@@ -1281,7 +1317,7 @@ export default function MyBookingsScreen() {
       {selectedRideForDetails && (
         <RideDetailsModal
           ride={getDetailedRide(selectedRideForDetails)!}
-          passengers={getCurrentRidePassengers(selectedRideForDetails)}
+          passengers={selectedRideBookings}
           earnings={getDriverRideEarnings(getDetailedRide(selectedRideForDetails)!)}
           onClose={() => setSelectedRideForDetails(null)}
           onAcceptPassenger={async (passengerId) => {
@@ -1308,6 +1344,136 @@ export default function MyBookingsScreen() {
         />
       )}
     </>
+  );
+}
+
+// Real-time Passenger Profile Row Component
+function PassengerProfileRow({
+  booking,
+  onAccept,
+  onReject,
+  processingBooking,
+  setProcessingBooking,
+}: {
+  booking: any;
+  onAccept: (passengerId: string) => Promise<void>;
+  onReject: (passengerId: string) => Promise<void>;
+  processingBooking: string | null;
+  setProcessingBooking: (id: string | null) => void;
+}) {
+  const [profile, setProfile] = useState<any>(null);
+
+  useEffect(() => {
+    if (!booking.passengerId) return;
+    const userRef = doc(db, 'users', booking.passengerId);
+    const unsub = onSnapshot(
+      userRef,
+      (docSnap) => {
+        if (docSnap.exists()) {
+          setProfile(docSnap.data());
+        }
+      },
+      (error) => {
+        console.error('[REALTIME PROFILE] Error fetching passenger profile:', booking.passengerId, error);
+      }
+    );
+    return () => unsub();
+  }, [booking.passengerId]);
+
+  const displayName = profile?.fullName || booking.passengerName || 'Passenger';
+  const displayYear = profile?.year || 'N/A';
+  const displayCourse = profile?.course || 'N/A';
+  const displayDivision = profile?.division ? `Div ${profile.division}` : '';
+  const displayImage = profile?.profileImage;
+
+  return (
+    <View style={styles.driverPassengerCard}>
+      <View style={styles.driverPassengerAvatar}>
+        {displayImage ? (
+          <Image source={{ uri: displayImage }} style={{ width: 40, height: 40, borderRadius: 20 }} />
+        ) : (
+          <Text style={styles.driverPassengerAvatarText}>
+            {displayName.charAt(0).toUpperCase()}
+          </Text>
+        )}
+      </View>
+
+      <View style={styles.driverPassengerInfo}>
+        <Text style={styles.driverPassengerName}>{displayName}</Text>
+        <Text style={styles.driverPassengerDetail}>
+          {displayYear !== 'N/A' ? displayYear : ''}
+          {displayYear !== 'N/A' && displayCourse !== 'N/A' ? ' • ' : ''}
+          {displayCourse !== 'N/A' ? displayCourse : ''}
+          {(displayYear !== 'N/A' || displayCourse !== 'N/A') && displayDivision ? ' • ' : ''}
+          {displayDivision || ''}
+        </Text>
+      </View>
+
+      {booking.status === 'pending' ? (
+        <View style={styles.driverPassengerActions}>
+          <TouchableOpacity
+            style={[styles.driverActionButton, styles.driverAcceptButton]}
+            onPress={async () => {
+              setProcessingBooking(booking.passengerId);
+              try {
+                await onAccept(booking.passengerId);
+              } finally {
+                setProcessingBooking(null);
+              }
+            }}
+            disabled={processingBooking === booking.passengerId}
+          >
+            <MaterialCommunityIcons name="check" size={16} color={WARM_CORE.white} />
+            <Text style={styles.driverSuccessButtonText}>Accept</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.driverActionButton, styles.driverRejectButton]}
+            onPress={async () => {
+              setProcessingBooking(booking.passengerId);
+              try {
+                await onReject(booking.passengerId);
+              } finally {
+                setProcessingBooking(null);
+              }
+            }}
+            disabled={processingBooking === booking.passengerId}
+          >
+            <MaterialCommunityIcons name="close" size={16} color={WARM_CORE.white} />
+            <Text style={styles.driverDangerButtonText}>Reject</Text>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <View
+          style={[
+            styles.driverStatusIndicator,
+            {
+              backgroundColor:
+                booking.status === 'accepted'
+                  ? 'rgba(16, 185, 129, 0.15)'
+                  : booking.status === 'pending'
+                  ? 'rgba(245, 158, 11, 0.15)'
+                  : 'rgba(239, 68, 68, 0.15)',
+            },
+          ]}
+        >
+          <Text
+            style={[
+              styles.driverStatusIndicatorText,
+              {
+                color:
+                  booking.status === 'accepted'
+                    ? WARM_CORE.success
+                    : booking.status === 'pending'
+                    ? '#F59E0B'
+                    : WARM_CORE.error,
+              },
+            ]}
+          >
+            {booking.status === 'pending' ? 'Ride Requested' : booking.status.charAt(0).toUpperCase() + booking.status.slice(1)}
+          </Text>
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -1412,83 +1578,14 @@ function RideDetailsModal({ ride, passengers, earnings, onClose, onAcceptPasseng
             {passengers.length > 0 ? (
               <View style={styles.driverPassengersList}>
                 {passengers.map((passenger, index) => (
-                  <View key={index} style={styles.driverPassengerCard}>
-                    <View style={styles.driverPassengerAvatar}>
-                      <Text style={styles.driverPassengerAvatarText}>
-                        {passenger.passengerName.charAt(0)}
-                      </Text>
-                    </View>
-
-                    <View style={styles.driverPassengerInfo}>
-                      <Text style={styles.driverPassengerName}>{passenger.passengerName}</Text>
-                      <Text style={styles.driverPassengerDetail}>{passenger.year} • {passenger.course}</Text>
-                    </View>
-
-                    {passenger.status === 'pending' ? (
-                      <View style={styles.driverPassengerActions}>
-                        <TouchableOpacity
-                          style={[styles.driverActionButton, styles.driverAcceptButton]}
-                          onPress={async () => {
-                            setProcessingBooking(passenger.passengerId);
-                            try {
-                              await onAcceptPassenger(passenger.passengerId);
-                            } finally {
-                              setProcessingBooking(null);
-                            }
-                          }}
-                          disabled={processingBooking === passenger.passengerId}
-                        >
-                          <MaterialCommunityIcons name="check" size={16} color={WARM_CORE.white} />
-                          <Text style={styles.driverSuccessButtonText}>Accept</Text>
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={[styles.driverActionButton, styles.driverRejectButton]}
-                          onPress={async () => {
-                            setProcessingBooking(passenger.passengerId);
-                            try {
-                              await onRejectPassenger(passenger.passengerId);
-                            } finally {
-                              setProcessingBooking(null);
-                            }
-                          }}
-                          disabled={processingBooking === passenger.passengerId}
-                        >
-                          <MaterialCommunityIcons name="close" size={16} color={WARM_CORE.white} />
-                          <Text style={styles.driverDangerButtonText}>Reject</Text>
-                        </TouchableOpacity>
-                      </View>
-                    ) : (
-                      <View
-                        style={[
-                          styles.driverStatusIndicator,
-                          {
-                            backgroundColor:
-                              passenger.status === 'accepted'
-                                ? 'rgba(16, 185, 129, 0.15)'
-                                : passenger.status === 'pending'
-                                ? 'rgba(245, 158, 11, 0.15)'
-                                : 'rgba(239, 68, 68, 0.15)',
-                          },
-                        ]}
-                      >
-                        <Text
-                          style={[
-                            styles.driverStatusIndicatorText,
-                            {
-                              color:
-                                passenger.status === 'accepted'
-                                  ? WARM_CORE.success
-                                  : passenger.status === 'pending'
-                                  ? '#F59E0B'
-                                  : WARM_CORE.error,
-                            },
-                          ]}
-                        >
-                          {passenger.status === 'pending' ? 'Ride Requested' : passenger.status.charAt(0).toUpperCase() + passenger.status.slice(1)}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
+                  <PassengerProfileRow
+                    key={index}
+                    booking={passenger}
+                    onAccept={onAcceptPassenger}
+                    onReject={onRejectPassenger}
+                    processingBooking={processingBooking}
+                    setProcessingBooking={setProcessingBooking}
+                  />
                 ))}
               </View>
             ) : (
@@ -1572,7 +1669,27 @@ function RideDetailsModal({ ride, passengers, earnings, onClose, onAcceptPasseng
                 }}
               >
                 <MaterialCommunityIcons name="message-outline" size={18} color="#0EA5E9" />
-                <Text style={styles.driverInfoButtonText}>Chat with Passenger</Text>
+                <Text style={styles.driverInfoButtonText}>Chat with Passenger (1-on-1)</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* GROUP CHAT BUTTON */}
+            {(ride.status === 'active' || ride.status === 'in_progress') && (
+              <TouchableOpacity 
+                style={[styles.driverInfoButton, { flex: 1, marginBottom: 12, borderColor: WARM_CORE.primary, backgroundColor: 'rgba(212, 80, 10, 0.08)' }]}
+                onPress={() => {
+                  onClose();
+                  router.push({
+                    pathname: '/group-chat' as any,
+                    params: {
+                      rideId: ride.id,
+                      rideType: 'carpool',
+                    },
+                  });
+                }}
+              >
+                <MaterialCommunityIcons name="account-group-outline" size={18} color={WARM_CORE.primary} />
+                <Text style={[styles.driverInfoButtonText, { color: WARM_CORE.primary }]}>Group Chat</Text>
               </TouchableOpacity>
             )}
 

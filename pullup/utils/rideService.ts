@@ -14,6 +14,7 @@ import {
 import { Location, Ride } from '../types';
 import { db } from './firebase';
 import apiClient from './backendApiClient';
+import { initializeGroupChat } from './rideGroupChatService';
 
 /**
  * Create a new ride in Firestore
@@ -59,6 +60,13 @@ export const createRideInFirestore = async (
     // Add document to rides collection (auto-generates ID)
     const docRef = await addDoc(collection(db, 'rides'), firebaseRideData);
     
+    // Initialize group chat for the ride
+    try {
+      await initializeGroupChat(docRef.id, 'carpool', driverId, driverName);
+    } catch (chatErr) {
+      console.warn('[RIDE SERVICE] Failed to initialize group chat:', chatErr);
+    }
+
     console.log('[RIDE SERVICE] ✅ Ride created successfully with ID:', docRef.id);
     return docRef.id;
   } catch (error: any) {

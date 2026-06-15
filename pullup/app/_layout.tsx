@@ -108,9 +108,19 @@ function RootLayoutContent() {
       });
 
       if (canAccessMainApp && inAuthGroup) {
-        // User is fully authenticated — redirect out of auth group to home
-        console.log('[NAV GUARD] ✅ User can access main app, redirecting to home');
-        router.replace('/(tabs)/home');
+        // If they are on the license-upload screen, only redirect them to home if their license is actually verified.
+        // Otherwise, they might be a passenger trying to verify, or a driver checking status.
+        if (currentAuthScreen === 'license-upload') {
+          if (isLicenseVerified) {
+            console.log('[NAV GUARD] ✅ License is verified, redirecting to home');
+            router.replace('/(tabs)/home');
+          } else {
+            console.log('[NAV GUARD] ⏳ On license-upload and not yet verified — letting user stay');
+          }
+        } else {
+          console.log('[NAV GUARD] ✅ User can access main app, redirecting to home');
+          router.replace('/(tabs)/home');
+        }
       } else if (!canAccessMainApp && !inAuthGroup) {
         // User shouldn't be in the main app — redirect to appropriate auth screen
         if (isSignedIn && isProfileComplete && needsLicenseVerification) {
@@ -161,6 +171,10 @@ function RootLayoutContent() {
             presentation: 'card',
           }} />
           <Stack.Screen name="chat" options={{
+            headerShown: false,
+            presentation: 'card',
+          }} />
+          <Stack.Screen name="group-chat" options={{
             headerShown: false,
             presentation: 'card',
           }} />

@@ -22,7 +22,7 @@ import { db } from '@/utils/firebase';
 import apiClient from '@/utils/backendApiClient';
 
 const REMOTE_BACKEND_URL =
-  process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pull-up-phi.vercel.app';
+  process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://backend-eight-gamma-77.vercel.app';
 
 interface Plan {
   id: 'monthly' | 'quarterly' | 'yearly';

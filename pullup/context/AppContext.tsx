@@ -865,7 +865,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           rideId,
           passengerId,
           booking.seatsBooked,
-          ride.availableSeats
+          ride.availableSeats,
+          state.auth.user?.id || '',
+          state.auth.user?.fullName || 'Driver'
         );
 
         // Update local state
@@ -908,7 +910,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         console.log('[CONTEXT] Driver rejecting booking:', booking.id);
 
         // Update in Firestore
-        await rejectBookingAsDriver(booking.id, rideId, passengerId);
+        await rejectBookingAsDriver(
+          booking.id,
+          rideId,
+          passengerId,
+          state.auth.user?.id || '',
+          state.auth.user?.fullName || 'Driver'
+        );
 
         // Update local state
         const updatedBooking: Booking = { ...booking, status: 'rejected' };

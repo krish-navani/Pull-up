@@ -17,6 +17,11 @@ import {
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { sendNotification } from './notificationService';
+import {
+  initializeGroupChat,
+  addParticipantToGroupChat,
+  removeParticipantFromGroupChat
+} from './rideGroupChatService';
 
 export interface TaxiPool {
   id: string;
@@ -108,6 +113,13 @@ export const createTaxiPool = async (
       passengerDivision: poolData.creatorDivision,
       joinedAt: new Date().toISOString()
     });
+
+    // 3. Initialize group chat for the pool
+    try {
+      await initializeGroupChat(poolId, 'taxipool', poolData.creatorId, poolData.creatorName, poolData.creatorImage ?? undefined);
+    } catch (chatErr) {
+      console.warn('[TAXI POOL SERVICE] Failed to initialize group chat:', chatErr);
+    }
 
     console.log('[TAXI POOL SERVICE] ✅ Created Taxi Pool with ID:', poolId);
     return poolId;
@@ -464,6 +476,13 @@ export const acceptJoinRequest = async (
 
     console.log('[TAXI POOL SERVICE] ✅ Request accepted successfully');
 
+    // Add passenger to group chat participants list
+    try {
+      await addParticipantToGroupChat(poolId, passenger.id, passenger.fullName);
+    } catch (chatErr) {
+      console.warn('[TAXI POOL SERVICE] Failed to add passenger to group chat:', chatErr);
+    }
+
     // Notify passenger
     try {
       await sendNotification(
@@ -640,5 +659,79 @@ export const subscribeToMemberPools = (
       console.error('[TAXI POOL SERVICE] Error subscribing to member pools:', error);
     }
   );
+};
+
+/**
+ * Leave a Taxi Pool (Passenger-initiated leave)
+ */
+export const leaveTaxiPool = async (
+  poolId: string,
+  passengerId: string,
+  passengerName: string
+): Promise<void> => {
+  const poolRef = doc(db, 'taxiPools', poolId);
+  const memberRef = doc(db, 'poolMembers', `${poolId}_${passengerId}`);
+  
+  // Find request document for this passenger in this pool
+  const requestsRef = collection(db, 'poolRequests');
+  const q = query(requestsRef, where('poolId', '==', poolId), where('passengerId', '==', passengerId));
+  
+  try {
+    const querySnap = await getDocs(q);
+    
+    await runTransaction(db, async (transaction) => {
+      // 1. Get Pool details
+      const poolSnap = await transaction.get(poolRef);
+      if (!poolSnap.exists()) {
+        throw new Error('Pool not found');
+      }
+      
+      const poolData = poolSnap.data() as TaxiPool;
+      
+      // 2. Delete member document
+      transaction.delete(memberRef);
+      
+      // 3. Update Request status to rejected/cancelled
+      querySnap.forEach((d) => {
+        transaction.update(d.ref, { status: 'rejected' });
+      });
+      
+      // 4. Update member count and open status
+      const newCount = Math.max(1, poolData.memberCount - 1);
+      transaction.update(poolRef, {
+        memberCount: newCount,
+        status: 'OPEN' // Always make it OPEN since count went down
+      });
+    });
+    
+    // 5. Remove from group chat
+    try {
+      await removeParticipantFromGroupChat(poolId, passengerId, passengerName);
+    } catch (chatErr) {
+      console.warn('[TAXI POOL SERVICE] Chat leave failed:', chatErr);
+    }
+    
+    console.log('[TAXI POOL SERVICE] ✅ Member left taxi pool successfully');
+  } catch (error) {
+    console.error('[TAXI POOL SERVICE] Error leaving taxi pool:', error);
+    throw error;
+  }
+};
+
+/**
+ * Update Taxi Pool Status
+ */
+export const updateTaxiPoolStatus = async (
+  poolId: string,
+  status: 'OPEN' | 'FULL' | 'CLOSED' | 'CANCELLED' | 'in_progress' | 'completed'
+): Promise<void> => {
+  try {
+    const poolRef = doc(db, 'taxiPools', poolId);
+    await updateDoc(poolRef, { status });
+    console.log('[TAXI POOL SERVICE] ✅ Updated pool status to:', status);
+  } catch (error) {
+    console.error('[TAXI POOL SERVICE] Error updating pool status:', error);
+    throw error;
+  }
 };
 
