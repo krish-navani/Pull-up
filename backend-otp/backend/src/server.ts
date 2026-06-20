@@ -164,6 +164,18 @@ if (!process.env.VERCEL) {
     const port = config.port || 3000;
     app.listen(port, () => {
       console.log(`[SERVER] 🚀 Local server listening on http://localhost:${port}`);
+      
+      // Start background sweeps for reminders and scheduled notifications every 60 seconds
+      setInterval(async () => {
+        try {
+          const fetchFn = (globalThis as any).fetch;
+          if (typeof fetchFn === 'function') {
+            await fetchFn(`http://localhost:${port}/api/otp/process-reminders`, { method: 'POST' });
+          }
+        } catch (e) {
+          console.error('[SERVER] Failed to trigger background reminders sweep:', e);
+        }
+      }, 60000);
     });
   }).catch((err) => {
     console.error('[SERVER] ❌ Failed to initialize local server:', err);

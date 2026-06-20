@@ -705,12 +705,77 @@ const releaseExpiredBookings = async () => {
   try {
     const db = getDb();
     const now = admin.firestore.Timestamp.now();
-    const expiredQuery = await db.collection('bookings')
-      .where('status', '==', 'payment_pending')
-      .where('expiresAt', '<', now)
+
+    // 1. Check accepted but unpaid bookings
+    const acceptedQuery = await db.collection('bookings')
+      .where('status', '==', 'accepted')
+      .where('paymentStatus', '==', 'pending')
       .get();
 
-    for (const doc of expiredQuery.docs) {
+    const expiredAcceptedDocs = acceptedQuery.docs.filter(doc => {
+      const data = doc.data();
+      return data.expiresAt && data.expiresAt.toDate() < now.toDate();
+    });
+
+    for (const doc of expiredAcceptedDocs) {
+      const bData = doc.data();
+      console.log(`[CLEANUP] Releasing expired accepted booking: ${doc.id}`);
+      await db.runTransaction(async (transaction) => {
+        const bRef = db.collection('bookings').doc(doc.id);
+        const rRef = db.collection('rides').doc(bData.rideId);
+
+        const bSnap = await transaction.get(bRef);
+        const rSnap = await transaction.get(rRef);
+
+        if (bSnap.exists && bSnap.data()!.status === 'accepted' && bSnap.data()!.paymentStatus === 'pending') {
+          transaction.update(bRef, {
+            status: 'expired',
+            paymentStatus: 'expired',
+            updatedAt: admin.firestore.Timestamp.now(),
+          });
+
+          if (rSnap.exists) {
+            const rData = rSnap.data()!;
+            const updatedBookedSeats = (rData.bookedSeats || []).map((bs: any) => {
+              if (bs.passengerId === bData.passengerId) {
+                return { ...bs, status: 'expired' };
+              }
+              return bs;
+            });
+            transaction.update(rRef, {
+              bookedSeats: updatedBookedSeats,
+              updatedAt: admin.firestore.Timestamp.now(),
+            });
+          }
+
+          // Send notification
+          const notificationRef = db.collection('users').doc(bData.passengerId).collection('notifications').doc();
+          transaction.set(notificationRef, {
+            userId: bData.passengerId,
+            type: 'booking_expired',
+            title: 'Ride Booking Expired',
+            message: `Your booking request expired because payment was not completed within 30 minutes.`,
+            rideId: bData.rideId,
+            bookingId: doc.id,
+            read: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        }
+      });
+      await logAuditEvent(bData.passengerId, 'accepted_booking_expired', 0, { bookingId: doc.id, rideId: bData.rideId });
+    }
+
+    // 2. Legacy 'payment_pending' bookings cleanup
+    const pendingQuery = await db.collection('bookings')
+      .where('status', '==', 'payment_pending')
+      .get();
+
+    const expiredPendingDocs = pendingQuery.docs.filter(doc => {
+      const data = doc.data();
+      return data.expiresAt && data.expiresAt.toDate() < now.toDate();
+    });
+
+    for (const doc of expiredPendingDocs) {
       const bData = doc.data();
       console.log(`[CLEANUP] Releasing expired payment_pending booking: ${doc.id}`);
       await db.runTransaction(async (transaction) => {
@@ -752,33 +817,36 @@ router.post('/create-order', async (req: Request, res: Response) => {
   try {
     releaseExpiredBookings().catch(err => console.error('[CLEANUP] Async cleanup failed:', err));
 
-    const { rideId, passengerId, passengerName, passengerEmail, seatsBooked } = req.body;
+    const { bookingId, passengerId } = req.body;
 
-    if (!rideId || !passengerId || !seatsBooked) {
+    if (!bookingId || !passengerId) {
       return res.status(400).json({ success: false, message: 'Missing booking parameters' });
     }
 
     const db = getDb();
 
-    const activeCheck = await db.collection('bookings')
-      .where('rideId', '==', rideId)
-      .where('passengerId', '==', passengerId)
-      .get();
-
-    const active = activeCheck.docs.find(d => {
-      const status = d.data().status;
-      return status === 'pending' || status === 'accepted' || status === 'payment_pending';
-    });
-
-    if (active) {
-      return res.status(400).json({
-        success: false,
-        code: 'DUPLICATE_BOOKING',
-        message: 'You already have an active or pending booking for this ride.',
-      });
-    }
-
     const result = await db.runTransaction(async (transaction) => {
+      const bookingRef = db.collection('bookings').doc(bookingId);
+      const bookingSnap = await transaction.get(bookingRef);
+
+      if (!bookingSnap.exists) {
+        throw new Error('BOOKING_NOT_FOUND');
+      }
+
+      const bookingData = bookingSnap.data()!;
+      if (bookingData.passengerId !== passengerId) {
+        throw new Error('UNAUTHORIZED_BOOKING_ACCESS');
+      }
+
+      if (bookingData.status !== 'accepted') {
+        throw new Error('BOOKING_NOT_ACCEPTED');
+      }
+
+      if (bookingData.paymentStatus === 'paid') {
+        throw new Error('BOOKING_ALREADY_PAID');
+      }
+
+      const rideId = bookingData.rideId;
       const rideRef = db.collection('rides').doc(rideId);
       const rideSnap = await transaction.get(rideRef);
 
@@ -792,67 +860,48 @@ router.post('/create-order', async (req: Request, res: Response) => {
         throw new Error('RIDE_NOT_ACTIVE');
       }
 
-      if (rideData.availableSeats < seatsBooked) {
+      if (rideData.availableSeats < bookingData.seatsBooked) {
         throw new Error('INSUFFICIENT_SEATS');
       }
 
-      const totalAmount = rideData.price * seatsBooked;
+      const totalAmount = bookingData.totalPrice || (rideData.price * bookingData.seatsBooked);
 
       const rzp = getRazorpay();
       const order = await rzp.orders.create({
-        amount: totalAmount * 100,
+        amount: Math.round(totalAmount * 100),
         currency: 'INR',
         receipt: `rcpt_car_${rideId.substring(0, 8)}_${Date.now()}`,
         notes: {
           rideId,
           passengerId,
-          seatsBooked: seatsBooked.toString(),
+          seatsBooked: bookingData.seatsBooked.toString(),
+          bookingId
         }
       });
 
-      const bookingRef = db.collection('bookings').doc();
-      const bookingData = {
-        rideId,
-        passengerId,
-        passengerName,
-        passengerEmail: passengerEmail || '',
-        driverId: rideData.driverId,
-        seatsBooked,
-        pricePerSeat: rideData.price,
-        totalPrice: totalAmount,
-        status: 'payment_pending',
-        paymentStatus: 'pending',
+      transaction.update(bookingRef, {
         orderId: order.id,
-        refundStatus: 'none',
-        refundAmount: 0,
-        bookedAt: admin.firestore.Timestamp.now(),
-        createdAt: admin.firestore.Timestamp.now(),
         updatedAt: admin.firestore.Timestamp.now(),
-        expiresAt: admin.firestore.Timestamp.fromDate(new Date(Date.now() + 10 * 60 * 1000)),
-      };
-
-      transaction.set(bookingRef, bookingData);
+      });
 
       const currentBookedSeats = rideData.bookedSeats || [];
-      const cleanBookedSeats = currentBookedSeats.filter((b: any) => b.passengerId !== passengerId);
-      
-      const tempBookingInfo = {
-        passengerId,
-        passengerName,
-        seatsBooked,
-        status: 'payment_pending',
-        bookedAt: new Date().toISOString(),
-        orderId: order.id,
-      };
+      const updatedBookedSeats = currentBookedSeats.map((b: any) => {
+        if (b.passengerId === passengerId) {
+          return {
+            ...b,
+            orderId: order.id
+          };
+        }
+        return b;
+      });
 
       transaction.update(rideRef, {
-        availableSeats: Math.max(0, rideData.availableSeats - seatsBooked),
-        bookedSeats: [...cleanBookedSeats, tempBookingInfo],
+        bookedSeats: updatedBookedSeats,
         updatedAt: admin.firestore.Timestamp.now(),
       });
 
       return {
-        bookingId: bookingRef.id,
+        bookingId: bookingSnap.id,
         orderId: order.id,
         amount: order.amount,
         keyId: config.razorpay.keyId,
@@ -870,7 +919,23 @@ router.post('/create-order', async (req: Request, res: Response) => {
     let status = 500;
     let message = error.message || 'Failed to initialize booking payment';
 
-    if (error.message === 'RIDE_NOT_FOUND') {
+    if (error.message === 'BOOKING_NOT_FOUND') {
+      status = 404;
+      code = 'BOOKING_NOT_FOUND';
+      message = 'Booking not found';
+    } else if (error.message === 'BOOKING_NOT_ACCEPTED') {
+      status = 400;
+      code = 'BOOKING_NOT_ACCEPTED';
+      message = 'Booking must be approved by the driver before payment';
+    } else if (error.message === 'BOOKING_ALREADY_PAID') {
+      status = 400;
+      code = 'BOOKING_ALREADY_PAID';
+      message = 'This booking has already been paid';
+    } else if (error.message === 'UNAUTHORIZED_BOOKING_ACCESS') {
+      status = 403;
+      code = 'UNAUTHORIZED_BOOKING_ACCESS';
+      message = 'Unauthorized to access this booking';
+    } else if (error.message === 'RIDE_NOT_FOUND') {
       status = 404;
       code = 'RIDE_NOT_FOUND';
       message = 'Ride not found';
@@ -918,11 +983,11 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
 
       const bookingData = bookingDoc.data()!;
 
-      if (bookingData.status === 'accepted' && bookingData.paymentStatus === 'paid') {
+      if (bookingData.status === 'confirmed' && bookingData.paymentStatus === 'paid') {
         return { bookingId, rideId: bookingData.rideId, alreadyProcessed: true };
       }
 
-      if (bookingData.status !== 'payment_pending') {
+      if (bookingData.status !== 'accepted') {
         throw new Error('INVALID_BOOKING_STATUS');
       }
 
@@ -935,33 +1000,89 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
 
       const rideData = rideDoc.data()!;
 
-      transaction.update(bookingRef, {
-        status: 'accepted',
-        paymentStatus: 'paid',
-        paymentId: razorpay_payment_id,
-        paidAt: admin.firestore.Timestamp.now(),
-        updatedAt: admin.firestore.Timestamp.now(),
-      });
+      // Get Chat, Wallet, and Stats references and perform reads BEFORE any writes
+      const chatRef = db.collection('rideChats').doc(bookingData.rideId);
+      const chatDoc = await transaction.get(chatRef);
+
+      const walletRef = db.collection('wallets').doc(bookingData.driverId);
+      const walletDoc = await transaction.get(walletRef);
+
+      const statsRef = db.collection('system').doc('stats');
+      const statsDoc = await transaction.get(statsRef);
+
+      // OVERBOOKING PROTECTION: Atomically check if seats are still available
+      if (rideData.availableSeats < bookingData.seatsBooked) {
+        throw new Error('INSUFFICIENT_SEATS');
+      }
+
+      const newAvailableSeats = Math.max(0, rideData.availableSeats - bookingData.seatsBooked);
 
       const currentBookedSeats = rideData.bookedSeats || [];
       const updatedBookedSeats = currentBookedSeats.map((b: any) => {
         if (b.passengerId === bookingData.passengerId) {
           return {
             ...b,
-            status: 'accepted',
+            status: 'confirmed',
+            paymentStatus: 'paid',
             paymentId: razorpay_payment_id,
           };
         }
         return b;
       });
 
+      // Writes begin here:
+      transaction.update(bookingRef, {
+        status: 'confirmed',
+        paymentStatus: 'paid',
+        paymentId: razorpay_payment_id,
+        paidAt: admin.firestore.Timestamp.now(),
+        updatedAt: admin.firestore.Timestamp.now(),
+      });
+
       transaction.update(rideRef, {
+        availableSeats: newAvailableSeats,
         bookedSeats: updatedBookedSeats,
         updatedAt: admin.firestore.Timestamp.now(),
       });
 
-      const walletRef = db.collection('wallets').doc(bookingData.driverId);
-      const walletDoc = await transaction.get(walletRef);
+      // Update /rideChats document & send system message
+      if (chatDoc.exists) {
+        transaction.update(chatRef, {
+          participants: admin.firestore.FieldValue.arrayUnion(bookingData.passengerId),
+          updatedAt: admin.firestore.Timestamp.now(),
+        });
+        
+        const messageRef = chatRef.collection('messages').doc();
+        transaction.set(messageRef, {
+          rideId: bookingData.rideId,
+          senderId: 'system',
+          senderName: 'System',
+          senderPhoto: '',
+          text: `${bookingData.passengerName} joined the ride`,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          type: 'system',
+        });
+      } else {
+        transaction.set(chatRef, {
+          rideId: bookingData.rideId,
+          rideType: 'carpool',
+          participants: [bookingData.driverId, bookingData.passengerId],
+          lastMessage: 'Group chat created',
+          lastMessageTime: admin.firestore.Timestamp.now(),
+          updatedAt: admin.firestore.Timestamp.now(),
+        });
+        const messageRef = chatRef.collection('messages').doc();
+        transaction.set(messageRef, {
+          rideId: bookingData.rideId,
+          senderId: 'system',
+          senderName: 'System',
+          senderPhoto: '',
+          text: `${bookingData.passengerName} joined the ride`,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          type: 'system',
+        });
+      }
+
       if (walletDoc.exists) {
         const wData = walletDoc.data()!;
         transaction.update(walletRef, {
@@ -980,8 +1101,6 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
         });
       }
 
-      const statsRef = db.collection('system').doc('stats');
-      const statsDoc = await transaction.get(statsRef);
       if (statsDoc.exists) {
         const statsData = statsDoc.data()!;
         transaction.update(statsRef, {
@@ -1007,6 +1126,47 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
 
     if (!result.alreadyProcessed) {
       await logAuditEvent(result.passengerId, 'booking_payment_verified', result.totalPrice, { bookingId, rideId: result.rideId, paymentId: razorpay_payment_id });
+      
+      // Check if ride is now full and dispatch capacity reached notifications
+      try {
+        const freshRideDoc = await db.collection('rides').doc(result.rideId).get();
+        const freshRide = freshRideDoc.data();
+        if (freshRide && freshRide.availableSeats === 0) {
+          // Send notification to Driver
+          await triggerNotification(
+            freshRide.driverId,
+            'pool_full',
+            'Ride is Now Full! 🎉',
+            `Your ride is now full. All ${freshRide.totalSeats || 0} seats have been booked.`,
+            result.rideId,
+            null,
+            'ride-details',
+            result.rideId
+          );
+
+          // Send notification to all confirmed passengers
+          const confirmedBookings = await db.collection('bookings')
+            .where('rideId', '==', result.rideId)
+            .where('status', '==', 'confirmed')
+            .get();
+
+          for (const cbDoc of confirmedBookings.docs) {
+            const cb = cbDoc.data();
+            await triggerNotification(
+              cb.passengerId,
+              'pool_full',
+              'Commute Confirmed 🚗',
+              `Ride capacity has been reached. Your group commute is fully booked!`,
+              result.rideId,
+              cbDoc.id,
+              'ride-details',
+              result.rideId
+            );
+          }
+        }
+      } catch (err) {
+        console.error('[API] Error sending ride full notifications:', err);
+      }
     }
 
     res.json({
@@ -1029,11 +1189,15 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
     } else if (error.message === 'INVALID_BOOKING_STATUS') {
       status = 400;
       code = 'INVALID_BOOKING_STATUS';
-      message = 'Booking is not in pending payment state';
+      message = 'Booking is not in accepted state';
     } else if (error.message === 'RIDE_NOT_FOUND') {
       status = 404;
       code = 'RIDE_NOT_FOUND';
       message = 'Ride not found';
+    } else if (error.message === 'INSUFFICIENT_SEATS') {
+      status = 400;
+      code = 'INSUFFICIENT_SEATS';
+      message = 'Requested seat count is no longer available';
     }
 
     res.status(status).json({ success: false, code, message });
@@ -1161,7 +1325,7 @@ router.post('/complete-ride', async (req: Request, res: Response) => {
       const bookingsRef = db.collection('bookings');
       const bookingsQuery = await bookingsRef
         .where('rideId', '==', rideId)
-        .where('status', '==', 'accepted')
+        .where('status', 'in', ['accepted', 'confirmed'])
         .get();
 
       let totalGrossEarnings = 0;
@@ -1562,6 +1726,381 @@ router.post('/request-withdrawal', async (req: Request, res: Response) => {
     }
 
     res.status(status).json({ success: false, code, message });
+  }
+});
+
+// Helper function to send unified notification and push alert
+export async function triggerNotification(
+  userId: string,
+  type: string,
+  title: string,
+  message: string,
+  rideId: string | null = null,
+  bookingId: string | null = null,
+  targetScreen: string | null = null,
+  targetId: string | null = null,
+  campaignId: string | null = null
+): Promise<boolean> {
+  try {
+    const db = getDb();
+    
+    // 1. Fetch user to check settings and push token
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) return false;
+
+    const userData = userDoc.data() || {};
+    const prefs = userData.notificationPreferences || {
+      rideUpdates: true,
+      paymentUpdates: true,
+      chatUpdates: true,
+      poolUpdates: true,
+      marketingUpdates: false
+    };
+    const expoPushToken = userData.expoPushToken;
+    const mutedChats = userData.mutedChats || {};
+
+    // 2. Map notification type to preference channel
+    let isAllowed = true;
+    if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'booking_expired'].includes(type)) {
+      isAllowed = prefs.rideUpdates !== false;
+    } else if (['payment_required', 'payment_confirmed', 'refund_initiated', 'refund_completed'].includes(type)) {
+      isAllowed = prefs.paymentUpdates !== false;
+    } else if (['message'].includes(type)) {
+      isAllowed = prefs.chatUpdates !== false;
+      const chatId = rideId;
+      if (chatId && mutedChats[chatId]) {
+        const muteExpires = new Date(mutedChats[chatId]);
+        if (muteExpires > new Date()) {
+          isAllowed = false; // Chat muted, suppress push alert
+        }
+      }
+    } else if (['pool_joined', 'pool_accepted', 'pool_full', 'pool_request'].includes(type)) {
+      isAllowed = prefs.poolUpdates !== false;
+    } else if (['marketing', 'campaign'].includes(type)) {
+      isAllowed = prefs.marketingUpdates === true;
+    }
+
+    // 3. Write in-app notification subcollection
+    const notifRef = db.collection('users').doc(userId).collection('notifications').doc();
+    const notifPayload = {
+      id: notifRef.id,
+      userId,
+      type,
+      title,
+      message,
+      rideId: rideId || null,
+      bookingId: bookingId || null,
+      read: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      targetScreen: targetScreen || null,
+      targetId: targetId || null,
+      campaignId: campaignId || null
+    };
+    await notifRef.set(notifPayload);
+
+    // 4. Send Expo Push if allowed and token exists
+    let pushSent = false;
+    if (isAllowed && expoPushToken) {
+      try {
+        const pushPayload = {
+          to: expoPushToken,
+          sound: 'default',
+          title,
+          body: message,
+          data: {
+            type,
+            rideId: rideId || '',
+            bookingId: bookingId || '',
+            targetScreen: targetScreen || '',
+            targetId: targetId || '',
+            campaignId: campaignId || ''
+          }
+        };
+
+        const fetchFn = (globalThis as any).fetch;
+        if (typeof fetchFn === 'function') {
+          const expoResponse = await fetchFn('https://exp.host/--/api/v2/push/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(pushPayload)
+          });
+          
+          if (expoResponse.ok) {
+            pushSent = true;
+          }
+        }
+      } catch (err) {
+        console.error('[PUSH ERROR] Failed to send push:', err);
+      }
+    }
+
+    // 5. Update Campaign Analytics if campaignId exists
+    if (campaignId) {
+      const campRef = db.collection('notificationAnalytics').doc(campaignId);
+      await campRef.update({
+        sentCount: admin.firestore.FieldValue.increment(1),
+        deliveredCount: admin.firestore.FieldValue.increment(pushSent ? 1 : 0)
+      }).catch(e => console.error('[ANALYTICS] Campaign updates failed:', e));
+    }
+
+    return pushSent;
+  } catch (error) {
+    console.error('[TRIGGER NOTIFICATION ERROR]', error);
+    return false;
+  }
+}
+
+// REST route to send unified notification
+router.post('/send-notification', async (req: Request, res: Response) => {
+  const {
+    userId,
+    type,
+    title,
+    message,
+    rideId,
+    bookingId,
+    senderId,
+    senderName,
+    targetScreen,
+    targetId,
+    campaignId
+  } = req.body;
+
+  if (!userId || !type || !title || !message) {
+    return res.status(400).json({ success: false, message: 'Missing required notification fields' });
+  }
+
+  try {
+    const pushSent = await triggerNotification(
+      userId,
+      type,
+      title,
+      message,
+      rideId,
+      bookingId,
+      targetScreen,
+      targetId,
+      campaignId
+    );
+    res.json({ success: true, pushSent });
+  } catch (error: any) {
+    console.error('[ROUTES] /send-notification error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// REST route to track opened/clicked campaign analytics
+router.post('/analytics/track', async (req: Request, res: Response) => {
+  const { campaignId, action } = req.body;
+  if (!campaignId || !action) {
+    return res.status(400).json({ success: false, message: 'Missing campaignId or action' });
+  }
+
+  try {
+    const db = getDb();
+    const campRef = db.collection('notificationAnalytics').doc(campaignId);
+    
+    const updateData: Record<string, any> = {};
+    if (action === 'opened') {
+      updateData.openedCount = admin.firestore.FieldValue.increment(1);
+    } else if (action === 'clicked') {
+      updateData.clickedCount = admin.firestore.FieldValue.increment(1);
+    }
+
+    await campRef.update(updateData);
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error('[ROUTES] /analytics/track error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// REST route to run reminder and campaign scheduled sweeps
+router.post('/process-reminders', async (req: Request, res: Response) => {
+  try {
+    const db = getDb();
+    const now = new Date();
+    console.log(`[REMINDER SWEEP] Starting sweep at: ${now.toISOString()}`);
+
+    // ─── 1. RIDE DEPARTURE REMINDERS (30m / 15m) ───
+    const ridesSnapshot = await db.collection('rides').where('status', '==', 'active').get();
+    for (const doc of ridesSnapshot.docs) {
+      const ride = doc.data();
+      const depTime = new Date(ride.departureTime);
+      const diffMs = depTime.getTime() - now.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+
+      // A. 30 Minutes Before Departure
+      if (diffMins <= 30 && diffMins > 15 && !ride.reminder30mSent) {
+        const bookingsSnap = await db.collection('bookings')
+          .where('rideId', '==', doc.id)
+          .where('status', '==', 'accepted')
+          .where('paymentStatus', '==', 'paid')
+          .get();
+
+        for (const bDoc of bookingsSnap.docs) {
+          const booking = bDoc.data();
+          await triggerNotification(
+            booking.passengerId,
+            'ride_started',
+            'Ride Departing Soon! ⏰',
+            `Your ride departs in 30 minutes. Please be ready at the pickup location.`,
+            doc.id,
+            bDoc.id,
+            'ride-details',
+            doc.id
+          );
+        }
+        await doc.ref.update({ reminder30mSent: true });
+      }
+
+      // B. 15 Minutes Before Departure
+      if (diffMins <= 15 && diffMins > 0 && !ride.reminder15mSent) {
+        const bookingsSnap = await db.collection('bookings')
+          .where('rideId', '==', doc.id)
+          .where('status', '==', 'accepted')
+          .where('paymentStatus', '==', 'paid')
+          .get();
+
+        for (const bDoc of bookingsSnap.docs) {
+          const booking = bDoc.data();
+          await triggerNotification(
+            booking.passengerId,
+            'ride_started',
+            'Ride Departing in 15m! 🚗',
+            `Your ride departs in 15 minutes. Check active ride coordinates on map.`,
+            doc.id,
+            bDoc.id,
+            'ride-details',
+            doc.id
+          );
+        }
+
+        // Driver warning
+        if (bookingsSnap.size > 0) {
+          await triggerNotification(
+            ride.driverId,
+            'booking_request',
+            'Upcoming Departures 🚗',
+            `You have passengers waiting for your ride in 15 minutes.`,
+            doc.id,
+            null,
+            'ride-details',
+            doc.id
+          );
+        }
+        await doc.ref.update({ reminder15mSent: true });
+      }
+    }
+
+    // ─── 2. UNPAID BOOKING WARNINGS (15m / 5m remaining) ───
+    const bookingsSnapshot = await db.collection('bookings')
+      .where('status', '==', 'payment_pending')
+      .get();
+
+    for (const doc of bookingsSnapshot.docs) {
+      const booking = doc.data();
+      const bookedTime = new Date(booking.bookedAt);
+      const ageMs = now.getTime() - bookedTime.getTime();
+      const ageMins = Math.floor(ageMs / 60000);
+
+      if (ageMins >= 15 && ageMins < 25 && !booking.paymentReminder15mSent) {
+        await triggerNotification(
+          booking.passengerId,
+          'payment_required',
+          'Complete Payment Required 💳',
+          'Complete payment to secure your seat. 15 minutes remaining.',
+          booking.rideId,
+          doc.id,
+          'my-bookings',
+          doc.id
+        );
+        await doc.ref.update({ paymentReminder15mSent: true });
+      }
+
+      if (ageMins >= 25 && ageMins < 30 && !booking.paymentReminder5mSent) {
+        await triggerNotification(
+          booking.passengerId,
+          'payment_required',
+          'Seat Reservation Expiring! ⚠️',
+          'Your seat reservation is about to expire in 5 minutes.',
+          booking.rideId,
+          doc.id,
+          'my-bookings',
+          doc.id
+        );
+        await doc.ref.update({ paymentReminder5mSent: true });
+      }
+    }
+
+    // ─── 3. TAXI POOL REMINDERS (30m) ───
+    const poolsSnapshot = await db.collection('taxiPools').where('status', '==', 'OPEN').get();
+    for (const doc of poolsSnapshot.docs) {
+      const pool = doc.data();
+      const depTime = new Date(pool.departureTime);
+      const diffMs = depTime.getTime() - now.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+
+      if (diffMins <= 30 && diffMins > 0 && !pool.poolReminder30mSent) {
+        const membersSnap = await db.collection('poolMembers').where('poolId', '==', doc.id).get();
+        for (const mDoc of membersSnap.docs) {
+          const member = mDoc.data();
+          await triggerNotification(
+            member.passengerId,
+            'pool_joined',
+            'Taxi Pool Starting 🚖',
+            `Your taxi pool starts in 30 minutes. Meet at the pickup gate.`,
+            doc.id,
+            null,
+            'taxi-pool-details',
+            doc.id
+          );
+        }
+        await doc.ref.update({ poolReminder30mSent: true });
+      }
+    }
+
+    // ─── 4. ADMIN SCHEDULED CAMPAIGNS SWEEP ───
+    const schedSnapshot = await db.collection('scheduledNotifications')
+      .where('status', '==', 'pending')
+      .get();
+
+    for (const doc of schedSnapshot.docs) {
+      const scheduled = doc.data();
+      const scheduledTime = new Date(scheduled.scheduledTime.toDate ? scheduled.scheduledTime.toDate() : scheduled.scheduledTime);
+      
+      if (scheduledTime <= now) {
+        let targetUserQuerySnapshot;
+        if (scheduled.target === 'drivers') {
+          targetUserQuerySnapshot = await db.collection('users').where('role', '==', 'driver').get();
+        } else if (scheduled.target === 'passengers') {
+          targetUserQuerySnapshot = await db.collection('users').where('role', '==', 'passenger').get();
+        } else {
+          targetUserQuerySnapshot = await db.collection('users').get();
+        }
+
+        for (const userDoc of targetUserQuerySnapshot.docs) {
+          await triggerNotification(
+            userDoc.id,
+            'marketing',
+            scheduled.title,
+            scheduled.body,
+            null,
+            null,
+            'profile',
+            null,
+            scheduled.campaignId || doc.id
+          );
+        }
+
+        await doc.ref.update({ status: 'sent' });
+      }
+    }
+
+    res.json({ success: true, message: 'Reminders and scheduled campaigns processed successfully' });
+  } catch (error: any) {
+    console.error('[REMINDER SWEEP] Sweep execution error:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 

@@ -577,14 +577,22 @@
     <div id="mainContent">
     <div class="container">
 
-        <header>
-            <h1>🚗 PullUp Admin Dashboard</h1>
-            <p>Database Management & License Verification</p>
+        <header style="text-align: center; margin-bottom: 30px;">
+            <h1 style="font-size: 28px; margin-bottom: 5px; color: #f8fafc;">🚗 PullUp Admin Dashboard</h1>
+            <p style="color: #94a3b8; font-size: 14px;">Database Management & License Verification</p>
         </header>
 
-        <div style="text-align: center; padding: 10px; background: #1e293b; margin-bottom: 20px; border-radius: 8px;">
-            <p style="color: #0ea5e9; font-weight: 600;">✓ Admin Dashboard Loaded</p>
+        <!-- Navigation Tabs -->
+        <div style="display: flex; gap: 10px; margin-bottom: 25px; border-bottom: 2px solid #334155; padding-bottom: 15px; flex-wrap: wrap;">
+            <button onclick="switchTab('licenses')" id="tabBtn-licenses" style="background: #D4500A; color: white; font-weight: 700; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; transition: background-color 0.2s;">📋 License Management</button>
+            <button onclick="switchTab('broadcast')" id="tabBtn-broadcast" style="background: #1e293b; color: white; font-weight: 700; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; transition: background-color 0.2s;">📣 Notification Center</button>
+            <button onclick="switchTab('analytics')" id="tabBtn-analytics" style="background: #1e293b; color: white; font-weight: 700; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; transition: background-color 0.2s;">📊 Campaign Analytics</button>
         </div>
+
+        <div id="section-licenses">
+            <div style="text-align: center; padding: 10px; background: #1e293b; margin-bottom: 20px; border-radius: 8px;">
+                <p style="color: #0ea5e9; font-weight: 600;">✓ Admin Dashboard Loaded</p>
+            </div>
 
         <!-- Database Management Section -->
         <div style="background: #1e293b; padding: 25px; border-radius: 8px; margin-bottom: 30px; border-left: 4px solid #f59e0b;">
@@ -645,6 +653,99 @@
                 <div class="spinner"></div>
                 <p>Loading licenses...</p>
             </div>
+        </div><!-- /section-licenses -->
+
+        <!-- ── Broadcast Notification Center ── -->
+        <div id="section-broadcast" style="display: none; background: #1e293b; padding: 25px; border-radius: 8px; border-left: 4px solid #D4500A; margin-bottom: 30px; border: 1px solid #334155;">
+            <h2 style="font-size: 20px; margin-bottom: 20px; color: #ff7a33; border-bottom: 1px solid #334155; padding-bottom: 10px;">📣 Broadcast Campaign Center</h2>
+            <div style="display: flex; flex-direction: column; gap: 15px; max-width: 650px;">
+                <div>
+                    <label style="display: block; font-weight: 600; margin-bottom: 5px; color: #94a3b8; font-size: 13px;">CAMPAIGN TITLE</label>
+                    <input type="text" id="notifTitle" placeholder="Catchy title (e.g. Atlas Fest Announcement)..." style="width: 100%; padding: 10px; border-radius: 6px; background: #0f172a; border: 1px solid #475569; color: white; outline: none; font-size: 14px;">
+                </div>
+                <div>
+                    <label style="display: block; font-weight: 600; margin-bottom: 5px; color: #94a3b8; font-size: 13px;">CAMPAIGN MESSAGE BODY</label>
+                    <textarea id="notifBody" rows="4" placeholder="Write message preview body..." style="width: 100%; padding: 10px; border-radius: 6px; background: #0f172a; border: 1px solid #475569; color: white; outline: none; font-size: 14px; font-family: inherit; resize: vertical;"></textarea>
+                </div>
+                <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                    <div style="flex: 1; min-width: 200px;">
+                        <label style="display: block; font-weight: 600; margin-bottom: 5px; color: #94a3b8; font-size: 13px;">TARGET AUDIENCE FILTER</label>
+                        <select id="notifAudience" style="width: 100%; padding: 10px; border-radius: 6px; background: #0f172a; border: 1px solid #475569; color: white; cursor: pointer; outline: none; font-size: 14px;">
+                            <option value="all">All Users</option>
+                            <option value="drivers">Drivers Only</option>
+                            <option value="passengers">Passengers Only</option>
+                            <option value="taxi_pool">Taxi Pool Users</option>
+                        </select>
+                    </div>
+                    <div style="flex: 1; min-width: 200px;">
+                        <label style="display: block; font-weight: 600; margin-bottom: 5px; color: #94a3b8; font-size: 13px;">DELIVERY METHOD</label>
+                        <select id="notifScheduleType" onchange="toggleScheduleTimeInput()" style="width: 100%; padding: 10px; border-radius: 6px; background: #0f172a; border: 1px solid #475569; color: white; cursor: pointer; outline: none; font-size: 14px;">
+                            <option value="now">Send Immediately</option>
+                            <option value="later">Schedule for Later</option>
+                        </select>
+                    </div>
+                </div>
+                <div id="scheduleTimeContainer" style="display: none;">
+                    <label style="display: block; font-weight: 600; margin-bottom: 5px; color: #94a3b8; font-size: 13px;">SCHEDULED DATE & TIME</label>
+                    <input type="datetime-local" id="notifScheduleTime" style="width: 100%; padding: 10px; border-radius: 6px; background: #0f172a; border: 1px solid #475569; color: white; outline: none; font-size: 14px;">
+                </div>
+                <div>
+                    <label style="display: block; font-weight: 600; margin-bottom: 5px; color: #94a3b8; font-size: 13px;">RECURRING CAMPAIGN SCHEDULE</label>
+                    <select id="notifRecurrence" style="width: 100%; padding: 10px; border-radius: 6px; background: #0f172a; border: 1px solid #475569; color: white; cursor: pointer; outline: none; font-size: 14px;">
+                        <option value="none">No Recurrence (One-Shot)</option>
+                        <option value="weekly_monday">Every Monday 8:00 AM</option>
+                        <option value="weekly_friday">Every Friday 5:00 PM</option>
+                    </select>
+                </div>
+                <button onclick="sendBroadcast()" style="background: #D4500A; color: white; padding: 12px; border-radius: 8px; font-weight: bold; border: none; cursor: pointer; margin-top: 10px; width: 100%; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='#bb4307'" onmouseout="this.style.backgroundColor='#D4500A'">
+                    🚀 Submit & Dispatch Campaign
+                </button>
+            </div>
+        </div>
+
+        <!-- ── Notification Analytics ── -->
+        <div id="section-analytics" style="display: none; background: #1e293b; padding: 25px; border-radius: 8px; border-left: 4px solid #10b981; border: 1px solid #334155; margin-bottom: 30px;">
+            <h2 style="font-size: 20px; margin-bottom: 20px; color: #10b981; border-bottom: 1px solid #334155; padding-bottom: 10px;">📊 Campaign Performance & CTR</h2>
+            
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 25px;">
+                <div class="stat-card" style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 15px; text-align: center;">
+                    <h3 style="color: #94a3b8; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Total Campaigns</h3>
+                    <div class="value" id="analyticTotalCampaigns" style="font-size: 28px; font-weight: bold; color: white;">0</div>
+                </div>
+                <div class="stat-card" style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 15px; text-align: center;">
+                    <h3 style="color: #94a3b8; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Total Sent</h3>
+                    <div class="value" id="analyticTotalSent" style="font-size: 28px; font-weight: bold; color: white;">0</div>
+                </div>
+                <div class="stat-card" style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 15px; text-align: center;">
+                    <h3 style="color: #94a3b8; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Avg Open Rate</h3>
+                    <div class="value" id="analyticAvgOpen" style="font-size: 28px; font-weight: bold; color: #38bdf8;">0%</div>
+                </div>
+                <div class="stat-card" style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 15px; text-align: center;">
+                    <h3 style="color: #94a3b8; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Avg CTR</h3>
+                    <div class="value" id="analyticAvgCtr" style="font-size: 28px; font-weight: bold; color: #4ade80;">0%</div>
+                </div>
+            </div>
+
+            <h3 style="margin-bottom: 15px; color: #e2e8f0; font-size: 16px;">Active Campaigns History</h3>
+            <div style="overflow-x: auto;">
+                <table style="width: 100%; border-collapse: collapse; background: #0f172a; border-radius: 8px; overflow: hidden; margin-bottom: 10px;">
+                    <thead>
+                        <tr style="background: #334155; text-align: left; border-bottom: 1px solid #475569;">
+                            <th style="padding: 12px; color: white; font-size: 13px;">Campaign Details</th>
+                            <th style="padding: 12px; color: white; font-size: 13px;">Audience</th>
+                            <th style="padding: 12px; color: white; font-size: 13px;">Sent</th>
+                            <th style="padding: 12px; color: white; font-size: 13px;">Delivered</th>
+                            <th style="padding: 12px; color: white; font-size: 13px;">Opened</th>
+                            <th style="padding: 12px; color: white; font-size: 13px;">Clicked</th>
+                            <th style="padding: 12px; color: white; font-size: 13px;">CTR (%)</th>
+                        </tr>
+                    </thead>
+                    <tbody id="analyticsTableBody" style="color: #cbd5e1; font-size: 13px;">
+                        <!-- Dynamically populated -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
     </div>
 
     <!-- Detail Modal -->
@@ -834,6 +935,217 @@
                 if (e.key === 'Backspace') pressKey('del');
             });
         });
+
+        // ── Navigation, Broadcast, and Analytics Controls ───────────────────
+        function switchTab(tabId) {
+            const sections = ['licenses', 'broadcast', 'analytics'];
+            sections.forEach(s => {
+                const el = document.getElementById(`section-${s}`);
+                if (el) el.style.display = s === tabId ? 'block' : 'none';
+                
+                const btn = document.getElementById(`tabBtn-${s}`);
+                if (btn) {
+                    btn.style.background = s === tabId ? '#D4500A' : '#1e293b';
+                }
+            });
+            if (tabId === 'analytics') {
+                loadAnalytics();
+            }
+        }
+
+        function toggleScheduleTimeInput() {
+            const type = document.getElementById('notifScheduleType').value;
+            document.getElementById('scheduleTimeContainer').style.display = type === 'later' ? 'block' : 'none';
+        }
+
+        async function loadAnalytics() {
+            try {
+                const snapshot = await db.collection('notificationAnalytics').get();
+                const tbody = document.getElementById('analyticsTableBody');
+                tbody.innerHTML = '';
+
+                let totalSent = 0;
+                let totalDelivered = 0;
+                let totalOpened = 0;
+                let totalClicked = 0;
+                let campaignCount = 0;
+
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    campaignCount++;
+                    const sent = data.sentCount || 0;
+                    const del = data.deliveredCount || 0;
+                    const op = data.openedCount || 0;
+                    const cl = data.clickedCount || 0;
+                    
+                    totalSent += sent;
+                    totalDelivered += del;
+                    totalOpened += op;
+                    totalClicked += cl;
+
+                    const ctr = del > 0 ? ((cl / del) * 100).toFixed(1) : '0.0';
+                    const sentAtDate = data.sentAt?.toDate ? data.sentAt.toDate().toLocaleString() : new Date().toLocaleString();
+
+                    const tr = document.createElement('tr');
+                    tr.style.borderBottom = '1px solid #334155';
+                    tr.innerHTML = `
+                        <td style="padding: 12px;">
+                            <strong style="color: white; display:block;">${data.title}</strong>
+                            <span style="color: #94a3b8; font-size:11px;">${data.body}</span>
+                            <div style="color: #64748b; font-size:10px; margin-top:4px;">Dispatched: ${sentAtDate}</div>
+                        </td>
+                        <td style="padding: 12px; text-transform: uppercase; font-weight:600;">${data.audience || 'all'}</td>
+                        <td style="padding: 12px; font-weight:600;">${sent}</td>
+                        <td style="padding: 12px;">${del}</td>
+                        <td style="padding: 12px;">${op}</td>
+                        <td style="padding: 12px; color: #38bdf8; font-weight:600;">${cl}</td>
+                        <td style="padding: 12px; color: #4ade80; font-weight:700;">${ctr}%</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+
+                document.getElementById('analyticTotalCampaigns').textContent = campaignCount;
+                document.getElementById('analyticTotalSent').textContent = totalSent;
+                
+                const avgOpen = totalDelivered > 0 ? ((totalOpened / totalDelivered) * 100).toFixed(1) : '0.0';
+                const avgCtr = totalDelivered > 0 ? ((totalClicked / totalDelivered) * 100).toFixed(1) : '0.0';
+
+                document.getElementById('analyticAvgOpen').textContent = `${avgOpen}%`;
+                document.getElementById('analyticAvgCtr').textContent = `${avgCtr}%`;
+            } catch (e) {
+                console.error('Error loading analytics:', e);
+            }
+        }
+
+        async function sendBroadcast() {
+            const title = document.getElementById('notifTitle').value.trim();
+            const body = document.getElementById('notifBody').value.trim();
+            const audience = document.getElementById('notifAudience').value;
+            const scheduleType = document.getElementById('notifScheduleType').value;
+            const recurrence = document.getElementById('notifRecurrence').value;
+            
+            if (!title || !body) {
+                alert('Please enter title and body.');
+                return;
+            }
+
+            const campaignId = 'camp_' + Date.now();
+
+            if (scheduleType === 'later') {
+                const scheduleTimeStr = document.getElementById('notifScheduleTime').value;
+                if (!scheduleTimeStr) {
+                    alert('Please select a scheduled date and time.');
+                    return;
+                }
+                const scheduleTime = new Date(scheduleTimeStr);
+                if (scheduleTime <= new Date()) {
+                    alert('Scheduled time must be in the future.');
+                    return;
+                }
+
+                try {
+                    await db.collection('scheduledNotifications').doc(campaignId).set({
+                        id: campaignId,
+                        title,
+                        body,
+                        target: audience,
+                        scheduledTime: firebase.firestore.Timestamp.fromDate(scheduleTime),
+                        status: 'pending',
+                        createdAt: firebase.firestore.Timestamp.now(),
+                        campaignId,
+                        recurringPattern: recurrence
+                    });
+
+                    await db.collection('notificationAnalytics').doc(campaignId).set({
+                        campaignId,
+                        title,
+                        body,
+                        sentAt: firebase.firestore.Timestamp.fromDate(scheduleTime),
+                        audience,
+                        sentCount: 0,
+                        deliveredCount: 0,
+                        openedCount: 0,
+                        clickedCount: 0
+                    });
+
+                    alert('Campaign scheduled successfully!');
+                    document.getElementById('notifTitle').value = '';
+                    document.getElementById('notifBody').value = '';
+                    document.getElementById('notifScheduleTime').value = '';
+                } catch (e) {
+                    console.error('Failed to schedule campaign:', e);
+                    alert('Error scheduling campaign: ' + e.message);
+                }
+                return;
+            }
+
+            // Send immediately
+            try {
+                await db.collection('notificationAnalytics').doc(campaignId).set({
+                    campaignId,
+                    title,
+                    body,
+                    sentAt: firebase.firestore.Timestamp.now(),
+                    audience,
+                    sentCount: 0,
+                    deliveredCount: 0,
+                    openedCount: 0,
+                    clickedCount: 0
+                });
+
+                let userSnap;
+                if (audience === 'drivers') {
+                    userSnap = await db.collection('users').where('role', '==', 'driver').get();
+                } else if (audience === 'passengers') {
+                    userSnap = await db.collection('users').where('role', '==', 'passenger').get();
+                } else {
+                    userSnap = await db.collection('users').get();
+                }
+
+                let targetUserIds = [];
+                userSnap.forEach(uDoc => {
+                    targetUserIds.push(uDoc.id);
+                });
+
+                if (targetUserIds.length === 0) {
+                    alert('No users found in targeted audience group.');
+                    return;
+                }
+
+                alert(`Dispatching campaign to ${targetUserIds.length} users. Please wait...`);
+
+                let successCount = 0;
+                const backendUrl = 'http://localhost:3099';
+
+                for (const uId of targetUserIds) {
+                    try {
+                        const response = await fetch(`${backendUrl}/api/otp/send-notification`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                userId: uId,
+                                type: 'campaign',
+                                title,
+                                message: body,
+                                campaignId
+                            })
+                        });
+                        if (response.ok) {
+                            successCount++;
+                        }
+                    } catch (err) {
+                        console.error('Error dispatching campaign user:', uId, err);
+                    }
+                }
+
+                alert(`Campaign dispatched! Successful sends: ${successCount}/${targetUserIds.length}`);
+                document.getElementById('notifTitle').value = '';
+                document.getElementById('notifBody').value = '';
+            } catch (e) {
+                console.error('Failed to send broadcast:', e);
+                alert('Error sending broadcast: ' + e.message);
+            }
+        }
 
         async function loadLicenses() {
             showLoading();
