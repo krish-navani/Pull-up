@@ -587,19 +587,56 @@ export default function HomeScreen() {
               </View>
             </View>
 
-            {/* RIGHT: Orange profile circle */}
-            <TouchableOpacity 
-              onPress={() => router.push('/(tabs)/profile')}
-              activeOpacity={0.8}
-            >
-              <View style={styles.topRightCircle}>
-                {auth.user?.profileImage ? (
-                  <Image source={{ uri: auth.user.profileImage }} style={styles.topRightAvatarImage} />
-                ) : (
-                  <View style={styles.topRightOrangeCircle} />
-                )}
-              </View>
-            </TouchableOpacity>
+            {/* RIGHT: Bell Icon & Profile Circle */}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+              <TouchableOpacity
+                onPress={() => router.push('/notifications')}
+                onPressIn={onNotifPressIn}
+                onPressOut={onNotifPressOut}
+                activeOpacity={0.7}
+                style={{ padding: 4, position: 'relative' }}
+              >
+                <Animated.View style={{ transform: [{ scale: notifScale }] }}>
+                  <MaterialCommunityIcons name="bell-outline" size={26} color={WARM_CORE.text} />
+                  {unreadNotifications > 0 && (
+                    <View style={{
+                      position: 'absolute',
+                      right: -3,
+                      top: -3,
+                      backgroundColor: WARM_CORE.primary,
+                      borderRadius: 9,
+                      minWidth: 18,
+                      height: 18,
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                      paddingHorizontal: 3,
+                      borderWidth: 1.5,
+                      borderColor: WARM_CORE.background,
+                    }}>
+                      <Text style={{
+                        color: WARM_CORE.white,
+                        fontSize: 9,
+                        fontWeight: '800',
+                        textAlign: 'center'
+                      }}>{unreadNotifications}</Text>
+                    </View>
+                  )}
+                </Animated.View>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                onPress={() => router.push('/(tabs)/profile')}
+                activeOpacity={0.8}
+              >
+                <View style={styles.topRightCircle}>
+                  {auth.user?.profileImage ? (
+                    <Image source={{ uri: auth.user.profileImage }} style={styles.topRightAvatarImage} />
+                  ) : (
+                    <View style={styles.topRightOrangeCircle} />
+                  )}
+                </View>
+              </TouchableOpacity>
+            </View>
 
           </View>
         </Animated.View>

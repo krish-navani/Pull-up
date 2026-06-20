@@ -1,5 +1,90 @@
 import React, { createContext, useCallback, useContext, useEffect, useReducer } from 'react';
 import { Alert } from 'react-native';
+import * as Location from 'expo-location';
+import * as TaskManager from 'expo-task-manager';
+let Notifications: any;
+try {
+  Notifications = require('expo-notifications');
+} catch (error) {
+  console.warn('[PUSH] expo-notifications failed to load (likely running in Expo Go SDK 53+):', error);
+  Notifications = {
+    getPermissionsAsync: async () => ({ status: 'undetermined' }),
+    requestPermissionsAsync: async () => ({ status: 'undetermined' }),
+    getExpoPushTokenAsync: async () => ({ data: null }),
+    addNotificationReceivedListener: () => ({ remove: () => {} }),
+    addNotificationResponseReceivedListener: () => ({ remove: () => {} }),
+    setNotificationHandler: () => {},
+  };
+}
+import * as Device from 'expo-device';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { calculateDistance } from '../utils/atlasLocationUtils';
+import { doc, updateDoc, Timestamp, onSnapshot, collection, query, orderBy } from 'firebase/firestore';
+import { db } from '../utils/firebase';
+import { GeofenceEngine } from '../utils/geofenceEngine';
+
+try {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+    } as any),
+  });
+} catch (error) {
+  console.warn('[PUSH] Failed to set notification handler:', error);
+}
+
+const BACKGROUND_LOCATION_TASK = 'background-driver-location-task';
+
+TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
+  if (error) {
+    console.error('[BACKGROUND TASK] Error:', error);
+    return;
+  }
+  if (data) {
+    const { locations } = data as any;
+    if (locations && locations.length > 0) {
+      const location = locations[0];
+      const { latitude, longitude } = location.coords;
+      console.log('[BACKGROUND TASK] Driver coordinates update:', latitude, longitude);
+
+      try {
+        const activeRideId = await AsyncStorage.getItem('active_ride_id');
+        if (!activeRideId) {
+          console.log('[BACKGROUND TASK] No active ride ID found in storage. Skipping update.');
+          return;
+        }
+
+        // 1. Update ride currentLocation in Firestore
+        const rideRef = doc(db, 'rides', activeRideId);
+        await updateDoc(rideRef, {
+          currentLocation: {
+            latitude,
+            longitude,
+            updatedAt: new Date().toISOString(),
+          },
+        });
+
+        // 2. Check and trigger completion using GeofenceEngine
+        const compResult = await GeofenceEngine.checkAndTriggerCompletion(activeRideId, { latitude, longitude });
+        if (compResult.shouldComplete) {
+          console.log('[BACKGROUND TASK] Geofence engine triggered completion:', compResult.message);
+          // Stop background updates
+          try {
+            await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+          } catch (e) {}
+          await AsyncStorage.removeItem('active_ride_id');
+        } else {
+          // 3. Check and notify nearby pickups
+          await GeofenceEngine.checkAndNotifyNearbyPickups(activeRideId, { latitude, longitude });
+        }
+      } catch (err) {
+        console.error('[BACKGROUND TASK] Error executing background location updates:', err);
+      }
+    }
+  }
+});
 import {
     AppContextType,
     AuthState,
@@ -42,7 +127,8 @@ import {
     switchUserRole,
     updateUserProfile,
 } from '../utils/profileService';
-import { completeRide, createRideInFirestore, getAllRides, getAllRidesIncludingHistory, getDriverRides, startRide, startRideCleanupScheduler, stopRideCleanupScheduler } from '../utils/rideService';
+import { completeRide, createRideInFirestore, getAllRides, getAllRidesIncludingHistory, getDriverRides, startRide, startRideCleanupScheduler, stopRideCleanupScheduler, updateRideStatus } from '../utils/rideService';
+import { sendNotification } from '../utils/notificationService';
 
 interface State {
   auth: AuthState;
@@ -74,6 +160,7 @@ type Action =
   | { type: 'ADD_NOTIFICATION'; payload: Omit<Notification, 'id' | 'timestamp' | 'read'> }
   | { type: 'MARK_NOTIFICATION_READ'; payload: string }
   | { type: 'CLEAR_NOTIFICATIONS' }
+  | { type: 'SET_NOTIFICATIONS'; payload: Notification[] }
   | { type: 'LOAD_INITIAL_DATA'; payload: State };
 
 const initialState: State = {
@@ -209,12 +296,12 @@ function appReducer(state: State, action: ExtendedAction): State {
             const oldBooking = ride.bookedSeats.find(bs => bs.passengerId === action.payload.passengerId);
             let availableSeatsChange = 0;
             
-            // If status changed to accepted, reduce available seats
-            if (oldBooking && oldBooking.status !== 'accepted' && action.payload.status === 'accepted') {
+            // If paymentStatus changed to paid, reduce available seats
+            if (oldBooking && oldBooking.paymentStatus !== 'paid' && action.payload.paymentStatus === 'paid') {
               availableSeatsChange = -oldBooking.seatsBooked;
             }
-            // If status changed from accepted to something else, increase available seats
-            else if (oldBooking && oldBooking.status === 'accepted' && action.payload.status !== 'accepted') {
+            // If booking was accepted/paid and is now changed to something else, increase available seats
+            else if (oldBooking && oldBooking.paymentStatus === 'paid' && action.payload.status !== 'accepted') {
               availableSeatsChange = oldBooking.seatsBooked;
             }
 
@@ -223,7 +310,12 @@ function appReducer(state: State, action: ExtendedAction): State {
               availableSeats: Math.max(0, ride.availableSeats + availableSeatsChange),
               bookedSeats: ride.bookedSeats.map(bs =>
                 bs.passengerId === action.payload.passengerId
-                  ? { ...bs, status: action.payload.status }
+                  ? { 
+                      ...bs, 
+                      status: action.payload.status, 
+                      paymentStatus: action.payload.paymentStatus,
+                      orderId: action.payload.orderId 
+                    }
                   : bs
               ),
             };
@@ -350,6 +442,11 @@ function appReducer(state: State, action: ExtendedAction): State {
         ...state,
         notifications: [],
       };
+    case 'SET_NOTIFICATIONS':
+      return {
+        ...state,
+        notifications: action.payload,
+      };
     case 'LOAD_INITIAL_DATA':
       return action.payload;
     default:
@@ -379,6 +476,137 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Start location watching for driver if there is an in_progress ride they are driving
+  useEffect(() => {
+    let watcher: Location.LocationSubscription | null = null;
+    const currentUserId = state.auth.user?.id;
+    if (!currentUserId) return;
+
+    // Find any ride we are driving that is in_progress
+    const activeRide = state.rides.find(
+      (r) => r.driverId === currentUserId && r.status === 'in_progress'
+    );
+
+    if (activeRide) {
+      console.log('[CONTEXT] Driver watching location for active ride:', activeRide.id);
+      const startWatching = async () => {
+        // Request foreground permissions
+        const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
+        if (fgStatus !== 'granted') {
+          console.warn('[CONTEXT] Location permission not granted for driver tracking');
+          return;
+        }
+
+        // Request background permissions (non-blocking if not granted, but log it)
+        try {
+          const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
+          if (bgStatus !== 'granted') {
+            console.warn('[CONTEXT] Background location permission not granted');
+          } else {
+            // Register active ride ID in AsyncStorage for background task usage
+            await AsyncStorage.setItem('active_ride_id', activeRide.id);
+
+            // Start background location updates (throttled to 10 seconds or 15 meters)
+            const isTaskRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
+            if (isTaskRegistered) {
+              await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
+                accuracy: Location.Accuracy.Balanced,
+                timeInterval: 10000,
+                distanceInterval: 15,
+                foregroundService: {
+                  notificationTitle: 'PullUp Driver Navigation',
+                  notificationBody: 'Tracking location for your active ride pool.',
+                  notificationColor: '#D4500A',
+                },
+              });
+              console.log('[CONTEXT] Started background location updates task');
+            } else {
+              console.warn('[CONTEXT] Background location task is not registered');
+            }
+          }
+        } catch (bgErr) {
+          console.error('[CONTEXT] Error setting up background location tracking:', bgErr);
+        }
+
+        try {
+          // Foreground watcher (runs at 5s/10m) for fast responsive UI
+          watcher = await Location.watchPositionAsync(
+            {
+              accuracy: Location.Accuracy.Balanced,
+              timeInterval: 5000,
+              distanceInterval: 10,
+            },
+            async (loc) => {
+              const { latitude, longitude } = loc.coords;
+              console.log('[CONTEXT] Driver coordinates update (FG):', latitude, longitude);
+
+              // 1. Update ride currentLocation in Firestore
+              const rideRef = doc(db, 'rides', activeRide.id);
+              await updateDoc(rideRef, {
+                currentLocation: {
+                  latitude,
+                  longitude,
+                  updatedAt: new Date().toISOString(),
+                },
+              });
+
+              // 2. Check and trigger completion using GeofenceEngine
+              try {
+                const compResult = await GeofenceEngine.checkAndTriggerCompletion(activeRide.id, { latitude, longitude });
+                if (compResult.shouldComplete) {
+                  // Stop background location updates as well
+                  try {
+                    await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+                    await AsyncStorage.removeItem('active_ride_id');
+                  } catch (stopErr) {}
+
+                  // Update local state to completed
+                  dispatch({
+                    type: 'SET_RIDES',
+                    payload: state.rides.map((r) =>
+                      r.id === activeRide.id ? { ...r, status: 'completed' as const } : r
+                    ),
+                  });
+                  Alert.alert('Arrived!', compResult.message);
+                } else {
+                  // 3. Check and notify nearby pickups
+                  await GeofenceEngine.checkAndNotifyNearbyPickups(activeRide.id, { latitude, longitude });
+                }
+              } catch (engineErr) {
+                console.error('[CONTEXT] GeofenceEngine run error in FG watcher:', engineErr);
+              }
+            }
+          );
+        } catch (err) {
+          console.error('[CONTEXT] Location watcher setup error:', err);
+        }
+      };
+
+      startWatching();
+    }
+
+    return () => {
+      if (watcher) {
+        console.log('[CONTEXT] Cleaning up driver location watcher');
+        watcher.remove();
+      }
+      // Clean up background location updates if ride is no longer in progress
+      const cleanupBg = async () => {
+        try {
+          const isTracking = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+          if (isTracking) {
+            await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+            await AsyncStorage.removeItem('active_ride_id');
+            console.log('[CONTEXT] Stopped background location updates task on cleanup');
+          }
+        } catch (err) {
+          console.error('[CONTEXT] Error cleaning up background location:', err);
+        }
+      };
+      cleanupBg();
+    };
+  }, [state.auth.user?.id, state.rides]);
+
   // Start the expired-ride cleanup scheduler ONLY when the user is authenticated.
   // deleteExpiredRides() calls deleteDoc which requires auth — starting it before
   // sign-in causes a permission-denied error from Firestore.
@@ -395,6 +623,86 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       stopRideCleanupScheduler();
     };
   }, [state.auth.isSignedIn, state.auth.user]);
+
+  // Register Expo Push Token upon successful authentication
+  useEffect(() => {
+    const registerPushToken = async () => {
+      if (!state.auth.isSignedIn || !state.auth.user) return;
+      
+      try {
+        if (!Device.isDevice) {
+          console.log('[PUSH] Must use physical device for Push Notifications');
+          return;
+        }
+
+        const { status: existingStatus } = await Notifications.getPermissionsAsync() as any;
+        let finalStatus = existingStatus;
+        if (existingStatus !== 'granted') {
+          const { status } = await Notifications.requestPermissionsAsync() as any;
+          finalStatus = status;
+        }
+        
+        if (finalStatus !== 'granted') {
+          console.warn('[PUSH] Failed to get push token: permission denied');
+          return;
+        }
+
+        const tokenData = await Notifications.getExpoPushTokenAsync();
+        const token = tokenData.data;
+        console.log('[PUSH] Retrieved Expo Push Token:', token);
+
+        if (token && token !== state.auth.user.expoPushToken) {
+          console.log('[PUSH] Updating token in Firestore for user:', state.auth.user.id);
+          const userRef = doc(db, 'users', state.auth.user.id);
+          await updateDoc(userRef, { expoPushToken: token });
+        }
+      } catch (err) {
+        console.error('[PUSH ERROR] Failed to register token:', err);
+      }
+    };
+
+    registerPushToken();
+  }, [state.auth.isSignedIn, state.auth.user?.id]);
+
+  // Real-time notifications listener
+  useEffect(() => {
+    if (!state.auth.isSignedIn || !state.auth.user) {
+      dispatch({ type: 'CLEAR_NOTIFICATIONS' });
+      return;
+    }
+
+    console.log('[CONTEXT] Subscribing to notifications for user:', state.auth.user.id);
+    const notificationsRef = collection(db, 'users', state.auth.user.id, 'notifications');
+    const q = query(notificationsRef, orderBy('createdAt', 'desc'));
+
+    const unsubscribe = onSnapshot(q, (querySnapshot) => {
+      const fetchedNotifications: Notification[] = [];
+      querySnapshot.forEach((docSnap) => {
+        const n = docSnap.data();
+        fetchedNotifications.push({
+          id: docSnap.id,
+          type: n.type,
+          title: n.title,
+          body: n.message || n.body || '',
+          rideId: n.rideId || '',
+          relatedUserId: n.senderId || null,
+          timestamp: n.createdAt?.toDate ? n.createdAt.toDate().toISOString() : (typeof n.createdAt === 'string' ? n.createdAt : new Date().toISOString()),
+          read: n.read || false,
+          targetScreen: n.targetScreen || null,
+          targetId: n.targetId || null,
+          campaignId: n.campaignId || null
+        } as any);
+      });
+
+      dispatch({ type: 'SET_NOTIFICATIONS', payload: fetchedNotifications });
+    }, (error) => {
+      console.error('[CONTEXT] Notifications listener error:', error);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [state.auth.isSignedIn, state.auth.user?.id]);
 
   // Listen to Firebase auth state changes and restore from storage on startup
   useEffect(() => {
@@ -703,9 +1011,61 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     [state.auth.user]
   );
 
-  const cancelRide = useCallback((rideId: string) => {
-    dispatch({ type: 'CANCEL_RIDE', payload: rideId });
-  }, []);
+  const cancelRide = useCallback(
+    async (rideId: string) => {
+      try {
+        console.log('[CONTEXT] Driver cancelling ride:', rideId);
+
+        // 1. Update status in Firestore
+        await updateRideStatus(rideId, 'cancelled');
+
+        // 2. Fetch all bookings for this ride to cancel them and notify/refund
+        const rideBookings = state.bookings.filter(b => b.rideId === rideId && b.status !== 'cancelled' && b.status !== 'rejected');
+        
+        for (const booking of rideBookings) {
+          const bookingRef = doc(db, 'bookings', booking.id);
+          const isPaid = booking.paymentStatus === 'paid';
+          const refundAmount = booking.totalPrice || 0;
+
+          // Mark booking cancelled
+          const updateData: Record<string, any> = {
+            status: 'cancelled',
+            updatedAt: Timestamp.now(),
+            cancelledAt: Timestamp.now()
+          };
+          if (isPaid) {
+            updateData.refundStatus = 'pending';
+            updateData.refundAmount = refundAmount;
+          }
+          await updateDoc(bookingRef, updateData);
+
+          // Update booking status in local state via dispatch
+          dispatch({ type: 'CANCEL_BOOKING', payload: booking.id });
+
+          // Send notification to passenger
+          await sendNotification(
+            booking.passengerId,
+            'ride_cancelled',
+            'Ride Cancelled by Driver ⚠️',
+            `The driver has cancelled the ride. ${isPaid ? `A refund of ₹${refundAmount} has been initiated.` : ''}`,
+            rideId,
+            booking.id,
+            state.auth.user?.id,
+            state.auth.user?.fullName
+          ).catch(err => console.error('Failed to notify passenger:', err));
+        }
+
+        // 3. Update local state for ride status
+        dispatch({ type: 'CANCEL_RIDE', payload: rideId });
+
+        console.log('[CONTEXT] ✅ Ride cancelled successfully');
+      } catch (error: any) {
+        console.error('[CONTEXT] ❌ cancelRide failed:', error);
+        throw error;
+      }
+    },
+    [state.bookings, state.auth.user]
+  );
 
   const loadDriverRides = useCallback(
     async (driverId: string) => {
@@ -785,7 +1145,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   const requestRide = useCallback(
-    async (rideId: string, seatsBooked: number) => {
+    async (rideId: string, seatsBooked: number, pickupLocation?: any, dropLocation?: any) => {
       if (!state.auth.user) {
         console.error('[CONTEXT] requestRide: No authenticated user');
         throw new Error('No authenticated user');
@@ -807,7 +1167,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           state.auth.user.email,
           ride.driverId,
           seatsBooked,
-          ride.price
+          ride.price,
+          pickupLocation,
+          dropLocation
         );
 
         // Create local booking object
@@ -818,7 +1180,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           driverId: ride.driverId,
           seatsBooked,
           status: 'pending',
+          paymentStatus: 'pending',
           bookedAt: new Date().toISOString(),
+          passengerPickupLocation: pickupLocation,
+          passengerDropLocation: dropLocation,
         };
 
         console.log('[CONTEXT] ✅ Booking created locally and in Firestore');

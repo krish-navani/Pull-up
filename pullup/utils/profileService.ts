@@ -211,6 +211,14 @@ const ensureUserDefaults = (firestoreData: Record<string, any>): User => {
     licenseVerified: firestoreData?.licenseVerified === true || isStatusVerified,
     licenseVerificationStatus: firestoreData?.licenseVerificationStatus ?? undefined,
     role: firestoreData?.role ?? 'passenger',
+    notificationPreferences: firestoreData?.notificationPreferences ?? {
+      rideUpdates: true,
+      paymentUpdates: true,
+      chatUpdates: true,
+      poolUpdates: true,
+      marketingUpdates: false,
+    },
+    mutedChats: firestoreData?.mutedChats ?? {},
   } as User;
 };
 

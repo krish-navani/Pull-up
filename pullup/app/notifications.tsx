@@ -16,9 +16,11 @@ import {
     Alert,
     FlatList,
     RefreshControl,
+    ScrollView,
     StatusBar,
     StyleSheet,
     Text,
+    TextInput,
     TouchableOpacity,
     View,
 } from 'react-native';
@@ -31,6 +33,36 @@ export default function NotificationsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [unsubscribe, setUnsubscribe] = useState<(() => void) | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [activeFilter, setActiveFilter] = useState<'all' | 'rides' | 'chat' | 'pools' | 'payments'>('all');
+
+  const filteredNotifications = notifications.filter((item) => {
+    const matchesSearch =
+      item.title?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      item.message?.toLowerCase().includes(searchQuery.toLowerCase());
+
+    if (!matchesSearch) return false;
+
+    if (activeFilter === 'all') return true;
+    if (activeFilter === 'chat') return item.type === 'message';
+    if (activeFilter === 'rides') {
+      return [
+        'booking_request',
+        'booking_accepted',
+        'booking_rejected',
+        'ride_started',
+        'ride_completed',
+        'ride_cancelled'
+      ].includes(item.type);
+    }
+    if (activeFilter === 'pools') {
+      return item.type.includes('pool');
+    }
+    if (activeFilter === 'payments') {
+      return item.type.includes('payment') || item.type.includes('refund');
+    }
+    return true;
+  });
 
   // Initialize notifications subscription
   useFocusEffect(
@@ -90,8 +122,53 @@ export default function NotificationsScreen() {
         }
       }
 
-      // Navigate based on notification type
-      if (notification.actionUrl) {
+      // Track Clicked Analytics
+      const campaignId = (notification as any).campaignId;
+      if (campaignId) {
+        try {
+          await fetch(`${process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000'}/api/otp/analytics/track`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ campaignId, action: 'clicked' }),
+          });
+        } catch (e) {
+          console.error('[NOTIFICATIONS] Failed to track clicked analytics:', e);
+        }
+      }
+
+      // Navigate based on notification metadata / targetScreen
+      const targetScreen = (notification as any).targetScreen;
+      const targetId = (notification as any).targetId;
+
+      if (targetScreen) {
+        if (targetScreen === 'my-bookings' || targetScreen === 'bookings') {
+          router.push({
+            pathname: '/(tabs)/my-bookings',
+            params: { bookingId: targetId },
+          } as any);
+        } else if (targetScreen === 'ride-details') {
+          router.push({
+            pathname: '/ride-details',
+            params: { rideId: targetId },
+          } as any);
+        } else if (targetScreen === 'group-chat' || targetScreen === 'chat') {
+          router.push({
+            pathname: '/group-chat',
+            params: { rideId: targetId },
+          } as any);
+        } else if (targetScreen === 'taxi-pool-details') {
+          router.push({
+            pathname: '/taxi-pool-details',
+            params: { poolId: targetId },
+          } as any);
+        } else if (targetScreen === 'profile') {
+          router.push('/(tabs)/profile' as any);
+        } else {
+          if (notification.actionUrl) {
+            router.push(notification.actionUrl as any);
+          }
+        }
+      } else if (notification.actionUrl) {
         if (notification.actionUrl.includes('taxi-pool-details')) {
           router.push({
             pathname: '/taxi-pool-details',
@@ -263,22 +340,67 @@ export default function NotificationsScreen() {
         </View>
       )}
 
+      {/* Search Input */}
+      {notifications.length > 0 && (
+        <View style={styles.searchBarContainer}>
+          <MaterialCommunityIcons name="magnify" size={20} color={WARM_CORE.textSecondary} style={styles.searchIcon} />
+          <TextInput
+            style={styles.searchBarInput}
+            placeholder="Search notifications..."
+            placeholderTextColor={WARM_CORE.textSecondary}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchQuery('')} style={styles.searchClearButton}>
+              <MaterialCommunityIcons name="close-circle" size={16} color={WARM_CORE.textSecondary} />
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
+      {/* Category Filter Horizontal Scroll */}
+      {notifications.length > 0 && (
+        <View style={styles.filterContainer}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterScroll}>
+            {(['all', 'rides', 'chat', 'pools', 'payments'] as const).map((filter) => {
+              const isActive = activeFilter === filter;
+              return (
+                <TouchableOpacity
+                  key={filter}
+                  onPress={() => setActiveFilter(filter)}
+                  style={[styles.filterButton, isActive && styles.filterButtonActive]}
+                >
+                  <Text style={[styles.filterButtonText, isActive && styles.filterButtonTextActive]}>
+                    {filter.toUpperCase()}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+
       {/* Notifications List */}
       {loading && !refreshing ? (
         <View style={styles.centerContainer}>
           <ActivityIndicator size="large" color={WARM_CORE.primary} />
         </View>
-      ) : notifications.length === 0 ? (
+      ) : filteredNotifications.length === 0 ? (
         <View style={styles.centerContainer}>
           <MaterialCommunityIcons name="bell-outline" size={48} color={WARM_CORE.textSecondary} />
-          <Text style={styles.emptyText}>No notifications yet</Text>
+          <Text style={styles.emptyText}>
+            {searchQuery || activeFilter !== 'all' ? 'No matching notifications' : 'No notifications yet'}
+          </Text>
           <Text style={styles.emptySubtext}>
-            You{"'"}ll see booking updates, messages, and ride events here
+            {searchQuery || activeFilter !== 'all'
+              ? 'Try adjusting your search query or category filters'
+              : "You'll see booking updates, messages, and ride events here"}
           </Text>
         </View>
       ) : (
         <FlatList
-          data={notifications}
+          data={filteredNotifications}
           renderItem={renderNotificationItem}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
@@ -477,6 +599,59 @@ const styles = StyleSheet.create({
   unreadBadgeText: {
     fontSize: 10,
     fontWeight: '700',
+    color: WARM_CORE.white,
+  },
+  searchBarContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 10,
+    marginHorizontal: 16,
+    marginTop: 12,
+    paddingHorizontal: 12,
+    height: 40,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  },
+  searchIcon: {
+    marginRight: 8,
+  },
+  searchBarInput: {
+    flex: 1,
+    fontSize: 14,
+    color: WARM_CORE.text,
+    paddingVertical: 8,
+  },
+  searchClearButton: {
+    padding: 4,
+  },
+  filterContainer: {
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: WARM_CORE.border,
+  },
+  filterScroll: {
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  filterButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
+    backgroundColor: WARM_CORE.card,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  },
+  filterButtonActive: {
+    backgroundColor: WARM_CORE.primary,
+    borderColor: WARM_CORE.primary,
+  },
+  filterButtonText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: WARM_CORE.textSecondary,
+  },
+  filterButtonTextActive: {
     color: WARM_CORE.white,
   },
 });

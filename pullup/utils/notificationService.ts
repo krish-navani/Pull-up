@@ -22,7 +22,17 @@ export type NotificationType =
   | 'ride_started' 
   | 'ride_completed'
   | 'ride_cancelled'
-  | 'message';
+  | 'message'
+  | 'pool_joined'
+  | 'pool_accepted'
+  | 'pool_full'
+  | 'pool_request'
+  | 'payment_required'
+  | 'payment_confirmed'
+  | 'refund_initiated'
+  | 'refund_completed'
+  | 'general'
+  | 'booking_expired';
 
 export interface Notification {
   id: string;
@@ -54,8 +64,57 @@ export const sendNotification = async (
   actionUrl?: string
 ): Promise<string> => {
   try {
-    const notificationsRef = collection(db, 'users', userId, 'notifications');
+    // 1. Determine target screen routing metadata for deep links
+    let targetScreen: string | null = null;
+    let targetId: string | null = null;
 
+    if (type === 'message') {
+      targetScreen = 'group-chat';
+      targetId = rideId;
+    } else if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'pool_full'].includes(type)) {
+      targetScreen = 'ride-details';
+      targetId = rideId;
+    } else if (['payment_required', 'booking_expired'].includes(type)) {
+      targetScreen = 'my-bookings';
+      targetId = bookingId || rideId;
+    } else if (['pool_joined', 'pool_accepted', 'pool_request'].includes(type)) {
+      targetScreen = 'taxi-pool-details';
+      targetId = rideId;
+    }
+
+    // 2. Call backend REST endpoint
+    const backendUrl = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000';
+    const response = await fetch(`${backendUrl}/api/otp/send-notification`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        userId,
+        type,
+        title,
+        message,
+        rideId: rideId || null,
+        bookingId: bookingId || null,
+        senderId: senderId || null,
+        senderName: senderName || null,
+        targetScreen,
+        targetId,
+        actionUrl: actionUrl || null,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Server returned status code: ${response.status}`);
+    }
+
+    const resData = await response.json();
+    return resData.notifId || Math.random().toString(36).substring(7);
+  } catch (error) {
+    console.warn('[NOTIFICATIONS] API dispatch failed, falling back to local Firestore write:', error);
+
+    // Fallback: Write directly to subcollection if backend is unavailable
+    const notificationsRef = collection(db, 'users', userId, 'notifications');
     const notificationDoc = await addDoc(notificationsRef, {
       userId,
       type,
@@ -70,11 +129,7 @@ export const sendNotification = async (
       actionUrl: actionUrl || null,
     });
 
-    console.log(`[NOTIFICATIONS] ✅ Notification sent to ${userId}:`, title);
     return notificationDoc.id;
-  } catch (error) {
-    console.error('[NOTIFICATIONS] Error sending notification:', error);
-    throw error;
   }
 };
 

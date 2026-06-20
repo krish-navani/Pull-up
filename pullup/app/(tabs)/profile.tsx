@@ -900,6 +900,20 @@ export default function ProfileScreen() {
                 </PressableCard>
 
                 <PressableCard
+                  onPress={() => router.push('/notification-settings' as any)}
+                  style={styles.menuItemCard}
+                  index={5.5}
+                >
+                  <View style={styles.menuItemContent}>
+                    <View style={[styles.menuItemIconBox, { backgroundColor: 'rgba(212, 80, 10, 0.08)' }]}>
+                      <MaterialCommunityIcons name="bell-cog-outline" size={20} color={WARM_CORE.primary} />
+                    </View>
+                    <Text style={styles.menuItemText}>Notification Settings</Text>
+                    <MaterialCommunityIcons name="chevron-right" size={20} color={WARM_CORE.textSecondary} />
+                  </View>
+                </PressableCard>
+
+                <PressableCard
                   onPress={() => Alert.alert('Support', 'For support, please contact the campus coordinator at support@pullup.edu')}
                   style={styles.menuItemCard}
                   index={6}

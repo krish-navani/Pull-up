@@ -1,6 +1,14 @@
 /**
  * User and Authentication Types
  */
+export interface NotificationPreferences {
+  rideUpdates: boolean;
+  paymentUpdates: boolean;
+  chatUpdates: boolean;
+  poolUpdates: boolean;
+  marketingUpdates: boolean;
+}
+
 export interface User {
   id: string;
   email: string;
@@ -15,6 +23,11 @@ export interface User {
   profileComplete: boolean;
   createdAt?: string;
   updatedAt?: string;
+  expoPushToken?: string | null;
+  notificationPreferences?: NotificationPreferences;
+  mutedChats?: {
+    [chatId: string]: string; // ISO string for mute expiration
+  };
   // Driver-specific fields
   licenseImageUri?: string;
   licenseVerificationStatus?: 'pending' | 'verified' | 'rejected';
@@ -57,6 +70,11 @@ export interface Ride {
   startedAt?: string; // When driver started the ride
   completedAt?: string; // When driver completed the ride
   bookedSeats: BookingInfo[];
+  currentLocation?: {
+    latitude: number;
+    longitude: number;
+    updatedAt: string;
+  };
 }
 
 /**
@@ -70,6 +88,11 @@ export interface BookingInfo {
   bookedAt: string;
   cancelledAt?: string;
   penaltyApplied?: number;
+  pickedUp?: boolean;
+  droppedOff?: boolean;
+  paymentStatus?: 'pending' | 'paid' | 'failed';
+  totalPrice?: number;
+  orderId?: string;
 }
 
 export interface Booking {
@@ -82,6 +105,13 @@ export interface Booking {
   bookedAt: string;
   cancelledAt?: string;
   penaltyApplied?: number;
+  passengerPickupLocation?: Location;
+  passengerDropLocation?: Location;
+  pickedUp?: boolean;
+  droppedOff?: boolean;
+  paymentStatus?: 'pending' | 'paid' | 'failed';
+  totalPrice?: number;
+  orderId?: string;
 }
 
 /**
@@ -190,7 +220,7 @@ export interface AppContextType {
 
   // Bookings
   bookings: Booking[];
-  requestRide: (rideId: string, seatsBooked: number) => Promise<void>;
+  requestRide: (rideId: string, seatsBooked: number, pickupLocation?: any, dropLocation?: any) => Promise<void>;
   acceptBooking: (rideId: string, passengerId: string) => Promise<void>;
   rejectBooking: (rideId: string, passengerId: string) => Promise<void>;
   cancelBooking: (bookingId: string) => Promise<void>;
