@@ -46,20 +46,26 @@ export const decodePolyline = (encoded: string) => {
 export const fetchRoute = async (
   pickup: { latitude: number; longitude: number; address?: string; city?: string },
   dropoff: { latitude: number; longitude: number; address?: string; city?: string },
-  apiKey: string
+  apiKey: string,
+  waypoints?: Array<{ latitude: number; longitude: number }>
 ) => {
   try {
     const origin = `${pickup.latitude},${pickup.longitude}`;
     const destination = `${dropoff.latitude},${dropoff.longitude}`;
     
     // Use Directions API
-    const directionsURL = `https://maps.googleapis.com/maps/api/directions/json?origin=${encodeURIComponent(
+    let directionsURL = `https://maps.googleapis.com/maps/api/directions/json?origin=${encodeURIComponent(
       origin
     )}&destination=${encodeURIComponent(
       destination
     )}&mode=driving&alternatives=false&key=${apiKey}`;
 
-    console.log('🗺️ Fetching route:', { origin, destination });
+    if (waypoints && waypoints.length > 0) {
+      const waypointsStr = 'optimize:true|' + waypoints.map(wp => `${wp.latitude},${wp.longitude}`).join('|');
+      directionsURL += `&waypoints=${encodeURIComponent(waypointsStr)}`;
+    }
+
+    console.log('🗺️ Fetching route:', { origin, destination, waypointsCount: waypoints?.length || 0 });
 
     const response = await fetch(directionsURL);
     const data = await response.json();
@@ -70,17 +76,38 @@ export const fetchRoute = async (
       const route = data.routes[0];
       const points = decodePolyline(route.overview_polyline.points);
       
+      let totalDistanceMeters = 0;
+      let totalDurationSeconds = 0;
+      if (route.legs && route.legs.length > 0) {
+        route.legs.forEach((leg: any) => {
+          totalDistanceMeters += leg.distance?.value || 0;
+          totalDurationSeconds += leg.duration?.value || 0;
+        });
+      }
+
+      const distanceText = totalDistanceMeters > 0 
+        ? `${(totalDistanceMeters / 1000).toFixed(1)} km` 
+        : route.legs?.[0]?.distance?.text;
+      
+      const durationText = totalDurationSeconds > 0 
+        ? `${Math.round(totalDurationSeconds / 60)} mins` 
+        : route.legs?.[0]?.duration?.text;
+
       console.log('✅ Route decoded successfully:', {
         points: points.length,
-        distance: route.legs?.[0]?.distance?.text,
-        duration: route.legs?.[0]?.duration?.text,
+        distance: distanceText,
+        duration: durationText,
+        waypointOrder: route.waypoint_order || [],
       });
 
       return {
         success: true,
         points,
-        distance: route.legs?.[0]?.distance?.text,
-        duration: route.legs?.[0]?.duration?.text,
+        distance: distanceText,
+        duration: durationText,
+        distanceMeters: totalDistanceMeters,
+        durationSeconds: totalDurationSeconds,
+        waypointOrder: route.waypoint_order || [],
       };
     } else {
       console.warn('⚠️ Directions API Warning:', {

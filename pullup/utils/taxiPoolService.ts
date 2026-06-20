@@ -39,8 +39,13 @@ export interface TaxiPool {
   maxMembers: number;
   memberCount: number;
   notes?: string;
-  status: 'OPEN' | 'FULL' | 'CLOSED' | 'CANCELLED';
+  status: 'OPEN' | 'FULL' | 'CLOSED' | 'CANCELLED' | 'in_progress' | 'completed';
   createdAt: any;
+  currentLocation?: {
+    latitude: number;
+    longitude: number;
+    updatedAt: string;
+  };
 }
 
 export interface PoolRequest {
@@ -734,4 +739,39 @@ export const updateTaxiPoolStatus = async (
     throw error;
   }
 };
+
+/**
+ * Start Taxi Pool Ride
+ */
+export const startTaxiPoolRide = async (poolId: string): Promise<void> => {
+  try {
+    const poolRef = doc(db, 'taxiPools', poolId);
+    await updateDoc(poolRef, {
+      status: 'in_progress',
+      startedAt: new Date().toISOString(),
+    });
+    console.log('[TAXI POOL SERVICE] ✅ Taxi pool started');
+  } catch (error) {
+    console.error('[TAXI POOL SERVICE] Error starting taxi pool ride:', error);
+    throw error;
+  }
+};
+
+/**
+ * Complete Taxi Pool Ride
+ */
+export const completeTaxiPoolRide = async (poolId: string): Promise<void> => {
+  try {
+    const poolRef = doc(db, 'taxiPools', poolId);
+    await updateDoc(poolRef, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+    });
+    console.log('[TAXI POOL SERVICE] ✅ Taxi pool completed');
+  } catch (error) {
+    console.error('[TAXI POOL SERVICE] Error completing taxi pool ride:', error);
+    throw error;
+  }
+};
+
 
