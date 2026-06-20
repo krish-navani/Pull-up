@@ -199,7 +199,15 @@ export default function ChatScreen() {
   const isChatAllowed = ride && (
     ride.status === 'in_progress' ||
     ride.status === 'completed' ||
+    ride.status === 'expired' ||
+    ride.status === 'no_show' ||
     (ride.status === 'active' && booking && booking.status === 'accepted')
+  );
+
+  const isChatWritable = ride && (
+    ride.status === 'active' ||
+    ride.status === 'expired' ||
+    ride.status === 'in_progress'
   );
 
   useEffect(() => {
@@ -594,15 +602,15 @@ export default function ChatScreen() {
                 <TextInput
                   style={[
                     chatStyles.textInput,
-                    !isChatAllowed && { opacity: 0.5 },
+                    (!isChatAllowed || !isChatWritable) && { opacity: 0.5 },
                   ]}
-                  placeholder={isChatAllowed ? "Message..." : "Chat ended"}
+                  placeholder={isChatAllowed ? (isChatWritable ? "Message..." : "Chat is read-only") : "Chat ended"}
                   placeholderTextColor={WARM_CORE.textSecondary}
                   value={messageText}
                   onChangeText={setMessageText}
                   multiline
                   maxLength={500}
-                  editable={isChatAllowed && !sending}
+                  editable={isChatAllowed && isChatWritable && !sending}
                   scrollEnabled={false}
                 />
               </View>
@@ -614,13 +622,13 @@ export default function ChatScreen() {
                     chatStyles.sendButton,
                     {
                       backgroundColor:
-                        messageText.trim() && isChatAllowed && !sending
+                        messageText.trim() && isChatAllowed && isChatWritable && !sending
                           ? WARM_CORE.primary
                           : WARM_CORE.border,
                     },
                   ]}
                   onPress={handleSendMessage}
-                  disabled={!messageText.trim() || !isChatAllowed || sending}
+                  disabled={!messageText.trim() || !isChatAllowed || !isChatWritable || sending}
                   activeOpacity={0.7}
                 >
                   {sending ? (

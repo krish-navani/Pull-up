@@ -334,6 +334,10 @@ export default function GroupChatScreen() {
       case 'cancelled':
       case 'CANCELLED':
         return { text: 'Cancelled', bg: 'rgba(239, 68, 68, 0.15)', border: WARM_CORE.error, color: WARM_CORE.error };
+      case 'expired':
+        return { text: 'Expired', bg: 'rgba(239, 68, 68, 0.15)', border: WARM_CORE.error, color: WARM_CORE.error };
+      case 'no_show':
+        return { text: 'Driver No-Show', bg: 'rgba(239, 68, 68, 0.15)', border: WARM_CORE.error, color: WARM_CORE.error };
       default:
         return { text: 'Upcoming Ride', bg: WARM_CORE.card, border: WARM_CORE.border, color: WARM_CORE.textSecondary };
     }
@@ -343,6 +347,11 @@ export default function GroupChatScreen() {
   const isDriverOrHost = rideType === 'carpool'
     ? rideDetails?.driverId === auth.user?.id
     : rideDetails?.creatorId === auth.user?.id;
+
+  const status = rideDetails?.status || (rideType === 'carpool' ? 'active' : 'OPEN');
+  const isChatWritable = rideType === 'carpool'
+    ? status === 'active' || status === 'expired' || status === 'in_progress'
+    : status === 'OPEN' || status === 'FULL' || status === 'in_progress';
 
   const driverOrHostName = rideType === 'carpool'
     ? rideDetails?.driverName || 'Driver'
@@ -495,17 +504,18 @@ export default function GroupChatScreen() {
           </TouchableOpacity>
 
           <TextInput
-            style={styles.textInput}
+            style={[styles.textInput, !isChatWritable && { opacity: 0.5 }]}
             value={messageText}
             onChangeText={setMessageText}
-            placeholder="Type a message..."
+            placeholder={isChatWritable ? "Type a message..." : "Chat is read-only"}
             placeholderTextColor={WARM_CORE.textSecondary}
+            editable={isChatWritable && !sending}
           />
 
           <TouchableOpacity
-            style={[styles.sendBtn, !messageText.trim() && styles.sendBtnDisabled]}
+            style={[styles.sendBtn, (!messageText.trim() || !isChatWritable) && styles.sendBtnDisabled]}
             onPress={handleSend}
-            disabled={!messageText.trim() || sending}
+            disabled={!messageText.trim() || !isChatWritable || sending}
             activeOpacity={0.8}
           >
             {sending ? (
@@ -525,7 +535,8 @@ export default function GroupChatScreen() {
 
             {isDriverOrHost ? (
               <>
-                {rideDetails?.status === 'active' && (
+                {((rideType === 'carpool' && (rideDetails?.status === 'active' || rideDetails?.status === 'expired')) ||
+                  (rideType === 'taxipool' && (rideDetails?.status === 'OPEN' || rideDetails?.status === 'FULL'))) && (
                   <TouchableOpacity style={styles.actionItem} onPress={handleStartRide}>
                     <MaterialCommunityIcons name="play" size={22} color={WARM_CORE.primary} />
                     <Text style={styles.actionText}>Start Ride</Text>
