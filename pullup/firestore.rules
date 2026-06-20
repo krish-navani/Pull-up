@@ -7,6 +7,38 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function isCarpoolDriver(rideId) {
+      return exists(/databases/$(database)/documents/rides/$(rideId)) && 
+             request.auth.uid == get(/databases/$(database)/documents/rides/$(rideId)).data.driverId;
+    }
+
+    function isTaxiCreator(rideId) {
+      return exists(/databases/$(database)/documents/taxiPools/$(rideId)) && 
+             request.auth.uid == get(/databases/$(database)/documents/taxiPools/$(rideId)).data.creatorId;
+    }
+
+    function isPaidCarpoolPassenger(rideId) {
+      return exists(/databases/$(database)/documents/bookings/$(rideId + "_" + request.auth.uid)) && 
+             get(/databases/$(database)/documents/bookings/$(rideId + "_" + request.auth.uid)).data.status == 'confirmed' && 
+             get(/databases/$(database)/documents/bookings/$(rideId + "_" + request.auth.uid)).data.paymentStatus == 'paid';
+    }
+
+    function isTaxiPoolMember(rideId) {
+      return exists(/databases/$(database)/documents/poolMembers/$(rideId + "_" + request.auth.uid));
+    }
+
+    function canAccessChat(rideId) {
+      return isSignedIn() && 
+             (!exists(/databases/$(database)/documents/rides/$(rideId)) || get(/databases/$(database)/documents/rides/$(rideId)).data.status != 'cancelled') &&
+             (!exists(/databases/$(database)/documents/taxiPools/$(rideId)) || get(/databases/$(database)/documents/taxiPools/$(rideId)).data.status != 'CANCELLED') &&
+             (
+               isCarpoolDriver(rideId) || 
+               isTaxiCreator(rideId) || 
+               isPaidCarpoolPassenger(rideId) || 
+               isTaxiPoolMember(rideId)
+             );
+    }
+
     // ─── OTP Verification ───────────────────────────────────────────────────
     // Must be accessible before authentication (signup / login flow)
     match /otpVerification/{document=**} {
@@ -70,13 +102,20 @@ service cloud.firestore {
 
     // ─── Ride Group Chats ──────────────────────────────────────────────────
     match /rideChats/{rideId} {
-      allow read:   if isSignedIn() && request.auth.uid in resource.data.participants;
-      allow create: if isSignedIn() && request.auth.uid in request.resource.data.participants;
-      allow update: if isSignedIn() && (request.auth.uid in resource.data.participants || request.auth.uid in request.resource.data.participants);
-      allow delete: if isSignedIn() && request.auth.uid in resource.data.participants;
+      allow read:   if canAccessChat(rideId);
+      allow create: if isSignedIn() && (isCarpoolDriver(rideId) || isTaxiCreator(rideId));
+      allow update: if isSignedIn() && (
+        isCarpoolDriver(rideId) || 
+        isTaxiCreator(rideId) || 
+        (
+          request.auth.uid in resource.data.participants && 
+          ! (request.auth.uid in request.resource.data.participants)
+        )
+      );
+      allow delete: if false;
 
       match /messages/{messageId} {
-        allow read, create: if isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/rideChats/$(rideId)).data.participants;
+        allow read, create: if canAccessChat(rideId);
         allow update, delete: if false;
       }
     }

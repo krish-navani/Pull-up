@@ -18,7 +18,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot, updateDoc, deleteField } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
 import { useAppContext } from '@/context/AppContext';
 import { WARM_CORE } from '@/constants/theme';
@@ -52,6 +52,8 @@ export default function GroupChatScreen() {
   const [actionsVisible, setActionsVisible] = useState(false);
   const [sosVisible, setSosVisible] = useState(false);
   const [profileVisible, setProfileVisible] = useState(false);
+  const [muteVisible, setMuteVisible] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
   
   const flatListRef = useRef<FlatList>(null);
 
@@ -144,6 +146,17 @@ export default function GroupChatScreen() {
       };
     }
   }, [rideId, rideType, rideDetails?.creatorId]);
+
+  useEffect(() => {
+    if (auth.user?.mutedChats && rideId) {
+      const expiry = auth.user.mutedChats[rideId];
+      if (expiry) {
+        setIsMuted(new Date(expiry) > new Date());
+      } else {
+        setIsMuted(false);
+      }
+    }
+  }, [auth.user, rideId]);
 
   // 3. Auto-scroll on messages count change
   useEffect(() => {
@@ -263,6 +276,51 @@ export default function GroupChatScreen() {
   const callEmergencyNumber = () => {
     setSosVisible(false);
     Linking.openURL('tel:112');
+  };
+
+  const handleMuteChat = async (hours: number | 'ride') => {
+    if (!auth.user || !rideId) return;
+
+    let expirationDate: Date;
+    if (hours === 'ride') {
+      if (rideDetails && rideDetails.departureTime) {
+        expirationDate = new Date(new Date(rideDetails.departureTime).getTime() + 3 * 60 * 60 * 1000);
+      } else {
+        expirationDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      }
+    } else {
+      expirationDate = new Date(Date.now() + hours * 60 * 60 * 1000);
+    }
+
+    const isoStr = expirationDate.toISOString();
+
+    try {
+      const userRef = doc(db, 'users', auth.user.id);
+      await updateDoc(userRef, {
+        [`mutedChats.${rideId}`]: isoStr,
+      });
+
+      setIsMuted(true);
+      setMuteVisible(false);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to mute chat notifications.');
+    }
+  };
+
+  const handleUnmuteChat = async () => {
+    if (!auth.user || !rideId) return;
+
+    try {
+      const userRef = doc(db, 'users', auth.user.id);
+      await updateDoc(userRef, {
+        [`mutedChats.${rideId}`]: deleteField(),
+      });
+
+      setIsMuted(false);
+      setMuteVisible(false);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to unmute chat notifications.');
+    }
   };
 
   // Get status text and colors
@@ -501,6 +559,25 @@ export default function GroupChatScreen() {
               </>
             )}
 
+            {rideDetails?.status !== 'completed' && rideDetails?.status !== 'cancelled' && rideDetails?.status !== 'CANCELLED' && (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={() => {
+                  setActionsVisible(false);
+                  setMuteVisible(true);
+                }}
+              >
+                <MaterialCommunityIcons
+                  name={isMuted ? "bell" : "bell-off"}
+                  size={22}
+                  color={WARM_CORE.primary}
+                />
+                <Text style={styles.actionText}>
+                  {isMuted ? "Unmute Notifications" : "Mute Notifications"}
+                </Text>
+              </TouchableOpacity>
+            )}
+
             <TouchableOpacity style={styles.cancelModalBtn} onPress={() => setActionsVisible(false)}>
               <Text style={styles.cancelModalText}>Cancel</Text>
             </TouchableOpacity>
@@ -532,6 +609,48 @@ export default function GroupChatScreen() {
 
             <TouchableOpacity style={styles.sosCancelBtn} onPress={() => setSosVisible(false)}>
               <Text style={styles.sosCancelText}>Dismiss</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Mute Modal */}
+      <Modal visible={muteVisible} animationType="fade" transparent onRequestClose={() => setMuteVisible(false)}>
+        <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setMuteVisible(false)}>
+          <View style={styles.sosModalContent}>
+            <View style={[styles.sosIconContainer, { backgroundColor: 'rgba(212, 80, 10, 0.1)' }]}>
+              <MaterialCommunityIcons name={isMuted ? "bell-off" : "bell"} size={48} color={WARM_CORE.primary} />
+            </View>
+            <Text style={styles.sosTitle}>{isMuted ? "Unmute Chat" : "Mute Chat"}</Text>
+            <Text style={styles.sosSubtitle}>
+              {isMuted 
+                ? "You have currently muted push notifications for this chat. Would you like to unmute?" 
+                : "Choose how long you want to mute push notifications for this chat. You will still receive messages in the chat room."}
+            </Text>
+
+            {isMuted ? (
+              <TouchableOpacity style={[styles.sosBtnItem, { backgroundColor: WARM_CORE.primary }]} onPress={handleUnmuteChat}>
+                <Text style={styles.sosBtnText}>Unmute Notifications</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={{ width: '100%', gap: 10 }}>
+                <TouchableOpacity style={[styles.sosBtnItem, { backgroundColor: WARM_CORE.primary, marginBottom: 0 }]} onPress={() => handleMuteChat(1)}>
+                  <Text style={styles.sosBtnText}>Mute for 1 Hour</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.sosBtnItem, { backgroundColor: WARM_CORE.primary, marginBottom: 0 }]} onPress={() => handleMuteChat(8)}>
+                  <Text style={styles.sosBtnText}>Mute for 8 Hours</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.sosBtnItem, { backgroundColor: WARM_CORE.primary, marginBottom: 0 }]} onPress={() => handleMuteChat(24)}>
+                  <Text style={styles.sosBtnText}>Mute for 24 Hours</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.sosBtnItem, { backgroundColor: WARM_CORE.primary, marginBottom: 0 }]} onPress={() => handleMuteChat('ride')}>
+                  <Text style={styles.sosBtnText}>Mute until ride ends</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <TouchableOpacity style={styles.sosCancelBtn} onPress={() => setMuteVisible(false)}>
+              <Text style={styles.sosCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>

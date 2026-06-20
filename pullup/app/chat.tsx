@@ -2,7 +2,7 @@ import { useAppContext } from '@/context/AppContext';
 import { getMessagesForRide, markAllMessagesAsRead, sendMessage, subscribeToMessages } from '@/utils/chatService';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Timestamp, doc, onSnapshot } from 'firebase/firestore';
+import { Timestamp, doc, onSnapshot, updateDoc, deleteField } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
 import { WARM_CORE } from '@/constants/theme';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -14,6 +14,7 @@ import {
   Image,
   KeyboardAvoidingView,
   Linking,
+  Modal,
   Platform,
   StatusBar,
   StyleSheet,
@@ -163,6 +164,8 @@ export default function ChatScreen() {
   const [sending, setSending] = useState(false);
   const [unsubscribe, setUnsubscribe] = useState<(() => void) | null>(null);
   const [showPhonePopup, setShowPhonePopup] = useState(false);
+  const [showMuteModal, setShowMuteModal] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
 
   const flatListRef = useRef<FlatList>(null);
   const scaleAnim = useRef(new Animated.Value(1)).current;
@@ -302,6 +305,62 @@ export default function ChatScreen() {
 
     return () => unsub();
   }, [ride, booking, auth.user]);
+
+  useEffect(() => {
+    if (auth.user?.mutedChats && rideId) {
+      const expiry = auth.user.mutedChats[rideId];
+      if (expiry) {
+        setIsMuted(new Date(expiry) > new Date());
+      } else {
+        setIsMuted(false);
+      }
+    }
+  }, [auth.user, rideId]);
+
+  const handleMuteChat = async (hours: number | 'ride') => {
+    if (!auth.user || !rideId) return;
+
+    let expirationDate: Date;
+    if (hours === 'ride') {
+      if (ride && ride.departureTime) {
+        expirationDate = new Date(new Date(ride.departureTime).getTime() + 3 * 60 * 60 * 1000);
+      } else {
+        expirationDate = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      }
+    } else {
+      expirationDate = new Date(Date.now() + hours * 60 * 60 * 1000);
+    }
+
+    const isoStr = expirationDate.toISOString();
+
+    try {
+      const userRef = doc(db, 'users', auth.user.id);
+      await updateDoc(userRef, {
+        [`mutedChats.${rideId}`]: isoStr,
+      });
+
+      setIsMuted(true);
+      setShowMuteModal(false);
+    } catch (error) {
+      console.error('[CHAT] Error muting chat:', error);
+    }
+  };
+
+  const handleUnmuteChat = async () => {
+    if (!auth.user || !rideId) return;
+
+    try {
+      const userRef = doc(db, 'users', auth.user.id);
+      await updateDoc(userRef, {
+        [`mutedChats.${rideId}`]: deleteField(),
+      });
+
+      setIsMuted(false);
+      setShowMuteModal(false);
+    } catch (error) {
+      console.error('[CHAT] Error unmuting chat:', error);
+    }
+  };
 
   const handlePhoneCall = useCallback(() => {
     if (!isChatAllowed) {
@@ -445,6 +504,19 @@ export default function ChatScreen() {
             </View>
           </View>
 
+          {isChatAllowed && (
+            <TouchableOpacity
+              style={chatStyles.muteButton}
+              onPress={() => setShowMuteModal(true)}
+            >
+              <MaterialCommunityIcons
+                name={isMuted ? 'bell-off' : 'bell-outline'}
+                size={20}
+                color={WARM_CORE.primary}
+              />
+            </TouchableOpacity>
+          )}
+
           <TouchableOpacity
             style={chatStyles.phoneButton}
             onPress={handlePhoneCall}
@@ -566,6 +638,68 @@ export default function ChatScreen() {
           </>
         )}
       </KeyboardAvoidingView>
+
+      {/* Mute Modal */}
+      <Modal visible={showMuteModal} animationType="fade" transparent onRequestClose={() => setShowMuteModal(false)}>
+        <TouchableOpacity style={chatStyles.phonePopupOverlay} activeOpacity={1} onPress={() => setShowMuteModal(false)}>
+          <View style={chatStyles.phonePopupModal}>
+            <TouchableOpacity
+              style={chatStyles.phonePopupClose}
+              onPress={() => setShowMuteModal(false)}
+            >
+              <MaterialCommunityIcons name="close" size={24} color={WARM_CORE.text} />
+            </TouchableOpacity>
+
+            <MaterialCommunityIcons name={isMuted ? "bell-off" : "bell"} size={48} color={WARM_CORE.primary} style={chatStyles.phonePopupIcon} />
+
+            <Text style={chatStyles.phonePopupTitle}>
+              {isMuted ? "Unmute Chat Notifications" : "Mute Chat Notifications"}
+            </Text>
+
+            <Text style={[chatStyles.phonePopupHint, { marginBottom: 20, textAlign: 'center', marginTop: 0 }]}>
+              {isMuted 
+                ? "You have currently muted push notifications for this chat. Would you like to unmute?" 
+                : "Choose how long you want to mute push notifications for this chat."}
+            </Text>
+
+            {isMuted ? (
+              <TouchableOpacity 
+                style={[chatStyles.phonePopupCallButton, { backgroundColor: WARM_CORE.primary, width: '100%', marginLeft: 0, paddingVertical: 12 }]} 
+                onPress={handleUnmuteChat}
+              >
+                <Text style={{ color: WARM_CORE.white, fontWeight: '600', fontSize: 16 }}>Unmute Notifications</Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={{ width: '100%', gap: 10 }}>
+                <TouchableOpacity 
+                  style={[chatStyles.phonePopupCallButton, { backgroundColor: WARM_CORE.primary, marginLeft: 0, paddingVertical: 12 }]} 
+                  onPress={() => handleMuteChat(1)}
+                >
+                  <Text style={{ color: WARM_CORE.white, fontWeight: '600', fontSize: 16 }}>Mute for 1 Hour</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[chatStyles.phonePopupCallButton, { backgroundColor: WARM_CORE.primary, marginLeft: 0, paddingVertical: 12 }]} 
+                  onPress={() => handleMuteChat(8)}
+                >
+                  <Text style={{ color: WARM_CORE.white, fontWeight: '600', fontSize: 16 }}>Mute for 8 Hours</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[chatStyles.phonePopupCallButton, { backgroundColor: WARM_CORE.primary, marginLeft: 0, paddingVertical: 12 }]} 
+                  onPress={() => handleMuteChat(24)}
+                >
+                  <Text style={{ color: WARM_CORE.white, fontWeight: '600', fontSize: 16 }}>Mute for 24 Hours</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[chatStyles.phonePopupCallButton, { backgroundColor: WARM_CORE.primary, marginLeft: 0, paddingVertical: 12 }]} 
+                  onPress={() => handleMuteChat('ride')}
+                >
+                  <Text style={{ color: WARM_CORE.white, fontWeight: '600', fontSize: 16 }}>Mute until ride ends</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </TouchableOpacity>
+      </Modal>
 
       {/* Phone Popup Modal - Show during active ride */}
       {showPhonePopup && isChatAllowed && (
@@ -1013,5 +1147,9 @@ const chatStyles = StyleSheet.create({
     marginTop: 16,
     textAlign: 'center',
     fontStyle: 'italic',
+  },
+  muteButton: {
+    padding: 6,
+    marginLeft: 12,
   },
 });
