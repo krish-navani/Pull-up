@@ -21,7 +21,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import { useAppContext } from '@/context/AppContext';
 import { WARM_CORE } from '@/constants/theme';
-import { ATLAS_LOCATION } from '@/utils/atlasLocationUtils';
+import { ATLAS_LOCATION, calculateDistance } from '@/utils/atlasLocationUtils';
+import * as Location from 'expo-location';
 import { fetchRoute } from '@/utils/routeUtils';
 import {
   subscribeToPoolDetails,
@@ -36,7 +37,7 @@ import {
   PoolRequest,
   PoolMember
 } from '@/utils/taxiPoolService';
-import { doc, onSnapshot } from 'firebase/firestore';
+import { doc, onSnapshot, updateDoc } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
 
 // Custom Map style (reused from ride-details.tsx)
@@ -248,6 +249,18 @@ export default function TaxiPoolDetailsScreen() {
   const mapRef = useRef<MapView>(null);
   const infoSlideY = useRef(new Animated.Value(30)).current;
   const infoOpacity = useRef(new Animated.Value(0)).current;
+  const taxiPulseAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.timing(taxiPulseAnim, {
+        toValue: 1,
+        duration: 1800,
+        easing: Easing.out(Easing.ease),
+        useNativeDriver: true,
+      })
+    ).start();
+  }, [taxiPulseAnim]);
 
   // Stagger entry animation
   useEffect(() => {
@@ -339,6 +352,86 @@ export default function TaxiPoolDetailsScreen() {
     loadRoute();
   }, [pool]);
 
+  // Start location watching for creator if pool is in_progress
+  useEffect(() => {
+    let watcher: Location.LocationSubscription | null = null;
+    const isUserCreator = pool?.creatorId === auth.user?.id;
+
+    if (isUserCreator && pool?.status === 'in_progress') {
+      console.log('[POOL DETAILS] Creator watching location for in-progress pool...');
+      const startWatching = async () => {
+        const { status } = await Location.requestForegroundPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission Denied', 'Foreground location permission is required for live tracking.');
+          return;
+        }
+
+        try {
+          watcher = await Location.watchPositionAsync(
+            {
+              accuracy: Location.Accuracy.Balanced,
+              timeInterval: 5000,
+              distanceInterval: 10,
+            },
+            async (loc) => {
+              const { latitude, longitude } = loc.coords;
+              console.log('[POOL DETAILS] Watch position update:', latitude, longitude);
+              
+              // Update pool document in Firestore
+              const poolRef = doc(db, 'taxiPools', pool.id);
+              await updateDoc(poolRef, {
+                currentLocation: {
+                  latitude,
+                  longitude,
+                  updatedAt: new Date().toISOString(),
+                },
+              });
+
+              // Check distance to destination
+              const distanceToDest = calculateDistance(
+                latitude,
+                longitude,
+                pool.destination.latitude,
+                pool.destination.longitude
+              );
+              
+              // Also check distance to Atlas SkillTech University (college) if destination is college
+              const distanceToAtlas = calculateDistance(
+                latitude,
+                longitude,
+                ATLAS_LOCATION.latitude,
+                ATLAS_LOCATION.longitude
+              );
+
+              // Auto-complete if creator is within 2 km of destination or ATLAS_LOCATION
+              if (distanceToDest <= 2.0 || distanceToAtlas <= 2.0) {
+                console.log('[POOL DETAILS] Creator within 2km geofence. Completing Taxi Pool.');
+                try {
+                  const { completeTaxiPoolRide } = require('@/utils/taxiPoolService');
+                  await completeTaxiPoolRide(pool.id);
+                  Alert.alert('Arrived!', 'You have arrived within 2km of your destination. Taxi Pool ride completed!');
+                } catch (completeErr) {
+                  console.error('[POOL DETAILS] Auto-complete failed:', completeErr);
+                }
+              }
+            }
+          );
+        } catch (err) {
+          console.error('[POOL DETAILS] Location watching error:', err);
+        }
+      };
+
+      startWatching();
+    }
+
+    return () => {
+      if (watcher) {
+        console.log('[POOL DETAILS] Cleaning up creator location watcher.');
+        watcher.remove();
+      }
+    };
+  }, [pool?.creatorId, auth.user?.id, pool?.id, pool?.status]);
+
   if (!pool) {
     return (
       <SafeAreaView style={styles.loadingContainer}>
@@ -394,6 +487,26 @@ export default function TaxiPoolDetailsScreen() {
       Alert.alert('Action Failed', err.message || 'Could not decline passenger.');
     } finally {
       setActionLoading(null);
+    }
+  };
+
+  const handleStartTaxiPool = async () => {
+    try {
+      const { startTaxiPoolRide } = require('@/utils/taxiPoolService');
+      await startTaxiPoolRide(pool.id);
+      Alert.alert('Ride Started', 'You have started the taxi pool ride! Live tracking is now active.');
+    } catch (err) {
+      Alert.alert('Error', 'Failed to start Taxi Pool ride.');
+    }
+  };
+
+  const handleCompleteTaxiPool = async () => {
+    try {
+      const { completeTaxiPoolRide } = require('@/utils/taxiPoolService');
+      await completeTaxiPoolRide(pool.id);
+      Alert.alert('Ride Completed', 'You have finished the taxi pool ride!');
+    } catch (err) {
+      Alert.alert('Error', 'Failed to complete Taxi Pool ride.');
     }
   };
 
@@ -478,6 +591,45 @@ export default function TaxiPoolDetailsScreen() {
               strokeColor={WARM_CORE.primary}
               strokeWidth={4}
             />
+          )}
+
+          {/* Live tracking Taxi Marker */}
+          {pool.status === 'in_progress' && pool.currentLocation && (
+            <Marker
+              coordinate={{
+                latitude: pool.currentLocation.latitude,
+                longitude: pool.currentLocation.longitude,
+              }}
+              title={`${pool.creatorName}'s Taxi`}
+              description="Live Location"
+              anchor={{ x: 0.5, y: 0.5 }}
+              flat={true}
+            >
+              <View style={styles.movingTaxiMarker}>
+                <Animated.View
+                  style={[
+                    styles.movingTaxiPulse,
+                    {
+                      transform: [
+                        {
+                          scale: taxiPulseAnim.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [1, 2.8],
+                          }),
+                        },
+                      ],
+                      opacity: taxiPulseAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0.6, 0],
+                      }),
+                    },
+                  ]}
+                />
+                <View style={styles.movingTaxiInner}>
+                  <MaterialCommunityIcons name="taxi" size={14} color={WARM_CORE.white} />
+                </View>
+              </View>
+            </Marker>
           )}
         </MapView>
 
@@ -596,7 +748,7 @@ export default function TaxiPoolDetailsScreen() {
           <View style={{ marginTop: 24, marginBottom: 20 }}>
             {(isCreator || members.some(m => m.passengerId === auth.user?.id)) && (
               <TouchableOpacity
-                style={[styles.joinButton, { marginBottom: isCreator && pool.status !== 'CANCELLED' ? 12 : 0 }]}
+                style={[styles.joinButton, { marginBottom: 12 }]}
                 onPress={() => router.push({ pathname: '/group-chat' as any, params: { rideId: pool.id, rideType: 'taxipool' } })}
                 activeOpacity={0.85}
               >
@@ -606,15 +758,37 @@ export default function TaxiPoolDetailsScreen() {
             )}
 
             {isCreator ? (
-              pool.status !== 'CANCELLED' && (
-                <TouchableOpacity
-                  style={styles.cancelPoolButton}
-                  onPress={handleCancelPool}
-                  activeOpacity={0.85}
-                >
-                  <MaterialCommunityIcons name="cancel" size={18} color={WARM_CORE.white} style={{ marginRight: 6 }} />
-                  <Text style={styles.cancelPoolText}>Cancel Taxi Pool</Text>
-                </TouchableOpacity>
+              pool.status !== 'CANCELLED' && pool.status !== 'completed' && (
+                <View style={{ gap: 12 }}>
+                  {pool.status !== 'in_progress' ? (
+                    <TouchableOpacity
+                      style={[styles.joinButton, { backgroundColor: WARM_CORE.success }]}
+                      onPress={handleStartTaxiPool}
+                      activeOpacity={0.85}
+                    >
+                      <MaterialCommunityIcons name="play" size={18} color={WARM_CORE.white} style={{ marginRight: 6 }} />
+                      <Text style={styles.joinText}>Start Taxi Pool</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={[styles.joinButton, { backgroundColor: WARM_CORE.primary }]}
+                      onPress={handleCompleteTaxiPool}
+                      activeOpacity={0.85}
+                    >
+                      <MaterialCommunityIcons name="check" size={18} color={WARM_CORE.white} style={{ marginRight: 6 }} />
+                      <Text style={styles.joinText}>Finish Taxi Pool</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  <TouchableOpacity
+                    style={styles.cancelPoolButton}
+                    onPress={handleCancelPool}
+                    activeOpacity={0.85}
+                  >
+                    <MaterialCommunityIcons name="cancel" size={18} color={WARM_CORE.white} style={{ marginRight: 6 }} />
+                    <Text style={styles.cancelPoolText}>Cancel Taxi Pool</Text>
+                  </TouchableOpacity>
+                </View>
               )
             ) : (
               requestStatus === 'idle' && pool.status === 'OPEN' && (
@@ -641,7 +815,7 @@ export default function TaxiPoolDetailsScreen() {
               <View style={[styles.statusFeedbackBox, { backgroundColor: WARM_CORE.card }]}>
                 <MaterialCommunityIcons name="clock-outline" size={20} color={WARM_CORE.textSecondary} />
                 <Text style={[styles.statusFeedbackText, { color: WARM_CORE.text }]}>
-                  Join Request Pending Approval
+                  Waiting for pool owner approval.
                 </Text>
               </View>
             )}
@@ -651,6 +825,24 @@ export default function TaxiPoolDetailsScreen() {
                 <MaterialCommunityIcons name="close-circle-outline" size={20} color={WARM_CORE.error} />
                 <Text style={[styles.statusFeedbackText, { color: WARM_CORE.error }]}>
                   Join Request Declined
+                </Text>
+              </View>
+            )}
+
+            {pool.status === 'completed' && (
+              <View style={[styles.statusFeedbackBox, { backgroundColor: WARM_CORE.card, borderColor: WARM_CORE.success, borderWidth: 0.5 }]}>
+                <MaterialCommunityIcons name="check-circle" size={20} color={WARM_CORE.success} />
+                <Text style={[styles.statusFeedbackText, { color: WARM_CORE.success }]}>
+                  Taxi Pool Completed
+                </Text>
+              </View>
+            )}
+
+            {pool.status === 'CANCELLED' && (
+              <View style={[styles.statusFeedbackBox, { backgroundColor: WARM_CORE.card, borderColor: WARM_CORE.error, borderWidth: 0.5 }]}>
+                <MaterialCommunityIcons name="close-circle" size={20} color={WARM_CORE.error} />
+                <Text style={[styles.statusFeedbackText, { color: WARM_CORE.error }]}>
+                  Taxi Pool Cancelled
                 </Text>
               </View>
             )}
@@ -1023,4 +1215,34 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
   } as TextStyle,
+  movingTaxiMarker: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+  } as ViewStyle,
+  movingTaxiInner: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: WARM_CORE.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: WARM_CORE.white,
+    shadowColor: WARM_CORE.text,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+    zIndex: 2,
+  } as ViewStyle,
+  movingTaxiPulse: {
+    position: 'absolute',
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: WARM_CORE.accent,
+    zIndex: 1,
+  } as ViewStyle,
 });

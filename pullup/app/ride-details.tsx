@@ -6,6 +6,11 @@ import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { WARM_CORE } from '@/constants/theme';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { collection, query, where, onSnapshot, doc, updateDoc } from 'firebase/firestore';
+import { db } from '@/utils/firebase';
+import { getRideDirectionType, calculateDistance } from '@/utils/atlasLocationUtils';
+import * as Location from 'expo-location';
+import { Alert } from 'react-native';
 import {
   Animated,
   Easing,
@@ -27,6 +32,7 @@ export default function RideDetailsScreen() {
   const { rideId, bookingId } = useLocalSearchParams();
   const { getRideById, requestRide, auth, bookings } = useAppContext();
   const [requestStatus, setRequestStatus] = useState<'idle' | 'pending' | 'accepted' | 'rejected' | 'cancelled'>('idle');
+  const [paymentStatus, setPaymentStatus] = useState<'pending' | 'paid' | 'failed' | null>(null);
   const [routeCoordinates, setRouteCoordinates] = useState<any[]>([]);
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
   const [carPositionIndex, setCarPositionIndex] = useState(0);
@@ -61,7 +67,65 @@ export default function RideDetailsScreen() {
   const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView>(null);
 
-  const ride = getRideById(rideId as string);
+  const dbRide = getRideById(rideId as string);
+  const [liveRide, setLiveRide] = useState<any>(null);
+  const [acceptedBookings, setAcceptedBookings] = useState<any[]>([]);
+
+  // Listen to ride document in real-time
+  useEffect(() => {
+    if (!rideId) return;
+    const rideRef = doc(db, 'rides', rideId as string);
+    const unsub = onSnapshot(rideRef, (docSnap) => {
+      if (docSnap.exists()) {
+        setLiveRide({ id: docSnap.id, ...docSnap.data() });
+      }
+    });
+    return () => unsub();
+  }, [rideId]);
+
+  // Listen to accepted bookings for waypoints
+  useEffect(() => {
+    if (!rideId) return;
+    const q = query(
+      collection(db, 'bookings'),
+      where('rideId', '==', rideId),
+      where('status', '==', 'accepted')
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const list = snap.docs.map(doc => doc.data());
+      setAcceptedBookings(list);
+    });
+    return () => unsub();
+  }, [rideId]);
+
+  const ride = liveRide || dbRide;
+
+  const direction = ride ? getRideDirectionType(
+    ride.pickupLocation.latitude,
+    ride.pickupLocation.longitude,
+    ride.dropLocation.latitude,
+    ride.dropLocation.longitude
+  ) : 'other';
+
+  const waypoints = useMemo(() => {
+    const wps: Array<{ latitude: number; longitude: number; name: string }> = [];
+    acceptedBookings.forEach((b) => {
+      if (direction === 'home-to-atlas' && b.passengerPickupLocation) {
+        wps.push({
+          latitude: b.passengerPickupLocation.latitude,
+          longitude: b.passengerPickupLocation.longitude,
+          name: b.passengerName,
+        });
+      } else if (direction === 'atlas-to-home' && b.passengerDropLocation) {
+        wps.push({
+          latitude: b.passengerDropLocation.latitude,
+          longitude: b.passengerDropLocation.longitude,
+          name: b.passengerName,
+        });
+      }
+    });
+    return wps;
+  }, [acceptedBookings, direction]);
 
   const bottomSheetRef = useRef<BottomSheet>(null);
   const snapPoints = useMemo(() => ['20%', '50%'], []);
@@ -105,6 +169,7 @@ export default function RideDetailsScreen() {
         const booking = bookings.find(b => b.id === bookingId);
         if (booking) {
           setRequestStatus(booking.status as any);
+          setPaymentStatus(booking.paymentStatus as any || null);
         }
       } else {
         const activeBooking = bookings.find(
@@ -114,12 +179,15 @@ export default function RideDetailsScreen() {
         );
         if (activeBooking) {
           setRequestStatus(activeBooking.status as any);
+          setPaymentStatus(activeBooking.paymentStatus as any || null);
         } else {
-          const userBooking = ride.bookedSeats.find(bs => bs.passengerId === auth.user?.id);
+          const userBooking = ride.bookedSeats.find((bs: any) => bs.passengerId === auth.user?.id);
           if (userBooking) {
             setRequestStatus(userBooking.status as any);
+            setPaymentStatus(userBooking.paymentStatus as any || null);
           } else {
             setRequestStatus('idle');
+            setPaymentStatus(null);
           }
         }
       }
@@ -136,7 +204,8 @@ export default function RideDetailsScreen() {
         const result = await fetchRoute(
           ride.pickupLocation,
           ride.dropLocation,
-          'AIzaSyCIZ1Lccen5Ek7-0cXIU3Pxv5he7vhmZ6Y'
+          process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCIZ1Lccen5Ek7-0cXIU3Pxv5he7vhmZ6Y',
+          waypoints.map(wp => ({ latitude: wp.latitude, longitude: wp.longitude }))
         );
 
         console.log('📍 Setting route coordinates:', result.points.length);
@@ -168,7 +237,7 @@ export default function RideDetailsScreen() {
     };
 
     loadRoute();
-  }, [ride]);
+  }, [ride?.id, waypoints]);
 
   // Animate header + sheet content in after mount
   useEffect(() => {
@@ -251,6 +320,16 @@ export default function RideDetailsScreen() {
         text: 'Ride Cancelled',
         icon: 'close-circle',
         color: WARM_CORE.error,
+        bgColor: WARM_CORE.card,
+        disabled: true,
+      };
+    }
+
+    if (requestStatus !== 'pending' && requestStatus !== 'accepted' && (ride.availableSeats ?? 0) <= 0) {
+      return {
+        text: 'Ride is Full',
+        icon: 'alert-circle',
+        color: WARM_CORE.textSecondary,
         bgColor: WARM_CORE.card,
         disabled: true,
       };
@@ -341,9 +420,14 @@ export default function RideDetailsScreen() {
               </>
             )}
 
-            {routeCoordinates && routeCoordinates.length > 0 && routeCoordinates[carPositionIndex] && (
+            {ride.status === 'in_progress' && ride.currentLocation ? (
               <Marker
-                coordinate={routeCoordinates[carPositionIndex]}
+                coordinate={{
+                  latitude: ride.currentLocation.latitude,
+                  longitude: ride.currentLocation.longitude,
+                }}
+                title={`${ride.driverName}'s Car`}
+                description="Live Location"
                 anchor={{ x: 0.5, y: 0.5 }}
                 flat={true}
               >
@@ -372,7 +456,66 @@ export default function RideDetailsScreen() {
                   </View>
                 </View>
               </Marker>
+            ) : (
+              routeCoordinates && routeCoordinates.length > 0 && routeCoordinates[carPositionIndex] && (
+                <Marker
+                  coordinate={routeCoordinates[carPositionIndex]}
+                  anchor={{ x: 0.5, y: 0.5 }}
+                  flat={true}
+                >
+                  <View style={styles.movingCarMarker}>
+                    <Animated.View
+                      style={[
+                        styles.movingCarPulse,
+                        {
+                          transform: [
+                            {
+                              scale: carPulseAnim.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [1, 2.8],
+                              }),
+                            },
+                          ],
+                          opacity: carPulseAnim.interpolate({
+                            inputRange: [0, 1],
+                            outputRange: [0.6, 0],
+                          }),
+                        },
+                      ]}
+                    />
+                    <View style={styles.movingCarInner}>
+                      <MaterialCommunityIcons name="car-sports" size={14} color={WARM_CORE.white} />
+                    </View>
+                  </View>
+                </Marker>
+              )
             )}
+
+            {waypoints.map((wp, i) => (
+              <Marker
+                key={`wp-${i}`}
+                coordinate={{ latitude: wp.latitude, longitude: wp.longitude }}
+                title={`${wp.name}'s Pickup`}
+                anchor={{ x: 0.5, y: 0.5 }}
+              >
+                <View style={{
+                  width: 28,
+                  height: 28,
+                  borderRadius: 14,
+                  backgroundColor: '#7C3AED',
+                  borderWidth: 2,
+                  borderColor: WARM_CORE.white,
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  shadowColor: '#000',
+                  shadowOpacity: 0.25,
+                  shadowRadius: 4,
+                  elevation: 4,
+                }}>
+                  <MaterialCommunityIcons name="account" size={14} color={WARM_CORE.white} />
+                </View>
+              </Marker>
+            ))}
 
             <Marker
               coordinate={
@@ -543,7 +686,7 @@ export default function RideDetailsScreen() {
           <Text style={styles.totalAmount}>₹{ride.price}</Text>
         </View>
 
-        {ride && auth.user && (ride.driverId === auth.user.id || requestStatus === 'accepted') ? (
+        {ride && auth.user && (ride.driverId === auth.user.id || (requestStatus === 'accepted' && paymentStatus === 'paid')) ? (
           <TouchableOpacity
             style={[
               styles.ctaButton,
@@ -562,6 +705,29 @@ export default function RideDetailsScreen() {
             />
             <Text style={[styles.ctaText, { color: WARM_CORE.white }]}>
               Group Chat
+            </Text>
+          </TouchableOpacity>
+        ) : ride && auth.user && requestStatus === 'accepted' && paymentStatus !== 'paid' ? (
+          <TouchableOpacity
+            style={[
+              styles.ctaButton,
+              {
+                backgroundColor: '#FEF3C7',
+                borderColor: '#F59E0B',
+                borderWidth: 1,
+              },
+            ]}
+            onPress={() => router.push('/(tabs)/my-bookings')}
+            activeOpacity={0.8}
+          >
+            <MaterialCommunityIcons
+              name="lock"
+              size={18}
+              color="#D97706"
+              style={{ marginRight: 8 }}
+            />
+            <Text style={[styles.ctaText, { color: '#D97706' }]}>
+              Pay Now to unlock Chat
             </Text>
           </TouchableOpacity>
         ) : (

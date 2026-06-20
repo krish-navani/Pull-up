@@ -7,6 +7,7 @@ import {
     orderBy,
     query,
     runTransaction,
+    setDoc,
     Timestamp,
     updateDoc,
     where,
@@ -28,7 +29,9 @@ export const createBookingInFirestore = async (
   passengerEmail: string,
   driverId: string,
   seatsBooked: number,
-  pricePerSeat: number
+  pricePerSeat: number,
+  passengerPickupLocation?: any,
+  passengerDropLocation?: any
 ): Promise<string> => {
   try {
     console.log('[BOOKING SERVICE] Creating booking for ride:', rideId);
@@ -73,21 +76,26 @@ export const createBookingInFirestore = async (
       pricePerSeat,
       totalPrice: seatsBooked * pricePerSeat,
       status: 'pending' as const,
+      paymentStatus: 'pending' as const,
       bookedAt: Timestamp.now(),
       createdAt: Timestamp.now(),
       updatedAt: Timestamp.now(),
+      passengerPickupLocation: passengerPickupLocation || null,
+      passengerDropLocation: passengerDropLocation || null,
     };
 
     console.log('[BOOKING SERVICE] Booking data:', bookingData);
 
-    // Add to bookings collection
-    const docRef = await addDoc(collection(db, 'bookings'), bookingData);
+    // Set explicitly to bookingDocId = `${rideId}_${passengerId}`
+    const bookingId = `${rideId}_${passengerId}`;
+    const docRef = doc(db, 'bookings', bookingId);
+    await setDoc(docRef, bookingData);
     
     // Also add to ride's bookedSeats array for driver view
     await addBookingToRide(rideId, passengerId, passengerName, seatsBooked);
 
-    console.log('[BOOKING SERVICE] ✅ Booking created successfully with ID:', docRef.id);
-    return docRef.id;
+    console.log('[BOOKING SERVICE] ✅ Booking created successfully with ID:', bookingId);
+    return bookingId;
   } catch (error: any) {
     console.error('[BOOKING SERVICE] ❌ Failed to create booking:', error);
     throw {
@@ -338,10 +346,15 @@ export const cancelBookingWithPenalty = async (
   try {
     console.log('[BOOKING SERVICE] Canceling booking:', bookingId);
 
-    // Fetch booking details to get passengerName
+    // Fetch booking details to get passengerName and paymentStatus
     const bookingRef = doc(db, 'bookings', bookingId);
     const bookingSnap = await getDoc(bookingRef);
-    const passengerName = bookingSnap.exists() ? bookingSnap.data()?.passengerName || 'Passenger' : 'Passenger';
+    if (!bookingSnap.exists()) throw new Error('Booking not found');
+    
+    const bookingData = bookingSnap.data()!;
+    const passengerName = bookingData.passengerName || 'Passenger';
+    const isPaid = bookingData.paymentStatus === 'paid';
+    const seatsBooked = bookingData.seatsBooked || 1;
 
     // Calculate penalty (50 if cancelled within 20 minutes of departure)
     const departureTimeDate = new Date(departureTime);
@@ -350,7 +363,41 @@ export const cancelBookingWithPenalty = async (
     const penalty = minutesBefore <= 20 ? 50 : 0;
 
     // Update booking status to cancelled with penalty
-    await updateBookingStatus(bookingId, rideId, passengerId, 'cancelled', penalty);
+    const updateData: Record<string, any> = {
+      status: 'cancelled',
+      updatedAt: Timestamp.now(),
+      cancelledAt: Timestamp.now(),
+      penaltyApplied: penalty
+    };
+    if (isPaid) {
+      updateData.refundStatus = 'pending';
+      const refundAmount = penalty > 0 ? (bookingData.totalPrice * 0.5) : bookingData.totalPrice;
+      updateData.refundAmount = refundAmount;
+    }
+
+    await updateDoc(bookingRef, updateData);
+
+    // Also update the booking status in the ride's bookedSeats array
+    await updateBookingStatusInRide(rideId, passengerId, 'cancelled');
+
+    // If booking was paid, restore seat capacity on the ride document!
+    if (isPaid) {
+      const rideRef = doc(db, 'rides', rideId);
+      await runTransaction(db, async (transaction) => {
+        const rideSnap = await transaction.get(rideRef);
+        if (rideSnap.exists()) {
+          const rideData = rideSnap.data()!;
+          const currentAvailable = rideData.availableSeats || 0;
+          const totalSeats = rideData.totalSeats || 0;
+          const newAvailable = Math.min(totalSeats, currentAvailable + seatsBooked);
+          
+          transaction.update(rideRef, {
+            availableSeats: newAvailable,
+            updatedAt: Timestamp.now()
+          });
+        }
+      });
+    }
 
     // Remove passenger from group chat
     try {
@@ -411,37 +458,25 @@ export const acceptBookingAsDriver = async (
 
       transaction.update(bookingRef, {
         status: 'accepted',
+        expiresAt: Timestamp.fromDate(new Date(Date.now() + 30 * 60 * 1000)),
         updatedAt: Timestamp.now(),
       });
 
-      const newAvailableSeats = Math.max(0, (rideData.availableSeats || 0) - seatsToReduce);
+      // Do NOT reduce availableSeats here! Only update bookedSeats status to 'accepted'.
       transaction.update(rideRef, {
         bookedSeats: updatedBookedSeats,
-        availableSeats: newAvailableSeats,
         updatedAt: Timestamp.now(),
       });
     });
 
-    console.log('[BOOKING SERVICE] ✅ Transaction committed. Adding passenger to chat and sending notification...');
+    console.log('[BOOKING SERVICE] ✅ Transaction committed. Sending notification to passenger...');
 
-    // Add passenger to group chat
-    try {
-      await addParticipantToGroupChat(
-        rideId,
-        passengerId,
-        passengerName,
-        `${passengerName} joined the ride`
-      );
-    } catch (chatErr) {
-      console.warn('[BOOKING SERVICE] Failed to add passenger to group chat:', chatErr);
-    }
-
-    // Send real Firestore notification to passenger
+    // Send real Firestore notification to passenger (notifying them to complete payment)
     await sendNotification(
       passengerId,
       'booking_accepted',
       'Booking Approved 🎉',
-      `${driverName} accepted your booking for the ride.`,
+      `${driverName} accepted your booking. Please complete payment to confirm your seat.`,
       rideId,
       bookingId,
       driverId,

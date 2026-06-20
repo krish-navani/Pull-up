@@ -4,6 +4,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { WARM_CORE } from '@/constants/theme';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
+import LocationSearchInput from '@/components/LocationSearchInput';
+import { getRideDirectionType } from '@/utils/atlasLocationUtils';
 import {
     Animated,
     Easing,
@@ -65,7 +67,7 @@ function SpringBtn({ onPress, children, style, disabled = false, scaleVal = 0.96
 
 // ─── Cinematic Success Screen ─────────────────────────────────────────────────
 
-function SuccessScreen({ ride, seatsSelected, totalPrice, onGoToBookings }: any) {
+function SuccessScreen({ ride, seatsSelected, totalPrice, customLocation, direction, onGoToBookings }: any) {
   const screenOpacity  = useRef(new Animated.Value(0)).current;
   const ring1Scale     = useRef(new Animated.Value(0)).current;
   const ring2Scale     = useRef(new Animated.Value(0)).current;
@@ -175,11 +177,18 @@ function SuccessScreen({ ride, seatsSelected, totalPrice, onGoToBookings }: any)
               </View>
               <View style={st.routeTextBlock}>
                 <Text style={ROUTE.labelPickup}>PICKUP</Text>
-                <Text style={ROUTE.address} numberOfLines={1}>{ride.pickupLocation.address.split(',')[0]}</Text>
+                <Text style={ROUTE.address} numberOfLines={1}>
+                  {direction === 'home-to-atlas' && customLocation 
+                    ? customLocation.address.split(',')[0] 
+                    : ride.pickupLocation.address.split(',')[0]}
+                </Text>
                 <Text style={st.cityText} numberOfLines={1}>
-                  {ride.pickupLocation.address.split(',').slice(1, 3).join(',').trim()}
+                  {direction === 'home-to-atlas' && customLocation 
+                    ? customLocation.address.split(',').slice(1, 3).join(',').trim()
+                    : ride.pickupLocation.address.split(',').slice(1, 3).join(',').trim()}
                 </Text>
               </View>
+
             </View>
 
             {/* Dropoff row */}
@@ -189,9 +198,15 @@ function SuccessScreen({ ride, seatsSelected, totalPrice, onGoToBookings }: any)
               </View>
               <View style={st.routeTextBlock}>
                 <Text style={ROUTE.labelDropoff}>DROP-OFF</Text>
-                <Text style={ROUTE.address} numberOfLines={1}>{ride.dropLocation.address.split(',')[0]}</Text>
+                <Text style={ROUTE.address} numberOfLines={1}>
+                  {direction === 'atlas-to-home' && customLocation 
+                    ? customLocation.address.split(',')[0] 
+                    : ride.dropLocation.address.split(',')[0]}
+                </Text>
                 <Text style={st.cityText} numberOfLines={1}>
-                  {ride.dropLocation.address.split(',').slice(1, 3).join(',').trim()}
+                  {direction === 'atlas-to-home' && customLocation 
+                    ? customLocation.address.split(',').slice(1, 3).join(',').trim()
+                    : ride.dropLocation.address.split(',').slice(1, 3).join(',').trim()}
                 </Text>
               </View>
             </View>
@@ -272,6 +287,25 @@ export default function BookingConfirmationScreen() {
 
   const ride          = getRideById(rideId as string);
   const seatsSelected = 1;
+
+  const direction = ride ? getRideDirectionType(
+    ride.pickupLocation.latitude,
+    ride.pickupLocation.longitude,
+    ride.dropLocation.latitude,
+    ride.dropLocation.longitude
+  ) : 'other';
+
+  const [customLocation, setCustomLocation] = useState<any>(null);
+
+  useEffect(() => {
+    if (ride) {
+      if (direction === 'home-to-atlas') {
+        setCustomLocation(ride.pickupLocation);
+      } else {
+        setCustomLocation(ride.dropLocation);
+      }
+    }
+  }, [ride, direction]);
 
   useEffect(() => {
     const handleDeepLink = (event: { url: string }) => {
@@ -379,26 +413,16 @@ export default function BookingConfirmationScreen() {
     setIsConfirming(true);
     setErrorMessage(null);
     try {
-      // Call create-order to reserve the seat and create a pending booking
-      const res = await apiClient.post('/create-order', {
-        rideId: ride.id,
-        passengerId: auth.user.id,
-        passengerName: auth.user.fullName,
-        passengerEmail: auth.user.email || '',
-        seatsBooked: seatsSelected,
-      });
+      const pickupLocation = direction === 'home-to-atlas' ? customLocation : null;
+      const dropLocation = direction === 'atlas-to-home' ? customLocation : null;
 
-      if (res.data?.success) {
-        const { orderId, amount, bookingId } = res.data;
-        const REMOTE_BACKEND_URL = process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://backend-eight-gamma-77.vercel.app';
-        const checkoutUrl = `${REMOTE_BACKEND_URL}/api/otp/checkout-page?type=booking&orderId=${orderId}&amount=${amount}&bookingId=${bookingId}`;
-        console.log('[BOOKING] Launching checkout URL:', checkoutUrl);
-        await WebBrowser.openBrowserAsync(checkoutUrl);
-      } else {
-        throw new Error(res.data?.message || 'Failed to create payment order');
-      }
+      // Call requestRide from AppContext to create a pending booking
+      await requestRide(ride.id, seatsSelected, pickupLocation, dropLocation);
+      
+      setShowSuccess(true);
+      setIsConfirming(false);
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Failed to initiate booking payment.');
+      setErrorMessage(err?.message || 'Failed to request booking.');
       setIsConfirming(false);
     }
   };
@@ -411,6 +435,8 @@ export default function BookingConfirmationScreen() {
           ride={ride}
           seatsSelected={seatsSelected}
           totalPrice={totalPrice}
+          customLocation={customLocation}
+          direction={direction}
           onGoToBookings={() => router.push('/(tabs)/my-bookings')}
         />
       </SafeAreaView>
@@ -503,6 +529,31 @@ export default function BookingConfirmationScreen() {
               </View>
             </View>
           </View>
+        </Animated.View>
+
+        {/* Custom Location Selection */}
+        <Animated.View style={[st.card, {
+          opacity: card2Anim.opacity,
+          transform: [{ translateY: card2Anim.translateY }],
+          zIndex: 999,
+        }]}>
+          <Text style={st.sectionLabel}>
+            {direction === 'home-to-atlas' ? 'YOUR PICKUP POINT' : 'YOUR DROP-OFF POINT'}
+          </Text>
+          <Text style={{ fontSize: 12, color: WARM_CORE.textSecondary, marginBottom: 12 }}>
+            {direction === 'home-to-atlas' 
+              ? 'Specify where the driver should pick you up.' 
+              : 'Specify where the driver should drop you off.'}
+          </Text>
+          <LocationSearchInput
+            label={direction === 'home-to-atlas' ? 'Pickup Location' : 'Drop-off Location'}
+            value={customLocation?.address || ''}
+            onChange={(location) => {
+              setCustomLocation(location);
+              setErrorMessage(null);
+            }}
+            placeholder={direction === 'home-to-atlas' ? 'Search pickup address...' : 'Search drop-off address...'}
+          />
         </Animated.View>
 
         {/* Price breakdown */}

@@ -4,11 +4,15 @@ import { WARM_CORE } from '@/constants/theme';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import * as WebBrowser from 'expo-web-browser';
+import apiClient from '@/utils/backendApiClient';
 import {
     ActivityIndicator,
+    Alert,
     Animated,
     Easing,
     Image,
+    Linking,
     Modal,
     Pressable,
     RefreshControl,
@@ -23,8 +27,11 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { subscribeToCreatorPools, subscribeToMemberPools, TaxiPool } from '@/utils/taxiPoolService';
-import { collection, doc, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, doc, onSnapshot, query, where, getDoc, updateDoc, Timestamp } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import { fetchRoute } from '@/utils/routeUtils';
+import { getRideDirectionType } from '@/utils/atlasLocationUtils';
 
 // ---------------------------------------------------------------------------
 // Skeleton shimmer card shown while bookings are loading
@@ -307,6 +314,101 @@ export default function MyBookingsScreen() {
   } = useAppContext();
   const [cancelBookingId, setCancelBookingId] = useState<string | null>(null);
   const [isCancelingBooking, setIsCancelingBooking] = useState(false);
+  const [isProcessingPayment, setIsProcessingPayment] = useState(false);
+
+  useEffect(() => {
+    const handleDeepLink = async (event: { url: string }) => {
+      console.log('[MY-BOOKINGS DEEP LINK] URL received:', event.url);
+      
+      if (event.url.includes('booking-success')) {
+        WebBrowser.dismissBrowser();
+        setIsProcessingPayment(false);
+        if (auth.user?.id) {
+          await loadPassengerBookings(auth.user.id);
+          await loadAllAvailableRides();
+        }
+        Alert.alert('Success 🎉', 'Payment verified and booking confirmed!');
+      } else if (event.url.includes('payment-cancelled') || event.url.includes('payment-failed')) {
+        WebBrowser.dismissBrowser();
+        setIsProcessingPayment(false);
+        Alert.alert('Payment Failed', 'Payment was not completed successfully.');
+      }
+    };
+
+    const sub = Linking.addEventListener('url', handleDeepLink);
+    return () => {
+      sub.remove();
+    };
+  }, [auth.user?.id]);
+
+  const handlePayNow = async (bookingId: string) => {
+    if (isProcessingPayment) return;
+    setIsProcessingPayment(true);
+    try {
+      const res = await apiClient.post('/create-order', {
+        bookingId,
+        passengerId: auth.user?.id,
+      });
+
+      if (res.data?.success) {
+        const { orderId, amount } = res.data;
+        const REMOTE_BACKEND_URL = process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://backend-eight-gamma-77.vercel.app';
+        const checkoutUrl = `${REMOTE_BACKEND_URL}/api/otp/checkout-page?type=booking&orderId=${orderId}&amount=${amount}&bookingId=${bookingId}`;
+        console.log('[MY-BOOKINGS] Launching checkout URL:', checkoutUrl);
+        
+        const result = await WebBrowser.openBrowserAsync(checkoutUrl);
+        if (result.type === 'cancel') {
+          if (auth.user?.id) {
+            await loadPassengerBookings(auth.user.id);
+            await loadAllAvailableRides();
+          }
+          setIsProcessingPayment(false);
+        }
+      } else {
+        throw new Error(res.data?.message || 'Failed to create payment order');
+      }
+    } catch (err: any) {
+      Alert.alert('Error', err?.message || 'Failed to initiate payment.');
+      setIsProcessingPayment(false);
+    }
+  };
+
+  const updateBookingTransitState = async (
+    bookingId: string,
+    rideId: string,
+    passengerId: string,
+    fields: { pickedUp?: boolean; droppedOff?: boolean }
+  ) => {
+    try {
+      // 1. Update the booking document in the 'bookings' collection
+      const bookingRef = doc(db, 'bookings', bookingId);
+      await updateDoc(bookingRef, {
+        ...fields,
+        updatedAt: Timestamp.now(),
+      });
+
+      // 2. Update the booking inside the ride's 'bookedSeats' array
+      const rideRef = doc(db, 'rides', rideId);
+      const rideSnap = await getDoc(rideRef);
+      if (rideSnap.exists()) {
+        const rideData = rideSnap.data();
+        const bookedSeats = rideData.bookedSeats || [];
+        const updatedBookedSeats = bookedSeats.map((b: any) => {
+          if (b.passengerId === passengerId) {
+            return { ...b, ...fields };
+          }
+          return b;
+        });
+        await updateDoc(rideRef, {
+          bookedSeats: updatedBookedSeats,
+          updatedAt: Timestamp.now(),
+        });
+      }
+    } catch (error) {
+      console.error('[TRANSIT STATE] Failed to update transit status:', error);
+      Alert.alert('Error', 'Failed to update passenger status.');
+    }
+  };
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
@@ -513,7 +615,7 @@ export default function MyBookingsScreen() {
     return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
   };
 
-  const getStatusConfig = (bookingStatus: string, rideStatus?: string) => {
+  const getStatusConfig = (bookingStatus: string, rideStatus?: string, paymentStatus?: string) => {
     if (bookingStatus === 'cancelled') {
       return { bg: '#F3F4F6', text: '#6B7280', label: 'Cancelled' };
     }
@@ -531,9 +633,11 @@ export default function MyBookingsScreen() {
     }
     switch (bookingStatus) {
       case 'accepted':
-        return { bg: '#D1FAE5', text: '#059669', label: 'Accepted' };
+        return paymentStatus === 'paid' 
+          ? { bg: '#D1FAE5', text: '#059669', label: 'Confirmed' }
+          : { bg: '#FEF3C7', text: '#D97706', label: 'Awaiting Payment' };
       case 'pending':
-        return { bg: '#FEF3C7', text: '#D97706', label: 'Ride Requested' };
+        return { bg: '#FFEBE0', text: '#D4500A', label: 'Waiting for driver approval.' };
       default:
         return { bg: '#F3F4F6', text: '#4B5563', label: bookingStatus };
     }
@@ -702,7 +806,7 @@ export default function MyBookingsScreen() {
     const ride = rides.find(r => r.id === booking.rideId);
     if (!ride) return null;
 
-    const statusConfig = getStatusConfig(booking.status, ride.status);
+    const statusConfig = getStatusConfig(booking.status, ride.status, booking.paymentStatus);
     const canCancel = booking.status === 'accepted' && ride.status === 'active';
     const { minutesBefore, penalty } = calculateCancellationPenalty(ride.departureTime);
     const timeRemaining = getTimeRemaining(ride.departureTime);
@@ -732,7 +836,7 @@ export default function MyBookingsScreen() {
             />
           ) : (
             <View style={[styles.statusBadge, { backgroundColor: statusConfig.bg }]}>
-              {booking.status === 'accepted' && ride.status === 'active' && (
+              {booking.status === 'accepted' && ride.status === 'active' && booking.paymentStatus === 'paid' && (
                 <View style={styles.statusDot} />
               )}
               <Text style={[styles.statusText, { color: statusConfig.text }]}>
@@ -776,7 +880,7 @@ export default function MyBookingsScreen() {
         {/* Bottom Section: Driver Info */}
         <View style={styles.cardBottomSection}>
           <View style={styles.driverSection}>
-            {booking.status === 'accepted' ? (
+            {booking.status === 'accepted' && booking.paymentStatus === 'paid' ? (
               <AcceptedDriverAvatar initial={ride.driverName.charAt(0)} />
             ) : (
               <View style={styles.driverAvatar}>
@@ -808,26 +912,47 @@ export default function MyBookingsScreen() {
               </View>
             )}
 
-            {/* Message Driver */}
-            {(ride.status === 'active' || ride.status === 'in_progress') && (
-              <AnimatedPressButton
-                style={styles.chatButton}
-                onPress={() => router.push({ pathname: '/chat', params: { rideId: ride.id, bookingId: booking.id } })}
-              >
-                <MaterialCommunityIcons name="message-text-outline" size={16} color={WARM_CORE.white} />
-                <Text style={styles.chatButtonText}>Message Driver (1-on-1)</Text>
-              </AnimatedPressButton>
-            )}
+            {booking.paymentStatus !== 'paid' ? (
+              <View style={{ gap: 8, width: '100%' }}>
+                {/* Warning message */}
+                <View style={styles.paymentWarningBadge}>
+                  <MaterialCommunityIcons name="lock" size={14} color="#D97706" />
+                  <Text style={styles.paymentWarningText}>Complete payment to unlock ride chat.</Text>
+                </View>
 
-            {/* Group Chat */}
-            {(ride.status === 'active' || ride.status === 'in_progress') && (
-              <AnimatedPressButton
-                style={[styles.chatButton, { backgroundColor: WARM_CORE.accent, marginTop: 4 }]}
-                onPress={() => router.push({ pathname: '/group-chat' as any, params: { rideId: ride.id, rideType: 'carpool' } })}
-              >
-                <MaterialCommunityIcons name="account-group" size={16} color={WARM_CORE.white} />
-                <Text style={styles.chatButtonText}>Group Chat</Text>
-              </AnimatedPressButton>
+                {/* Pay Now Button */}
+                <AnimatedPressButton
+                  style={[styles.chatButton, { backgroundColor: WARM_CORE.primary }]}
+                  onPress={() => handlePayNow(booking.id)}
+                >
+                  <MaterialCommunityIcons name="credit-card-outline" size={16} color={WARM_CORE.white} />
+                  <Text style={styles.chatButtonText}>Pay Now (₹{ride.price * booking.seatsBooked})</Text>
+                </AnimatedPressButton>
+              </View>
+            ) : (
+              <View style={{ width: '100%', gap: 4 }}>
+                {/* Message Driver */}
+                {(ride.status === 'active' || ride.status === 'in_progress') && (
+                  <AnimatedPressButton
+                    style={styles.chatButton}
+                    onPress={() => router.push({ pathname: '/chat', params: { rideId: ride.id, bookingId: booking.id } })}
+                  >
+                    <MaterialCommunityIcons name="message-text-outline" size={16} color={WARM_CORE.white} />
+                    <Text style={styles.chatButtonText}>Message Driver (1-on-1)</Text>
+                  </AnimatedPressButton>
+                )}
+
+                {/* Group Chat */}
+                {(ride.status === 'active' || ride.status === 'in_progress') && (
+                  <AnimatedPressButton
+                    style={[styles.chatButton, { backgroundColor: WARM_CORE.accent, marginTop: 4 }]}
+                    onPress={() => router.push({ pathname: '/group-chat' as any, params: { rideId: ride.id, rideType: 'carpool' } })}
+                  >
+                    <MaterialCommunityIcons name="account-group" size={16} color={WARM_CORE.white} />
+                    <Text style={styles.chatButtonText}>Group Chat</Text>
+                  </AnimatedPressButton>
+                )}
+              </View>
             )}
 
             {/* Cancel Booking — only if ride is active */}
@@ -1340,6 +1465,7 @@ export default function MyBookingsScreen() {
           onCompleteRide={async (rideId) => {
             await completeRide(rideId);
           }}
+          onUpdateTransitState={updateBookingTransitState}
           router={router}
         />
       )}
@@ -1347,21 +1473,46 @@ export default function MyBookingsScreen() {
   );
 }
 
+// Custom Map style (reused from ride-details.tsx)
+const warmMapStyle = [
+  { elementType: 'geometry', stylers: [{ color: '#FFF8F0' }] },
+  { elementType: 'labels.text.fill', stylers: [{ color: '#6E5650' }] },
+  { elementType: 'labels.text.stroke', stylers: [{ color: '#FFF8F0' }] },
+  { featureType: 'landscape.natural', elementType: 'geometry', stylers: [{ color: '#F4E9D9' }] },
+  { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#FFFFFF' }] },
+  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#E8DCCB' }] },
+  { featureType: 'road', elementType: 'labels.text.fill', stylers: [{ color: '#1E120D' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#D4E8FC' }] },
+  { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#6E5650' }] },
+];
+
 // Real-time Passenger Profile Row Component
 function PassengerProfileRow({
   booking,
+  ride,
+  allBookings,
   onAccept,
   onReject,
   processingBooking,
   setProcessingBooking,
 }: {
   booking: any;
+  ride: any;
+  allBookings: any[];
   onAccept: (passengerId: string) => Promise<void>;
   onReject: (passengerId: string) => Promise<void>;
   processingBooking: string | null;
   setProcessingBooking: (id: string | null) => void;
 }) {
   const [profile, setProfile] = useState<any>(null);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [isLoadingDetour, setIsLoadingDetour] = useState(false);
+  const [detourInfo, setDetourInfo] = useState<{
+    detourDistanceKm: number;
+    detourDurationMin: number;
+    proposedRoutePoints: any[];
+    passengerLocation: any;
+  } | null>(null);
 
   useEffect(() => {
     if (!booking.passengerId) return;
@@ -1380,6 +1531,84 @@ function PassengerProfileRow({
     return () => unsub();
   }, [booking.passengerId]);
 
+  const handleToggleExpand = async () => {
+    const nextState = !isExpanded;
+    setIsExpanded(nextState);
+    if (nextState && !detourInfo && !isLoadingDetour) {
+      await fetchDetourDetails();
+    }
+  };
+
+  const fetchDetourDetails = async () => {
+    setIsLoadingDetour(true);
+    try {
+      const direction = getRideDirectionType(
+        ride.pickupLocation.latitude,
+        ride.pickupLocation.longitude,
+        ride.dropLocation.latitude,
+        ride.dropLocation.longitude
+      );
+
+      const passengerLoc = direction === 'home-to-atlas'
+        ? booking.passengerPickupLocation
+        : booking.passengerDropLocation;
+
+      if (!passengerLoc) {
+        console.warn('[DETOUR] Booking custom coordinates are missing');
+        setIsLoadingDetour(false);
+        return;
+      }
+
+      const acceptedBookings = allBookings.filter(b => b.status === 'accepted');
+      const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCIZ1Lccen5Ek7-0cXIU3Pxv5he7vhmZ6Y';
+
+      // Map accepted bookings to their waypoint coordinates
+      const baselineWaypoints = acceptedBookings.map(b => {
+        return direction === 'home-to-atlas' ? b.passengerPickupLocation : b.passengerDropLocation;
+      }).filter(Boolean);
+
+      // Proposed waypoints includes baseline waypoints PLUS the pending passenger waypoint
+      const proposedWaypoints = [...baselineWaypoints, passengerLoc];
+
+      // Fetch baseline route (current accepted passengers only)
+      const baselineRes = await fetchRoute(
+        ride.pickupLocation,
+        ride.dropLocation,
+        apiKey,
+        baselineWaypoints
+      );
+
+      // Fetch proposed route (accepted + pending passenger)
+      const proposedRes = await fetchRoute(
+        ride.pickupLocation,
+        ride.dropLocation,
+        apiKey,
+        proposedWaypoints
+      );
+
+      if (proposedRes.success) {
+        const baselineDist = baselineRes.distanceMeters ?? 0;
+        const baselineDur = baselineRes.durationSeconds ?? 0;
+        const proposedDist = proposedRes.distanceMeters ?? 0;
+        const proposedDur = proposedRes.durationSeconds ?? 0;
+
+        const detourDistMeters = Math.max(0, proposedDist - baselineDist);
+        const detourDurSeconds = Math.max(0, proposedDur - baselineDur);
+
+        setDetourInfo({
+          detourDistanceKm: Math.round((detourDistMeters / 1000) * 10) / 10,
+          detourDurationMin: Math.round(detourDurSeconds / 60),
+          proposedRoutePoints: proposedRes.points,
+          passengerLocation: passengerLoc,
+        });
+      }
+    } catch (err) {
+      console.error('[DETOUR] Error calculating detour:', err);
+    } finally {
+      setIsLoadingDetour(false);
+    }
+  };
+
   const displayName = profile?.fullName || booking.passengerName || 'Passenger';
   const displayYear = profile?.year || 'N/A';
   const displayCourse = profile?.course || 'N/A';
@@ -1387,95 +1616,211 @@ function PassengerProfileRow({
   const displayImage = profile?.profileImage;
 
   return (
-    <View style={styles.driverPassengerCard}>
-      <View style={styles.driverPassengerAvatar}>
-        {displayImage ? (
-          <Image source={{ uri: displayImage }} style={{ width: 40, height: 40, borderRadius: 20 }} />
-        ) : (
-          <Text style={styles.driverPassengerAvatarText}>
-            {displayName.charAt(0).toUpperCase()}
-          </Text>
-        )}
-      </View>
-
-      <View style={styles.driverPassengerInfo}>
-        <Text style={styles.driverPassengerName}>{displayName}</Text>
-        <Text style={styles.driverPassengerDetail}>
-          {displayYear !== 'N/A' ? displayYear : ''}
-          {displayYear !== 'N/A' && displayCourse !== 'N/A' ? ' • ' : ''}
-          {displayCourse !== 'N/A' ? displayCourse : ''}
-          {(displayYear !== 'N/A' || displayCourse !== 'N/A') && displayDivision ? ' • ' : ''}
-          {displayDivision || ''}
-        </Text>
-      </View>
-
-      {booking.status === 'pending' ? (
-        <View style={styles.driverPassengerActions}>
-          <TouchableOpacity
-            style={[styles.driverActionButton, styles.driverAcceptButton]}
-            onPress={async () => {
-              setProcessingBooking(booking.passengerId);
-              try {
-                await onAccept(booking.passengerId);
-              } finally {
-                setProcessingBooking(null);
-              }
-            }}
-            disabled={processingBooking === booking.passengerId}
-          >
-            <MaterialCommunityIcons name="check" size={16} color={WARM_CORE.white} />
-            <Text style={styles.driverSuccessButtonText}>Accept</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.driverActionButton, styles.driverRejectButton]}
-            onPress={async () => {
-              setProcessingBooking(booking.passengerId);
-              try {
-                await onReject(booking.passengerId);
-              } finally {
-                setProcessingBooking(null);
-              }
-            }}
-            disabled={processingBooking === booking.passengerId}
-          >
-            <MaterialCommunityIcons name="close" size={16} color={WARM_CORE.white} />
-            <Text style={styles.driverDangerButtonText}>Reject</Text>
-          </TouchableOpacity>
+    <View style={styles.driverPassengerCardWrapper}>
+      <Pressable onPress={handleToggleExpand} style={styles.driverPassengerCard}>
+        <View style={styles.driverPassengerAvatar}>
+          {displayImage ? (
+            <Image source={{ uri: displayImage }} style={{ width: 40, height: 40, borderRadius: 20 }} />
+          ) : (
+            <Text style={styles.driverPassengerAvatarText}>
+              {displayName.charAt(0).toUpperCase()}
+            </Text>
+          )}
         </View>
-      ) : (
-        <View
-          style={[
-            styles.driverStatusIndicator,
-            {
-              backgroundColor:
-                booking.status === 'accepted'
-                  ? 'rgba(16, 185, 129, 0.15)'
-                  : booking.status === 'pending'
-                  ? 'rgba(245, 158, 11, 0.15)'
-                  : 'rgba(239, 68, 68, 0.15)',
-            },
-          ]}
-        >
-          <Text
+
+        <View style={styles.driverPassengerInfo}>
+          <Text style={styles.driverPassengerName}>{displayName}</Text>
+          <Text style={styles.driverPassengerDetail}>
+            {displayYear !== 'N/A' ? displayYear : ''}
+            {displayYear !== 'N/A' && displayCourse !== 'N/A' ? ' • ' : ''}
+            {displayCourse !== 'N/A' ? displayCourse : ''}
+            {(displayYear !== 'N/A' || displayCourse !== 'N/A') && displayDivision ? ' • ' : ''}
+            {displayDivision || ''}
+          </Text>
+        </View>
+
+        {booking.status === 'pending' ? (
+          <View style={styles.driverPassengerActions}>
+            <TouchableOpacity
+              style={[styles.driverActionButton, styles.driverAcceptButton]}
+              onPress={async () => {
+                setProcessingBooking(booking.passengerId);
+                try {
+                  await onAccept(booking.passengerId);
+                } finally {
+                  setProcessingBooking(null);
+                }
+              }}
+              disabled={processingBooking === booking.passengerId}
+            >
+              <MaterialCommunityIcons name="check" size={16} color={WARM_CORE.white} />
+              <Text style={styles.driverSuccessButtonText}>Accept</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.driverActionButton, styles.driverRejectButton]}
+              onPress={async () => {
+                setProcessingBooking(booking.passengerId);
+                try {
+                  await onReject(booking.passengerId);
+                } finally {
+                  setProcessingBooking(null);
+                }
+              }}
+              disabled={processingBooking === booking.passengerId}
+            >
+              <MaterialCommunityIcons name="close" size={16} color={WARM_CORE.white} />
+              <Text style={styles.driverDangerButtonText}>Reject</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <View
             style={[
-              styles.driverStatusIndicatorText,
+              styles.driverStatusIndicator,
               {
-                color:
+                backgroundColor:
                   booking.status === 'accepted'
-                    ? WARM_CORE.success
-                    : booking.status === 'pending'
-                    ? '#F59E0B'
-                    : WARM_CORE.error,
+                    ? (booking.paymentStatus === 'paid' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)')
+                    : 'rgba(239, 68, 68, 0.15)',
               },
             ]}
           >
-            {booking.status === 'pending' ? 'Ride Requested' : booking.status.charAt(0).toUpperCase() + booking.status.slice(1)}
-          </Text>
+            <Text
+              style={[
+                styles.driverStatusIndicatorText,
+                {
+                  color:
+                    booking.status === 'accepted'
+                      ? (booking.paymentStatus === 'paid' ? WARM_CORE.success : '#F59E0B')
+                      : WARM_CORE.error,
+                },
+              ]}
+            >
+              {booking.status === 'accepted'
+                ? (booking.paymentStatus === 'paid' ? 'Confirmed' : 'Awaiting Payment')
+                : booking.status.charAt(0).toUpperCase() + booking.status.slice(1)}
+            </Text>
+          </View>
+        )}
+      </Pressable>
+
+      {/* Expanded Detour Details */}
+      {isExpanded && (
+        <View style={styles.detourContainer}>
+          {isLoadingDetour ? (
+            <View style={styles.detourLoading}>
+              <ActivityIndicator size="small" color={WARM_CORE.primary} />
+              <Text style={styles.detourLoadingText}>Calculating route detour...</Text>
+            </View>
+          ) : detourInfo ? (
+            <View style={styles.detourContent}>
+              <Text style={styles.detourTitle}>DETOUR PREVIEW</Text>
+              
+              <View style={styles.detourMapContainer}>
+                <MapView
+                  provider={PROVIDER_GOOGLE}
+                  style={styles.detourMap}
+                  customMapStyle={warmMapStyle}
+                  initialRegion={{
+                    latitude: (ride.pickupLocation.latitude + ride.dropLocation.latitude) / 2,
+                    longitude: (ride.pickupLocation.longitude + ride.dropLocation.longitude) / 2,
+                    latitudeDelta: 0.1,
+                    longitudeDelta: 0.1,
+                  }}
+                  scrollEnabled={false}
+                  zoomEnabled={false}
+                  rotateEnabled={false}
+                  pitchEnabled={false}
+                >
+                  {detourInfo.proposedRoutePoints && detourInfo.proposedRoutePoints.length > 1 && (
+                    <Polyline
+                      coordinates={detourInfo.proposedRoutePoints}
+                      strokeColor={WARM_CORE.primary}
+                      strokeWidth={3}
+                    />
+                  )}
+                  
+                  {/* Origin */}
+                  <Marker
+                    coordinate={ride.pickupLocation}
+                    title="Start"
+                  >
+                    <View style={styles.miniMarkerStart} />
+                  </Marker>
+                  
+                  {/* Destination */}
+                  <Marker
+                    coordinate={ride.dropLocation}
+                    title="End"
+                  >
+                    <View style={styles.miniMarkerEnd} />
+                  </Marker>
+                  
+                  {/* Passenger location marker */}
+                  <Marker
+                    coordinate={detourInfo.passengerLocation}
+                    title={`${displayName}'s Point`}
+                  >
+                    <View style={styles.miniMarkerPassenger}>
+                      <MaterialCommunityIcons name="account" size={10} color={WARM_CORE.white} />
+                    </View>
+                  </Marker>
+                </MapView>
+              </View>
+
+              <View style={styles.detourStatsRow}>
+                <View style={styles.detourStatBox}>
+                  <Text style={styles.detourStatLabel}>ADDITIONAL DETOUR</Text>
+                  <Text style={styles.detourStatValue}>+{detourInfo.detourDistanceKm} km</Text>
+                </View>
+                <View style={styles.detourStatBox}>
+                  <Text style={styles.detourStatLabel}>EXTRA TRAVEL TIME</Text>
+                  <Text style={styles.detourStatValue}>+{detourInfo.detourDurationMin} mins</Text>
+                </View>
+              </View>
+
+              <Text style={styles.detourSummaryText}>
+                Approving {displayName} will add approximately {detourInfo.detourDistanceKm} km and {detourInfo.detourDurationMin} minutes of travel to your trip.
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.detourError}>
+              <MaterialCommunityIcons name="alert-circle-outline" size={20} color={WARM_CORE.textSecondary} />
+              <Text style={styles.detourErrorText}>
+                No custom pickup/dropoff coordinates provided by passenger.
+              </Text>
+            </View>
+          )}
         </View>
       )}
     </View>
   );
 }
+
+// Helper to launch native Google Maps with optimized multi-stop waypoints
+export const handleOpenExternalNavigation = (ride: any, passengers: any[]) => {
+  const direction = getRideDirectionType(
+    ride.pickupLocation.latitude,
+    ride.pickupLocation.longitude,
+    ride.dropLocation.latitude,
+    ride.dropLocation.longitude
+  );
+
+  const accepted = passengers.filter(p => p.status === 'accepted');
+  const wps = accepted.map(b => {
+    const loc = direction === 'home-to-atlas' ? b.passengerPickupLocation : b.passengerDropLocation;
+    return loc ? `${loc.latitude},${loc.longitude}` : '';
+  }).filter(Boolean);
+
+  const destCoords = `${ride.dropLocation.latitude},${ride.dropLocation.longitude}`;
+  const waypointsQuery = wps.join('|');
+
+  const navUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destCoords)}&waypoints=${encodeURIComponent(waypointsQuery)}&travelmode=driving`;
+
+  Linking.openURL(navUrl).catch((err: any) => {
+    console.error('Failed to open Google Maps:', err);
+    Alert.alert('Error', 'Could not launch Google Maps. Please verify the app is installed.');
+  });
+};
 
 // RIDE DETAILS MODAL COMPONENT (FOR DRIVER)
 interface RideDetailsModalProps {
@@ -1488,10 +1833,23 @@ interface RideDetailsModalProps {
   onCancelRide: (rideId: string) => Promise<void>;
   onStartRide: (rideId: string) => Promise<void>;
   onCompleteRide: (rideId: string) => Promise<void>;
+  onUpdateTransitState: (bookingId: string, rideId: string, passengerId: string, fields: any) => Promise<void>;
   router: any;
 }
 
-function RideDetailsModal({ ride, passengers, earnings, onClose, onAcceptPassenger, onRejectPassenger, onCancelRide, onStartRide, onCompleteRide, router }: RideDetailsModalProps) {
+function RideDetailsModal({
+  ride,
+  passengers,
+  earnings,
+  onClose,
+  onAcceptPassenger,
+  onRejectPassenger,
+  onCancelRide,
+  onStartRide,
+  onCompleteRide,
+  onUpdateTransitState,
+  router,
+}: RideDetailsModalProps) {
   const [processingBooking, setProcessingBooking] = useState<string | null>(null);
   const [isCanceling, setIsCanceling] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
@@ -1581,6 +1939,8 @@ function RideDetailsModal({ ride, passengers, earnings, onClose, onAcceptPasseng
                   <PassengerProfileRow
                     key={index}
                     booking={passenger}
+                    ride={ride}
+                    allBookings={passengers}
                     onAccept={onAcceptPassenger}
                     onReject={onRejectPassenger}
                     processingBooking={processingBooking}
@@ -1595,6 +1955,96 @@ function RideDetailsModal({ ride, passengers, earnings, onClose, onAcceptPasseng
               </View>
             )}
           </View>
+
+          {/* NAVIGATION QUEUE SECTION (ONLY IF IN PROGRESS) */}
+          {ride.status === 'in_progress' && (
+            <View style={styles.driverModalSection}>
+              <Text style={styles.driverSectionTitle}>ACTIVE RIDE WAYPOINTS</Text>
+              <View style={styles.navQueueContainer}>
+                {(() => {
+                  const direction = getRideDirectionType(
+                    ride.pickupLocation.latitude,
+                    ride.pickupLocation.longitude,
+                    ride.dropLocation.latitude,
+                    ride.dropLocation.longitude
+                  );
+
+                  const accepted = passengers.filter(p => p.status === 'accepted');
+
+                  return (
+                    <View style={styles.navQueueList}>
+                      {/* Origin */}
+                      <View style={styles.navQueueRow}>
+                        <View style={styles.navQueueLineCol}>
+                          <View style={[styles.navQueueDot, { backgroundColor: WARM_CORE.success }]} />
+                          <View style={styles.navQueueConnectorLine} />
+                        </View>
+                        <View style={styles.navQueueTextCol}>
+                          <Text style={styles.navQueueStopLabel}>DEPARTURE POINT</Text>
+                          <Text style={styles.navQueueAddressText}>{ride.pickupLocation.address}</Text>
+                        </View>
+                      </View>
+
+                      {/* Passenger waypoints */}
+                      {accepted.map((b, idx) => {
+                        const loc = direction === 'home-to-atlas' ? b.passengerPickupLocation : b.passengerDropLocation;
+                        if (!loc) return null;
+                        
+                        const isDone = direction === 'home-to-atlas' ? b.pickedUp : b.droppedOff;
+                        const actionLabel = direction === 'home-to-atlas' ? 'Mark Picked Up' : 'Mark Dropped Off';
+                        const doneLabel = direction === 'home-to-atlas' ? 'Picked Up ✓' : 'Dropped Off ✓';
+
+                        return (
+                          <View key={b.id} style={styles.navQueueRow}>
+                            <View style={styles.navQueueLineCol}>
+                              <View style={[styles.navQueueDot, { backgroundColor: isDone ? WARM_CORE.border : '#7C3AED' }]} />
+                              <View style={styles.navQueueConnectorLine} />
+                            </View>
+                            <View style={styles.navQueueTextCol}>
+                              <Text style={[styles.navQueueStopLabel, { color: isDone ? WARM_CORE.textSecondary : '#7C3AED' }]}>
+                                STOP {idx + 1}: {direction === 'home-to-atlas' ? 'PICKUP' : 'DROP-OFF'}
+                              </Text>
+                              <Text style={[styles.navQueueAddressText, isDone && { color: WARM_CORE.textSecondary, textDecorationLine: 'line-through' }]}>
+                                {loc.address} ({b.passengerName})
+                              </Text>
+                              
+                              <TouchableOpacity
+                                style={[
+                                  styles.navQueueActionBtn,
+                                  isDone ? styles.navQueueActionBtnDone : styles.navQueueActionBtnActive
+                                ]}
+                                onPress={async () => {
+                                  const fields = direction === 'home-to-atlas' 
+                                    ? { pickedUp: !isDone } 
+                                    : { droppedOff: !isDone };
+                                  await onUpdateTransitState(b.id, ride.id, b.passengerId, fields);
+                                }}
+                              >
+                                <Text style={isDone ? styles.navQueueActionTextDone : styles.navQueueActionTextActive}>
+                                  {isDone ? doneLabel : actionLabel}
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                        );
+                      })}
+
+                      {/* Final Destination */}
+                      <View style={styles.navQueueRow}>
+                        <View style={styles.navQueueLineCol}>
+                          <View style={[styles.navQueueDot, { backgroundColor: WARM_CORE.primary }]} />
+                        </View>
+                        <View style={styles.navQueueTextCol}>
+                          <Text style={styles.navQueueStopLabel}>FINAL DESTINATION</Text>
+                          <Text style={styles.navQueueAddressText}>{ride.dropLocation.address}</Text>
+                        </View>
+                      </View>
+                    </View>
+                  );
+                })()}
+              </View>
+            </View>
+          )}
 
           {/* EARNINGS SECTION */}
           <View style={styles.driverModalSection}>
@@ -1690,6 +2140,19 @@ function RideDetailsModal({ ride, passengers, earnings, onClose, onAcceptPasseng
               >
                 <MaterialCommunityIcons name="account-group-outline" size={18} color={WARM_CORE.primary} />
                 <Text style={[styles.driverInfoButtonText, { color: WARM_CORE.primary }]}>Group Chat</Text>
+              </TouchableOpacity>
+            )}
+
+            {/* NAVIGATE BUTTON */}
+            {ride.status === 'in_progress' && (
+              <TouchableOpacity 
+                style={[styles.driverInfoButton, { flex: 1, marginBottom: 12, borderColor: '#7C3AED', backgroundColor: 'rgba(124, 58, 237, 0.08)' }]}
+                onPress={() => {
+                  handleOpenExternalNavigation(ride, passengers);
+                }}
+              >
+                <MaterialCommunityIcons name="navigation-variant" size={18} color="#7C3AED" />
+                <Text style={[styles.driverInfoButtonText, { color: '#7C3AED' }]}>Start GPS Navigation</Text>
               </TouchableOpacity>
             )}
 
@@ -2686,15 +3149,124 @@ const styles = StyleSheet.create({
   driverPassengersList: {
     gap: 10,
   } as ViewStyle,
-  driverPassengerCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  driverPassengerCardWrapper: {
     backgroundColor: WARM_CORE.card,
     borderRadius: 12,
     borderWidth: 1,
     borderColor: WARM_CORE.border,
+    overflow: 'hidden',
+    marginBottom: 10,
+  } as ViewStyle,
+  driverPassengerCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
     padding: 14,
     gap: 12,
+  } as ViewStyle,
+  detourContainer: {
+    borderTopWidth: 0.5,
+    borderTopColor: WARM_CORE.border,
+    padding: 14,
+    backgroundColor: 'rgba(255, 248, 240, 0.5)',
+  } as ViewStyle,
+  detourLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    gap: 8,
+  } as ViewStyle,
+  detourLoadingText: {
+    fontSize: 13,
+    color: WARM_CORE.textSecondary,
+    fontWeight: '500',
+  } as TextStyle,
+  detourContent: {
+    gap: 10,
+  } as ViewStyle,
+  detourTitle: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: WARM_CORE.primary,
+    letterSpacing: 0.8,
+  } as TextStyle,
+  detourMapContainer: {
+    height: 140,
+    borderRadius: 8,
+    overflow: 'hidden',
+    borderWidth: 0.5,
+    borderColor: WARM_CORE.border,
+    backgroundColor: '#FFF8F0',
+  } as ViewStyle,
+  detourMap: {
+    ...StyleSheet.absoluteFillObject,
+  } as ViewStyle,
+  detourStatsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  } as ViewStyle,
+  detourStatBox: {
+    flex: 1,
+    backgroundColor: WARM_CORE.background,
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 0.5,
+    borderColor: WARM_CORE.border,
+    alignItems: 'center',
+  } as ViewStyle,
+  detourStatLabel: {
+    fontSize: 8,
+    fontWeight: '800',
+    color: WARM_CORE.textSecondary,
+    marginBottom: 2,
+  } as TextStyle,
+  detourStatValue: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: WARM_CORE.primary,
+  } as TextStyle,
+  detourSummaryText: {
+    fontSize: 12,
+    color: WARM_CORE.textSecondary,
+    lineHeight: 16,
+    fontWeight: '500',
+  } as TextStyle,
+  detourError: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 4,
+  } as ViewStyle,
+  detourErrorText: {
+    fontSize: 12,
+    color: WARM_CORE.textSecondary,
+    fontWeight: '500',
+  } as TextStyle,
+  miniMarkerStart: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: WARM_CORE.success,
+    borderWidth: 1.5,
+    borderColor: WARM_CORE.white,
+  } as ViewStyle,
+  miniMarkerEnd: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: WARM_CORE.primary,
+    borderWidth: 1.5,
+    borderColor: WARM_CORE.white,
+  } as ViewStyle,
+  miniMarkerPassenger: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#7C3AED',
+    borderWidth: 1.5,
+    borderColor: WARM_CORE.white,
+    justifyContent: 'center',
+    alignItems: 'center',
   } as ViewStyle,
   driverPassengerAvatar: {
     width: 40,
@@ -2852,6 +3424,95 @@ const styles = StyleSheet.create({
   driverStatusIndicatorText: {
     fontSize: 12,
     fontWeight: '700',
+  } as TextStyle,
+  navQueueContainer: {
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 18,
+    padding: 18,
+    borderWidth: 0.5,
+    borderColor: WARM_CORE.border,
+  } as ViewStyle,
+  navQueueList: {
+    gap: 4,
+  } as ViewStyle,
+  navQueueRow: {
+    flexDirection: 'row',
+    gap: 12,
+  } as ViewStyle,
+  navQueueLineCol: {
+    alignItems: 'center',
+    width: 16,
+  } as ViewStyle,
+  navQueueDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginTop: 4,
+  } as ViewStyle,
+  navQueueConnectorLine: {
+    width: 2,
+    flex: 1,
+    backgroundColor: WARM_CORE.border,
+    minHeight: 48,
+    marginVertical: 4,
+  } as ViewStyle,
+  navQueueTextCol: {
+    flex: 1,
+    paddingBottom: 20,
+    gap: 4,
+  } as ViewStyle,
+  navQueueStopLabel: {
+    fontSize: 9,
+    fontWeight: '800',
+    color: WARM_CORE.textSecondary,
+    letterSpacing: 0.6,
+  } as TextStyle,
+  navQueueAddressText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: WARM_CORE.text,
+    lineHeight: 18,
+  } as TextStyle,
+  navQueueActionBtn: {
+    alignSelf: 'flex-start',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginTop: 4,
+  } as ViewStyle,
+  navQueueActionBtnActive: {
+    borderColor: '#7C3AED',
+    backgroundColor: 'rgba(124, 58, 237, 0.05)',
+  } as ViewStyle,
+  navQueueActionBtnDone: {
+    borderColor: WARM_CORE.success,
+    backgroundColor: 'rgba(16, 185, 129, 0.05)',
+  } as ViewStyle,
+  navQueueActionTextActive: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#7C3AED',
+  } as TextStyle,
+  navQueueActionTextDone: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: WARM_CORE.success,
+  } as TextStyle,
+  paymentWarningBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(217, 119, 6, 0.12)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    marginBottom: 4,
+  } as ViewStyle,
+  paymentWarningText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#D97706',
   } as TextStyle,
 });
 
