@@ -1915,6 +1915,45 @@ router.post('/analytics/track', async (req: Request, res: Response) => {
   }
 });
 
+// Helper to archive a document from source collection to target collection
+async function archiveDocument(db: any, sourceCollection: string, targetCollection: string, docId: string) {
+  try {
+    const sourceRef = db.collection(sourceCollection).doc(docId);
+    const docSnap = await sourceRef.get();
+    if (docSnap.exists) {
+      const data = docSnap.data() || {};
+      const targetRef = db.collection(targetCollection).doc(docId);
+      await targetRef.set({
+        ...data,
+        archivedAt: new Date().toISOString(),
+        originalCollection: sourceCollection
+      });
+      await sourceRef.delete();
+      console.log(`[ARCHIVE] Moved ${sourceCollection}/${docId} to ${targetCollection}/${docId}`);
+    }
+  } catch (error) {
+    console.error(`[ARCHIVE ERROR] Failed to archive ${sourceCollection}/${docId}:`, error);
+  }
+}
+
+// Helper to write a system message to a group chat room
+async function triggerSystemChatMessage(db: any, rideId: string, text: string) {
+  try {
+    const chatMsgRef = db.collection('rideChats').doc(rideId).collection('messages').doc();
+    await chatMsgRef.set({
+      rideId,
+      senderId: 'system',
+      senderName: 'System',
+      senderPhoto: '',
+      text,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      type: 'system'
+    });
+  } catch (error) {
+    console.error(`[CHAT SYSTEM MSG ERROR] Failed to send system message to ${rideId}:`, error);
+  }
+}
+
 // REST route to run reminder and campaign scheduled sweeps
 router.post('/process-reminders', async (req: Request, res: Response) => {
   try {
@@ -1922,19 +1961,184 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
     const now = new Date();
     console.log(`[REMINDER SWEEP] Starting sweep at: ${now.toISOString()}`);
 
-    // ─── 1. RIDE DEPARTURE REMINDERS (30m / 15m) ───
-    const ridesSnapshot = await db.collection('rides').where('status', '==', 'active').get();
+    // ─── 1. RIDE EXPIRED, CLEANUP, & NO-SHOW SWEEP ───
+    const ridesSnapshot = await db.collection('rides').get();
     for (const doc of ridesSnapshot.docs) {
+      const ride = doc.data();
+      const rideId = doc.id;
+      const depTime = new Date(ride.departureTime);
+      const diffMs = now.getTime() - depTime.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+
+      // Check if ride has passed departure time
+      if (ride.status === 'active') {
+        if (diffMs > 0) {
+          // Check bookings count
+          const bookingsSnap = await db.collection('bookings')
+            .where('rideId', '==', rideId)
+            .where('status', '==', 'confirmed')
+            .where('paymentStatus', '==', 'paid')
+            .get();
+
+          const paidCount = bookingsSnap.size;
+
+          if (paidCount === 0) {
+            // Empty Car Pool Cleanup
+            console.log(`[SWEEP] Empty Car Pool Cleanup for ride: ${rideId}`);
+            await doc.ref.update({ status: 'expired', updatedAt: admin.firestore.Timestamp.now() });
+            await triggerSystemChatMessage(db, rideId, 'Ride expired (empty car pool)');
+            await archiveDocument(db, 'rides', 'archivedRides', rideId);
+          } else {
+            // Ride Expiry Engine: disable further bookings
+            console.log(`[SWEEP] Ride Expiry for ride: ${rideId}`);
+            await doc.ref.update({ status: 'expired', updatedAt: admin.firestore.Timestamp.now() });
+          }
+        }
+      }
+
+      // Driver No-Show Logic (departure passed by 30 mins, never started)
+      if ((ride.status === 'active' || ride.status === 'expired') && diffMins >= 30) {
+        console.log(`[SWEEP] Driver No-Show for ride: ${rideId}`);
+        await doc.ref.update({ status: 'no_show', updatedAt: admin.firestore.Timestamp.now() });
+
+        // Notify passengers, process refunds
+        const bookingsSnap = await db.collection('bookings')
+          .where('rideId', '==', rideId)
+          .where('status', '==', 'confirmed')
+          .where('paymentStatus', '==', 'paid')
+          .get();
+
+        for (const bDoc of bookingsSnap.docs) {
+          const booking = bDoc.data();
+          const bookingId = bDoc.id;
+
+          await db.runTransaction(async (transaction) => {
+            const bRef = db.collection('bookings').doc(bookingId);
+            const walletRef = db.collection('wallets').doc(booking.passengerId);
+
+            // Execute all reads first
+            const bSnap = await transaction.get(bRef);
+            const walletSnap = await transaction.get(walletRef);
+
+            if (!bSnap.exists) return;
+
+            // Now perform all writes
+            transaction.update(bRef, {
+              status: 'cancelled',
+              refundStatus: 'completed',
+              refundAmount: booking.totalPrice,
+              cancelledAt: now.toISOString(),
+              updatedAt: admin.firestore.Timestamp.now()
+            });
+
+            let currentBalance = 0;
+            if (walletSnap.exists) {
+              currentBalance = walletSnap.data()!.walletBalance || 0;
+              transaction.update(walletRef, {
+                walletBalance: parseFloat((currentBalance + booking.totalPrice).toFixed(2)),
+                updatedAt: admin.firestore.Timestamp.now()
+              });
+            } else {
+              transaction.set(walletRef, {
+                userId: booking.passengerId,
+                walletBalance: booking.totalPrice,
+                pendingBalance: 0,
+                lockedBalance: 0,
+                lifetimeEarnings: 0,
+                lifetimeWithdrawals: 0,
+                updatedAt: admin.firestore.Timestamp.now()
+              });
+            }
+
+            // Transaction log
+            const txRef = db.collection('walletTransactions').doc();
+            transaction.set(txRef, {
+              userId: booking.passengerId,
+              rideId: rideId,
+              bookingId: bookingId,
+              amount: booking.totalPrice,
+              type: 'refund',
+              status: 'cleared',
+              referenceType: 'booking',
+              referenceId: bookingId,
+              createdAt: admin.firestore.Timestamp.now(),
+            });
+          });
+
+          await triggerNotification(
+            booking.passengerId,
+            'ride_cancelled',
+            'Ride Cancelled: Driver No-Show ⚠️',
+            `Your ride departs in ${ride.pickupLocation?.address || 'your area'} was cancelled due to a driver no-show. A refund of INR ${booking.totalPrice} has been credited to your wallet.`,
+            rideId,
+            bookingId,
+            'my-bookings',
+            rideId
+          );
+        }
+        await triggerSystemChatMessage(db, rideId, 'Ride marked as Driver No-Show. Chat locked.');
+      }
+    }
+
+    // ─── 2. TAXI POOL EXPIRED & NO-SHOW SWEEP ───
+    const poolsSnapshot = await db.collection('taxiPools').get();
+    for (const doc of poolsSnapshot.docs) {
+      const pool = doc.data();
+      const poolId = doc.id;
+      const depTime = new Date(pool.departureTime);
+      const diffMs = now.getTime() - depTime.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+
+      if (pool.status === 'OPEN' || pool.status === 'FULL') {
+        if (diffMs > 0) {
+          const membersSnap = await db.collection('poolMembers').where('poolId', '==', poolId).get();
+          const passengerMembers = membersSnap.docs.filter(m => m.data().passengerId !== pool.creatorId);
+
+          if (passengerMembers.length === 0) {
+            // Empty Taxi Pool Cleanup
+            console.log(`[SWEEP] Empty Taxi Pool Cleanup for pool: ${poolId}`);
+            await doc.ref.update({ status: 'expired', updatedAt: admin.firestore.Timestamp.now() });
+            await triggerSystemChatMessage(db, poolId, 'Taxi Pool expired (empty pool)');
+            await archiveDocument(db, 'taxiPools', 'archivedTaxiPools', poolId);
+          } else if (diffMins >= 30) {
+            // Taxi Pool No-Show Logic
+            console.log(`[SWEEP] Taxi Pool No-Show for pool: ${poolId}`);
+            await doc.ref.update({ status: 'expired', updatedAt: admin.firestore.Timestamp.now() });
+
+            for (const mDoc of membersSnap.docs) {
+              const member = mDoc.data();
+              if (member.passengerId !== pool.creatorId) {
+                await triggerNotification(
+                  member.passengerId,
+                  'pool_joined',
+                  'Taxi Pool Cancelled: Owner No-Show ⚠️',
+                  `The taxi pool you joined was cancelled because the owner did not start it on time.`,
+                  poolId,
+                  null,
+                  'taxi-pool-details',
+                  poolId
+                );
+              }
+            }
+            await triggerSystemChatMessage(db, poolId, 'Taxi Pool expired due to owner no-show. Chat locked.');
+          }
+        }
+      }
+    }
+
+    // ─── 3. RIDE DEPARTURE REMINDERS (30m / 10m) ───
+    const activeRidesSnap = await db.collection('rides').where('status', '==', 'active').get();
+    for (const doc of activeRidesSnap.docs) {
       const ride = doc.data();
       const depTime = new Date(ride.departureTime);
       const diffMs = depTime.getTime() - now.getTime();
       const diffMins = Math.floor(diffMs / 60000);
 
       // A. 30 Minutes Before Departure
-      if (diffMins <= 30 && diffMins > 15 && !ride.reminder30mSent) {
+      if (diffMins <= 30 && diffMins > 10 && !ride.reminder30mSent) {
         const bookingsSnap = await db.collection('bookings')
           .where('rideId', '==', doc.id)
-          .where('status', '==', 'accepted')
+          .where('status', '==', 'confirmed')
           .where('paymentStatus', '==', 'paid')
           .get();
 
@@ -1951,14 +2155,26 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
             doc.id
           );
         }
+
+        await triggerNotification(
+          ride.driverId,
+          'booking_request',
+          'Upcoming Departure 🚗',
+          `Your ride departs in 30 minutes. You have ${bookingsSnap.size} passenger(s) booked.`,
+          doc.id,
+          null,
+          'ride-details',
+          doc.id
+        );
+
         await doc.ref.update({ reminder30mSent: true });
       }
 
-      // B. 15 Minutes Before Departure
-      if (diffMins <= 15 && diffMins > 0 && !ride.reminder15mSent) {
+      // B. 10 Minutes Before Departure
+      if (diffMins <= 10 && diffMins > 0 && !ride.reminder10mSent) {
         const bookingsSnap = await db.collection('bookings')
           .where('rideId', '==', doc.id)
-          .where('status', '==', 'accepted')
+          .where('status', '==', 'confirmed')
           .where('paymentStatus', '==', 'paid')
           .get();
 
@@ -1967,8 +2183,8 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
           await triggerNotification(
             booking.passengerId,
             'ride_started',
-            'Ride Departing in 15m! 🚗',
-            `Your ride departs in 15 minutes. Check active ride coordinates on map.`,
+            'Ride Departing in 10m! 🚗',
+            `Your ride departs in 10 minutes. Check your active ride coordinates.`,
             doc.id,
             bDoc.id,
             'ride-details',
@@ -1976,24 +2192,79 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
           );
         }
 
-        // Driver warning
-        if (bookingsSnap.size > 0) {
-          await triggerNotification(
-            ride.driverId,
-            'booking_request',
-            'Upcoming Departures 🚗',
-            `You have passengers waiting for your ride in 15 minutes.`,
-            doc.id,
-            null,
-            'ride-details',
-            doc.id
-          );
-        }
-        await doc.ref.update({ reminder15mSent: true });
+        await triggerNotification(
+          ride.driverId,
+          'booking_request',
+          'Upcoming Departure in 10m! 🚗',
+          `Your ride departs in 10 minutes. Please prepare to start your ride.`,
+          doc.id,
+          null,
+          'ride-details',
+          doc.id
+        );
+
+        await doc.ref.update({ reminder10mSent: true });
       }
     }
 
-    // ─── 2. UNPAID BOOKING WARNINGS (15m / 5m remaining) ───
+    // ─── 4. TAXI POOL REMINDERS (30m / 15m) ───
+    const activePoolsSnap = await db.collection('taxiPools').where('status', 'in', ['OPEN', 'FULL']).get();
+    for (const doc of activePoolsSnap.docs) {
+      const pool = doc.data();
+      const depTime = new Date(pool.departureTime);
+      const diffMs = depTime.getTime() - now.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+
+      // A. 30 Minutes Before Start
+      if (diffMins <= 30 && diffMins > 15 && !pool.poolReminder30mSent) {
+        const membersSnap = await db.collection('poolMembers').where('poolId', '==', doc.id).get();
+        
+        await triggerNotification(
+          pool.creatorId,
+          'pool_joined',
+          'Time to Book Cab! 🚖',
+          `Your taxi pool starts in 30 minutes. Please proceed to book your cab.`,
+          doc.id,
+          null,
+          'taxi-pool-details',
+          doc.id
+        );
+
+        for (const mDoc of membersSnap.docs) {
+          const member = mDoc.data();
+          if (member.passengerId !== pool.creatorId) {
+            await triggerNotification(
+              member.passengerId,
+              'pool_joined',
+              'Taxi Pool Starting 🚖',
+              `Your taxi pool starts in 30 minutes. Meet at the pickup gate.`,
+              doc.id,
+              null,
+              'taxi-pool-details',
+              doc.id
+            );
+          }
+        }
+        await doc.ref.update({ poolReminder30mSent: true });
+      }
+
+      // B. 15 Minutes Before Start
+      if (diffMins <= 15 && diffMins > 0 && !pool.poolReminder15mSent) {
+        await triggerNotification(
+          pool.creatorId,
+          'pool_joined',
+          'Urgent: Start Taxi Pool! 🚖',
+          `Your taxi pool starts in 15 minutes. Ensure your cab is booked and start the pool.`,
+          doc.id,
+          null,
+          'taxi-pool-details',
+          doc.id
+        );
+        await doc.ref.update({ poolReminder15mSent: true });
+      }
+    }
+
+    // ─── 5. UNPAID BOOKING WARNINGS (15m / 5m remaining) ───
     const bookingsSnapshot = await db.collection('bookings')
       .where('status', '==', 'payment_pending')
       .get();
@@ -2033,34 +2304,7 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
       }
     }
 
-    // ─── 3. TAXI POOL REMINDERS (30m) ───
-    const poolsSnapshot = await db.collection('taxiPools').where('status', '==', 'OPEN').get();
-    for (const doc of poolsSnapshot.docs) {
-      const pool = doc.data();
-      const depTime = new Date(pool.departureTime);
-      const diffMs = depTime.getTime() - now.getTime();
-      const diffMins = Math.floor(diffMs / 60000);
-
-      if (diffMins <= 30 && diffMins > 0 && !pool.poolReminder30mSent) {
-        const membersSnap = await db.collection('poolMembers').where('poolId', '==', doc.id).get();
-        for (const mDoc of membersSnap.docs) {
-          const member = mDoc.data();
-          await triggerNotification(
-            member.passengerId,
-            'pool_joined',
-            'Taxi Pool Starting 🚖',
-            `Your taxi pool starts in 30 minutes. Meet at the pickup gate.`,
-            doc.id,
-            null,
-            'taxi-pool-details',
-            doc.id
-          );
-        }
-        await doc.ref.update({ poolReminder30mSent: true });
-      }
-    }
-
-    // ─── 4. ADMIN SCHEDULED CAMPAIGNS SWEEP ───
+    // ─── 6. ADMIN SCHEDULED CAMPAIGNS SWEEP ───
     const schedSnapshot = await db.collection('scheduledNotifications')
       .where('status', '==', 'pending')
       .get();
@@ -2097,7 +2341,83 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
       }
     }
 
-    res.json({ success: true, message: 'Reminders and scheduled campaigns processed successfully' });
+    // ─── 7. COMPLETED RIDES ARCHIVING (Older than 30 Days) ───
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const completedRidesSnap = await db.collection('rides')
+      .where('status', '==', 'completed')
+      .get();
+
+    for (const doc of completedRidesSnap.docs) {
+      const ride = doc.data();
+      const completedTime = ride.completedAt ? new Date(ride.completedAt) : new Date(ride.departureTime);
+      if (completedTime < thirtyDaysAgo) {
+        console.log(`[SWEEP] Archiving completed ride: ${doc.id}`);
+        await archiveDocument(db, 'rides', 'archivedRides', doc.id);
+      }
+    }
+
+    // ─── 8. NOTIFICATION CLEANUP (Older than 90 Days) ───
+    const ninetyDaysAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    let deletedCount = 0;
+
+    try {
+      const oldNotificationsSnap = await db.collectionGroup('notifications')
+        .where('createdAt', '<', ninetyDaysAgo)
+        .get();
+
+      console.log(`[SWEEP] Found ${oldNotificationsSnap.size} old notifications to purge.`);
+      const purgeBatch = db.batch();
+      oldNotificationsSnap.docs.forEach(doc => {
+        purgeBatch.delete(doc.ref);
+      });
+      if (oldNotificationsSnap.size > 0) {
+        await purgeBatch.commit();
+        deletedCount = oldNotificationsSnap.size;
+        console.log(`[SWEEP] Purged ${oldNotificationsSnap.size} old notifications.`);
+      }
+    } catch (error: any) {
+      if (error.message && (error.message.includes('FAILED_PRECONDITION') || error.message.includes('index'))) {
+        console.warn('[SWEEP] Missing collectionGroup index for notifications/createdAt. Falling back to per-user notification purge.');
+        try {
+          const usersSnap = await db.collection('users').get();
+          console.log(`[SWEEP-FALLBACK] Processing ${usersSnap.size} users for notification purge...`);
+
+          let batch = db.batch();
+          let operationCount = 0;
+
+          for (const userDoc of usersSnap.docs) {
+            const userNotifsSnap = await userDoc.ref.collection('notifications')
+              .where('createdAt', '<', ninetyDaysAgo)
+              .get();
+
+            for (const notifDoc of userNotifsSnap.docs) {
+              batch.delete(notifDoc.ref);
+              deletedCount++;
+              operationCount++;
+
+              if (operationCount >= 400) {
+                await batch.commit();
+                batch = db.batch();
+                operationCount = 0;
+              }
+            }
+          }
+
+          if (operationCount > 0) {
+            await batch.commit();
+          }
+          console.log(`[SWEEP-FALLBACK] Purged ${deletedCount} old notifications via per-user scan fallback.`);
+        } catch (fallbackError: any) {
+          console.error('[SWEEP-FALLBACK] Fallback notification purge failed:', fallbackError.message);
+          throw fallbackError;
+        }
+      } else {
+        console.error('[SWEEP] Notification cleanup error:', error);
+        throw error;
+      }
+    }
+
+    res.json({ success: true, message: 'Reminders, cleans, and scheduled campaigns processed successfully' });
   } catch (error: any) {
     console.error('[REMINDER SWEEP] Sweep execution error:', error);
     res.status(500).json({ success: false, error: error.message });
