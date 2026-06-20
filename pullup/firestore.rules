@@ -39,6 +39,22 @@ service cloud.firestore {
              );
     }
 
+    function isChatWritable(rideId) {
+      return (!exists(/databases/$(database)/documents/rides/$(rideId)) || 
+              (
+                get(/databases/$(database)/documents/rides/$(rideId)).data.status != 'completed' &&
+                get(/databases/$(database)/documents/rides/$(rideId)).data.status != 'cancelled' &&
+                get(/databases/$(database)/documents/rides/$(rideId)).data.status != 'expired' &&
+                get(/databases/$(database)/documents/rides/$(rideId)).data.status != 'no_show'
+              )) &&
+             (!exists(/databases/$(database)/documents/taxiPools/$(rideId)) || 
+              (
+                get(/databases/$(database)/documents/taxiPools/$(rideId)).data.status != 'completed' &&
+                get(/databases/$(database)/documents/taxiPools/$(rideId)).data.status != 'CANCELLED' &&
+                get(/databases/$(database)/documents/taxiPools/$(rideId)).data.status != 'expired'
+              ));
+    }
+
     // ─── OTP Verification ───────────────────────────────────────────────────
     // Must be accessible before authentication (signup / login flow)
     match /otpVerification/{document=**} {
@@ -115,7 +131,8 @@ service cloud.firestore {
       allow delete: if false;
 
       match /messages/{messageId} {
-        allow read, create: if canAccessChat(rideId);
+        allow read: if canAccessChat(rideId);
+        allow create: if canAccessChat(rideId) && isChatWritable(rideId);
         allow update, delete: if false;
       }
     }

@@ -66,7 +66,7 @@ export interface Ride {
   carColor?: string;
   description?: string;
   createdAt: string;
-  status: 'active' | 'in_progress' | 'completed' | 'cancelled';
+  status: 'active' | 'in_progress' | 'completed' | 'cancelled' | 'expired' | 'no_show';
   startedAt?: string; // When driver started the ride
   completedAt?: string; // When driver completed the ride
   bookedSeats: BookingInfo[];
