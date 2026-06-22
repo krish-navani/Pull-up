@@ -19,7 +19,7 @@ try {
 import * as Device from 'expo-device';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { calculateDistance } from '../utils/atlasLocationUtils';
-import { doc, updateDoc, Timestamp, onSnapshot, collection, query, orderBy } from 'firebase/firestore';
+import { doc, updateDoc, Timestamp, onSnapshot, collection, query, orderBy, where } from 'firebase/firestore';
 import { db } from '../utils/firebase';
 import { GeofenceEngine } from '../utils/geofenceEngine';
 
@@ -56,9 +56,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
           return;
         }
 
+        const activeRideType = (await AsyncStorage.getItem('active_ride_type')) || 'carpool';
+
         // 1. Update ride currentLocation in Firestore
-        const rideRef = doc(db, 'rides', activeRideId);
-        await updateDoc(rideRef, {
+        const docRef = doc(db, activeRideType === 'carpool' ? 'rides' : 'taxiPools', activeRideId);
+        await updateDoc(docRef, {
           currentLocation: {
             latitude,
             longitude,
@@ -67,7 +69,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
         });
 
         // 2. Check and trigger completion using GeofenceEngine
-        const compResult = await GeofenceEngine.checkAndTriggerCompletion(activeRideId, { latitude, longitude });
+        const compResult = await GeofenceEngine.checkAndTriggerCompletion(activeRideId, { latitude, longitude }, activeRideType as any);
         if (compResult.shouldComplete) {
           console.log('[BACKGROUND TASK] Geofence engine triggered completion:', compResult.message);
           // Stop background updates
@@ -75,7 +77,8 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
             await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
           } catch (e) {}
           await AsyncStorage.removeItem('active_ride_id');
-        } else {
+          await AsyncStorage.removeItem('active_ride_type');
+        } else if (activeRideType === 'carpool') {
           // 3. Check and notify nearby pickups
           await GeofenceEngine.checkAndNotifyNearbyPickups(activeRideId, { latitude, longitude });
         }
@@ -129,6 +132,7 @@ import {
 } from '../utils/profileService';
 import { completeRide, createRideInFirestore, getAllRides, getAllRidesIncludingHistory, getDriverRides, startRide, startRideCleanupScheduler, stopRideCleanupScheduler, updateRideStatus } from '../utils/rideService';
 import { sendNotification } from '../utils/notificationService';
+import { syncUserSession } from '../utils/userSessionService';
 
 interface State {
   auth: AuthState;
@@ -476,19 +480,49 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  // Start location watching for driver if there is an in_progress ride they are driving
+  // Start location watching for driver/host if there is an in_progress carpool or taxi pool they are running
   useEffect(() => {
     let watcher: Location.LocationSubscription | null = null;
+    let unsubRides: (() => void) | null = null;
+    let unsubPools: (() => void) | null = null;
+
     const currentUserId = state.auth.user?.id;
     if (!currentUserId) return;
 
-    // Find any ride we are driving that is in_progress
-    const activeRide = state.rides.find(
-      (r) => r.driverId === currentUserId && r.status === 'in_progress'
-    );
+    let activeRideId: string | null = null;
+    let activeRideType: 'carpool' | 'taxipool' = 'carpool';
 
-    if (activeRide) {
-      console.log('[CONTEXT] Driver watching location for active ride:', activeRide.id);
+    const updateLocationWatcher = async (
+      rideId: string | null,
+      type: 'carpool' | 'taxipool'
+    ) => {
+      // If we already have a watcher for the same rideId, do nothing
+      if (activeRideId === rideId && activeRideType === type) return;
+
+      // Clean up previous watcher
+      if (watcher) {
+        console.log('[CONTEXT] Cleaning up previous driver location watcher');
+        watcher.remove();
+        watcher = null;
+      }
+      // Stop background tracking
+      try {
+        const isTracking = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+        if (isTracking) {
+          await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
+          await AsyncStorage.removeItem('active_ride_id');
+          await AsyncStorage.removeItem('active_ride_type');
+          console.log('[CONTEXT] Stopped background location updates task');
+        }
+      } catch (err) {}
+
+      activeRideId = rideId;
+      activeRideType = type;
+
+      if (!rideId) return;
+
+      console.log(`[CONTEXT] Driver watching location for active ${type}:`, rideId);
+
       const startWatching = async () => {
         // Request foreground permissions
         const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
@@ -503,8 +537,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           if (bgStatus !== 'granted') {
             console.warn('[CONTEXT] Background location permission not granted');
           } else {
-            // Register active ride ID in AsyncStorage for background task usage
-            await AsyncStorage.setItem('active_ride_id', activeRide.id);
+            // Register active ride ID/type in AsyncStorage for background task usage
+            await AsyncStorage.setItem('active_ride_id', rideId);
+            await AsyncStorage.setItem('active_ride_type', type);
 
             // Start background location updates (throttled to 10 seconds or 15 meters)
             const isTaskRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
@@ -515,7 +550,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 distanceInterval: 15,
                 foregroundService: {
                   notificationTitle: 'PullUp Driver Navigation',
-                  notificationBody: 'Tracking location for your active ride pool.',
+                  notificationBody: `Tracking location for your active ${type === 'carpool' ? 'carpool' : 'taxi pool'}.`,
                   notificationColor: '#D4500A',
                 },
               });
@@ -538,11 +573,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             },
             async (loc) => {
               const { latitude, longitude } = loc.coords;
-              console.log('[CONTEXT] Driver coordinates update (FG):', latitude, longitude);
+              console.log(`[CONTEXT] Driver coordinates update (FG) for ${type}:`, latitude, longitude);
 
-              // 1. Update ride currentLocation in Firestore
-              const rideRef = doc(db, 'rides', activeRide.id);
-              await updateDoc(rideRef, {
+              // 1. Update ride/pool currentLocation in Firestore
+              const docRef = doc(db, type === 'carpool' ? 'rides' : 'taxiPools', rideId);
+              await updateDoc(docRef, {
                 currentLocation: {
                   latitude,
                   longitude,
@@ -552,25 +587,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
               // 2. Check and trigger completion using GeofenceEngine
               try {
-                const compResult = await GeofenceEngine.checkAndTriggerCompletion(activeRide.id, { latitude, longitude });
+                const compResult = await GeofenceEngine.checkAndTriggerCompletion(rideId, { latitude, longitude }, type);
                 if (compResult.shouldComplete) {
                   // Stop background location updates as well
                   try {
                     await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
                     await AsyncStorage.removeItem('active_ride_id');
+                    await AsyncStorage.removeItem('active_ride_type');
                   } catch (stopErr) {}
 
-                  // Update local state to completed
-                  dispatch({
-                    type: 'SET_RIDES',
-                    payload: state.rides.map((r) =>
-                      r.id === activeRide.id ? { ...r, status: 'completed' as const } : r
-                    ),
-                  });
+                  // Update local state if it's a carpool
+                  if (type === 'carpool') {
+                    dispatch({
+                      type: 'SET_RIDES',
+                      payload: state.rides.map((r) =>
+                        r.id === rideId ? { ...r, status: 'completed' as const } : r
+                      ),
+                    });
+                  }
                   Alert.alert('Arrived!', compResult.message);
-                } else {
-                  // 3. Check and notify nearby pickups
-                  await GeofenceEngine.checkAndNotifyNearbyPickups(activeRide.id, { latitude, longitude });
+                } else if (type === 'carpool') {
+                  // 3. Check and notify nearby pickups (carpools only)
+                  await GeofenceEngine.checkAndNotifyNearbyPickups(rideId, { latitude, longitude });
                 }
               } catch (engineErr) {
                 console.error('[CONTEXT] GeofenceEngine run error in FG watcher:', engineErr);
@@ -583,20 +621,70 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       };
 
       startWatching();
-    }
+    };
+
+    // Set up listeners for in-progress rides and taxi pools
+    let currentRideId: string | null = null;
+    let currentPoolId: string | null = null;
+
+    const checkActiveItems = () => {
+      if (currentRideId) {
+        updateLocationWatcher(currentRideId, 'carpool');
+      } else if (currentPoolId) {
+        updateLocationWatcher(currentPoolId, 'taxipool');
+      } else {
+        updateLocationWatcher(null, 'carpool');
+      }
+    };
+
+    unsubRides = onSnapshot(
+      query(
+        collection(db, 'rides'),
+        where('driverId', '==', currentUserId),
+        where('status', '==', 'in_progress')
+      ),
+      (snap) => {
+        if (!snap.empty) {
+          currentRideId = snap.docs[0].id;
+        } else {
+          currentRideId = null;
+        }
+        checkActiveItems();
+      },
+      (err) => console.error('[CONTEXT] Error listening to active rides:', err)
+    );
+
+    unsubPools = onSnapshot(
+      query(
+        collection(db, 'taxiPools'),
+        where('creatorId', '==', currentUserId),
+        where('status', '==', 'in_progress')
+      ),
+      (snap) => {
+        if (!snap.empty) {
+          currentPoolId = snap.docs[0].id;
+        } else {
+          currentPoolId = null;
+        }
+        checkActiveItems();
+      },
+      (err) => console.error('[CONTEXT] Error listening to active pools:', err)
+    );
 
     return () => {
       if (watcher) {
-        console.log('[CONTEXT] Cleaning up driver location watcher');
         watcher.remove();
       }
-      // Clean up background location updates if ride is no longer in progress
+      if (unsubRides) unsubRides();
+      if (unsubPools) unsubPools();
+      
       const cleanupBg = async () => {
         try {
           const isTracking = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
           if (isTracking) {
             await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
             await AsyncStorage.removeItem('active_ride_id');
+            await AsyncStorage.removeItem('active_ride_type');
             console.log('[CONTEXT] Stopped background location updates task on cleanup');
           }
         } catch (err) {
@@ -721,9 +809,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             role: storedUser.role,
             licenseVerified: storedUser.licenseVerified,
           });
-          dispatch({ type: 'SET_USER', payload: storedUser });
-          dispatch({ type: 'SET_AUTH_INITIALIZING', payload: false });
-
           // Ensure Firebase Auth is signed in anonymously if there's no current user.
           // This keeps the user authenticated in Firebase so write operations don't get permission-denied.
           try {
@@ -738,9 +823,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             } else {
               console.log('[CONTEXT] ✅ Firebase Auth session is active:', auth.currentUser.uid);
             }
+            if (auth.currentUser) {
+              await syncUserSession(storedUser.id);
+            }
           } catch (authError) {
             console.error('[CONTEXT] ⚠️ Failed to re-establish Firebase Auth session:', authError);
           }
+
+          dispatch({ type: 'SET_USER', payload: storedUser });
+          dispatch({ type: 'SET_AUTH_INITIALIZING', payload: false });
           
           // Always refresh from Firestore in the background to pick up any changes
           // (e.g., admin verified license, role changes, profile updates)
@@ -796,6 +887,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                   profileComplete: userData.profileComplete,
                   role: userData.role,
                 });
+                await syncUserSession(userData.id);
                 dispatch({ type: 'SET_USER', payload: userData });
               } else {
                 console.log('[CONTEXT] ⚠️ No user data found in Firestore for authenticated user');

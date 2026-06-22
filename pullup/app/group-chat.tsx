@@ -38,7 +38,7 @@ export default function GroupChatScreen() {
   const params = useLocalSearchParams();
   const { rideId, rideType } = params as { rideId: string; rideType: 'carpool' | 'taxipool' };
   
-  const { auth } = useAppContext();
+  const { auth, authInitializing } = useAppContext();
   
   // State
   const [messages, setMessages] = useState<GroupChatMessage[]>([]);
@@ -59,7 +59,7 @@ export default function GroupChatScreen() {
 
   // 1. Subscribe to Chat Room Details and Messages
   useEffect(() => {
-    if (!rideId) return;
+    if (!rideId || authInitializing || !auth.user) return;
 
     setLoading(true);
     const unsubRoom = subscribeToGroupChatRoom(rideId, (chatRoom) => {
@@ -79,11 +79,11 @@ export default function GroupChatScreen() {
       unsubRoom();
       unsubMessages();
     };
-  }, [rideId]);
+  }, [rideId, authInitializing, auth.user]);
 
   // 2. Subscribe to Ride/Pool Document and Members details
   useEffect(() => {
-    if (!rideId || !rideType) return;
+    if (!rideId || !rideType || authInitializing || !auth.user) return;
 
     if (rideType === 'carpool') {
       // Subscribe to CarPool ride details
@@ -103,10 +103,10 @@ export default function GroupChatScreen() {
             image: null // driver image could be retrieved or blank
           });
           
-          // Add Accepted Passengers
+          // Add Confirmed/Paid Passengers
           if (data?.bookedSeats) {
             data.bookedSeats.forEach((seat: any) => {
-              if (seat.status === 'accepted') {
+              if (seat.status === 'confirmed') {
                 rideMembers.push({
                   id: seat.passengerId,
                   fullName: seat.passengerName,
@@ -145,7 +145,7 @@ export default function GroupChatScreen() {
         unsubMembers();
       };
     }
-  }, [rideId, rideType, rideDetails?.creatorId]);
+  }, [rideId, rideType, authInitializing, auth.user, rideDetails?.creatorId]);
 
   useEffect(() => {
     if (auth.user?.mutedChats && rideId) {
@@ -197,7 +197,13 @@ export default function GroupChatScreen() {
         await updateTaxiPoolStatus(rideId, 'in_progress');
       }
       await sendGroupMessage(rideId, 'system', 'System', '', 'Ride has started', 'system');
-      Alert.alert('Success', 'Ride has been started.');
+      
+      // Redirect host to details/map screen immediately
+      if (rideType === 'carpool') {
+        router.push({ pathname: '/ride-details', params: { rideId } });
+      } else {
+        router.push({ pathname: '/taxi-pool-details', params: { poolId: rideId } });
+      }
     } catch (err) {
       Alert.alert('Error', 'Failed to start ride.');
     }
@@ -396,12 +402,30 @@ export default function GroupChatScreen() {
       </View>
 
       {/* Ride Status Banner */}
-      <View style={[styles.statusBanner, { backgroundColor: statusInfo.bg, borderColor: statusInfo.border }]}>
-        <MaterialCommunityIcons name="information-outline" size={14} color={statusInfo.color} />
-        <Text style={[styles.statusBannerText, { color: statusInfo.color }]}>
-          Ride Status: {statusInfo.text}
-        </Text>
-      </View>
+      {status === 'in_progress' ? (
+        <TouchableOpacity
+          onPress={() => {
+            if (rideType === 'carpool') {
+              router.push({ pathname: '/ride-details', params: { rideId } });
+            } else {
+              router.push({ pathname: '/taxi-pool-details', params: { poolId: rideId } });
+            }
+          }}
+          style={[styles.statusBanner, { backgroundColor: statusInfo.bg, borderColor: statusInfo.border, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' }]}
+        >
+          <MaterialCommunityIcons name="map-marker-radius" size={14} color={statusInfo.color} />
+          <Text style={[styles.statusBannerText, { color: statusInfo.color, textDecorationLine: 'underline', marginLeft: 4 }]}>
+            Ride Ongoing: Tap to view live tracking map
+          </Text>
+        </TouchableOpacity>
+      ) : (
+        <View style={[styles.statusBanner, { backgroundColor: statusInfo.bg, borderColor: statusInfo.border }]}>
+          <MaterialCommunityIcons name="information-outline" size={14} color={statusInfo.color} />
+          <Text style={[styles.statusBannerText, { color: statusInfo.color }]}>
+            Ride Status: {statusInfo.text}
+          </Text>
+        </View>
+      )}
 
       {/* Participants Row */}
       <View style={styles.participantsContainer}>
@@ -532,6 +556,23 @@ export default function GroupChatScreen() {
         <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={() => setActionsVisible(false)}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Ride Quick Actions</Text>
+
+            {rideDetails?.status === 'in_progress' && (
+              <TouchableOpacity
+                style={styles.actionItem}
+                onPress={() => {
+                  setActionsVisible(false);
+                  if (rideType === 'carpool') {
+                    router.push({ pathname: '/ride-details', params: { rideId } });
+                  } else {
+                    router.push({ pathname: '/taxi-pool-details', params: { poolId: rideId } });
+                  }
+                }}
+              >
+                <MaterialCommunityIcons name="map-marker-radius" size={22} color={WARM_CORE.primary} />
+                <Text style={styles.actionText}>View Live Map</Text>
+              </TouchableOpacity>
+            )}
 
             {isDriverOrHost ? (
               <>

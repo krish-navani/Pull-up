@@ -420,13 +420,14 @@ export default function MyBookingsScreen() {
 
   // Listen to bookings for the selected hosted ride in real-time (bypassing context bookings array)
   useEffect(() => {
-    if (!selectedRideForDetails) {
+    if (!selectedRideForDetails || !auth.user) {
       setSelectedRideBookings([]);
       return;
     }
     const q = query(
       collection(db, 'bookings'),
-      where('rideId', '==', selectedRideForDetails)
+      where('rideId', '==', selectedRideForDetails),
+      where('driverId', '==', auth.user.id)
     );
     console.log('[MY-BOOKINGS] Subscribing to bookings for hosted ride:', selectedRideForDetails);
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -566,7 +567,7 @@ export default function MyBookingsScreen() {
       if (rideBookings.length === 1) {
         result.push(rideBookings[0]);
       } else {
-        const active = rideBookings.find(b => b.status === 'pending' || b.status === 'accepted');
+        const active = rideBookings.find(b => b.status === 'pending' || b.status === 'accepted' || b.status === 'confirmed');
         if (active) {
           result.push(active);
         } else {
@@ -693,7 +694,7 @@ export default function MyBookingsScreen() {
 
   const getDriverRideEarnings = (ride: any) => {
     const acceptedSeatsCount = ride.bookedSeats
-      .filter((bs: any) => bs.status === 'accepted')
+      .filter((bs: any) => bs.status === 'accepted' || bs.status === 'confirmed')
       .reduce((sum: number, bs: any) => sum + bs.seatsBooked, 0);
     return acceptedSeatsCount * ride.price;
   };
@@ -807,7 +808,7 @@ export default function MyBookingsScreen() {
     if (!ride) return null;
 
     const statusConfig = getStatusConfig(booking.status, ride.status, booking.paymentStatus);
-    const canCancel = booking.status === 'accepted' && ride.status === 'active';
+    const canCancel = (booking.status === 'accepted' || booking.status === 'confirmed') && ride.status === 'active';
     const { minutesBefore, penalty } = calculateCancellationPenalty(ride.departureTime);
     const timeRemaining = getTimeRemaining(ride.departureTime);
 
@@ -836,7 +837,7 @@ export default function MyBookingsScreen() {
             />
           ) : (
             <View style={[styles.statusBadge, { backgroundColor: statusConfig.bg }]}>
-              {booking.status === 'accepted' && ride.status === 'active' && booking.paymentStatus === 'paid' && (
+              {(booking.status === 'accepted' || booking.status === 'confirmed') && ride.status === 'active' && booking.paymentStatus === 'paid' && (
                 <View style={styles.statusDot} />
               )}
               <Text style={[styles.statusText, { color: statusConfig.text }]}>
@@ -880,7 +881,7 @@ export default function MyBookingsScreen() {
         {/* Bottom Section: Driver Info */}
         <View style={styles.cardBottomSection}>
           <View style={styles.driverSection}>
-            {booking.status === 'accepted' && booking.paymentStatus === 'paid' ? (
+            {(booking.status === 'accepted' || booking.status === 'confirmed') && booking.paymentStatus === 'paid' ? (
               <AcceptedDriverAvatar initial={ride.driverName.charAt(0)} />
             ) : (
               <View style={styles.driverAvatar}>
@@ -900,7 +901,7 @@ export default function MyBookingsScreen() {
         </View>
 
         {/* Actions — Only show for accepted bookings that are not completed/cancelled */}
-        {booking.status === 'accepted' && ride.status !== 'completed' && ride.status !== 'cancelled' && (
+        {(booking.status === 'accepted' || booking.status === 'confirmed') && ride.status !== 'completed' && ride.status !== 'cancelled' && (
           <View style={styles.acceptedActionsContainer}>
             {/* Penalty warning — only within 20 min window and only if ride is active */}
             {ride.status === 'active' && minutesBefore > 0 && minutesBefore <= 20 && (
@@ -1559,7 +1560,7 @@ function PassengerProfileRow({
         return;
       }
 
-      const acceptedBookings = allBookings.filter(b => b.status === 'accepted');
+      const acceptedBookings = allBookings.filter(b => b.status === 'accepted' || b.status === 'confirmed');
       const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCIZ1Lccen5Ek7-0cXIU3Pxv5he7vhmZ6Y';
 
       // Map accepted bookings to their waypoint coordinates
@@ -1678,7 +1679,7 @@ function PassengerProfileRow({
               styles.driverStatusIndicator,
               {
                 backgroundColor:
-                  booking.status === 'accepted'
+                  (booking.status === 'accepted' || booking.status === 'confirmed')
                     ? (booking.paymentStatus === 'paid' ? 'rgba(16, 185, 129, 0.15)' : 'rgba(245, 158, 11, 0.15)')
                     : 'rgba(239, 68, 68, 0.15)',
               },
@@ -1689,13 +1690,13 @@ function PassengerProfileRow({
                 styles.driverStatusIndicatorText,
                 {
                   color:
-                    booking.status === 'accepted'
+                    (booking.status === 'accepted' || booking.status === 'confirmed')
                       ? (booking.paymentStatus === 'paid' ? WARM_CORE.success : '#F59E0B')
                       : WARM_CORE.error,
                 },
               ]}
             >
-              {booking.status === 'accepted'
+              {(booking.status === 'accepted' || booking.status === 'confirmed')
                 ? (booking.paymentStatus === 'paid' ? 'Confirmed' : 'Awaiting Payment')
                 : booking.status.charAt(0).toUpperCase() + booking.status.slice(1)}
             </Text>
@@ -1805,7 +1806,7 @@ export const handleOpenExternalNavigation = (ride: any, passengers: any[]) => {
     ride.dropLocation.longitude
   );
 
-  const accepted = passengers.filter(p => p.status === 'accepted');
+  const accepted = passengers.filter(p => p.status === 'accepted' || p.status === 'confirmed');
   const wps = accepted.map(b => {
     const loc = direction === 'home-to-atlas' ? b.passengerPickupLocation : b.passengerDropLocation;
     return loc ? `${loc.latitude},${loc.longitude}` : '';
@@ -2101,11 +2102,11 @@ function RideDetailsModal({
             )}
 
             {/* CHAT BUTTON */}
-            {(ride.status === 'active' || ride.status === 'in_progress') && passengers.some(p => p.status === 'accepted') && (
+            {(ride.status === 'active' || ride.status === 'in_progress') && passengers.some(p => p.status === 'accepted' || p.status === 'confirmed') && (
               <TouchableOpacity 
                 style={[styles.driverInfoButton, { flex: 1, marginBottom: 12 }]}
                 onPress={() => {
-                  const firstAcceptedPassenger = passengers.find(p => p.status === 'accepted');
+                  const firstAcceptedPassenger = passengers.find(p => p.status === 'accepted' || p.status === 'confirmed');
                   if (firstAcceptedPassenger) {
                     onClose();
                     router.push({

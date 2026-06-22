@@ -3,6 +3,7 @@ import { doc, getDoc, updateDoc, collection, query, where, getDocs } from 'fireb
 import { db } from './firebase';
 import { completeRide } from './rideService';
 import { sendNotification } from './notificationService';
+import { completeTaxiPoolRide } from './taxiPoolService';
 
 export const GEOFENCE_RADIUS_METERS = {
   PICKUP: 200,      // 200m for passenger pickup geofence
@@ -17,9 +18,72 @@ export class GeofenceEngine {
    */
   static async checkAndTriggerCompletion(
     rideId: string,
-    currentCoords: { latitude: number; longitude: number }
+    currentCoords: { latitude: number; longitude: number },
+    rideType: 'carpool' | 'taxipool' = 'carpool'
   ): Promise<{ shouldComplete: boolean; message: string }> {
     try {
+      if (rideType === 'taxipool') {
+        const poolRef = doc(db, 'taxiPools', rideId);
+        const poolSnap = await getDoc(poolRef);
+        if (!poolSnap.exists()) {
+          return { shouldComplete: false, message: 'Taxi pool not found' };
+        }
+
+        const pool = poolSnap.data();
+        if (pool.status !== 'in_progress') {
+          return { shouldComplete: false, message: `Taxi pool status is ${pool.status}, not in_progress` };
+        }
+
+        const distanceToDestination = calculateDistance(
+          currentCoords.latitude,
+          currentCoords.longitude,
+          ATLAS_LOCATION.latitude,
+          ATLAS_LOCATION.longitude
+        );
+        const destName = 'Atlas SkillTech University';
+        const completionThresholdKM = GEOFENCE_RADIUS_METERS.COMPLETION / 1000; // 2km
+
+        console.log(`[GEOFENCE ENGINE] Distance to destination (${destName}): ${distanceToDestination.toFixed(2)} km`);
+
+        if (distanceToDestination <= completionThresholdKM) {
+          console.log(`[GEOFENCE ENGINE] Triggering auto-completion for taxi pool ${rideId}`);
+          
+          await completeTaxiPoolRide(rideId);
+
+          // Broadcast notifications to members on completion
+          try {
+            const membersQ = query(
+              collection(db, 'poolMembers'),
+              where('poolId', '==', rideId)
+            );
+            const membersSnap = await getDocs(membersQ);
+            const memberIds = membersSnap.docs.map(docSnap => docSnap.data().passengerId);
+
+            for (const memberId of memberIds) {
+              await sendNotification(
+                memberId,
+                'ride_completed',
+                'Taxi Pool Completed!',
+                `Your taxi pool ride has arrived within 2km of Atlas and is completed!`,
+                rideId
+              );
+            }
+          } catch (notifyErr) {
+            console.warn('[GEOFENCE ENGINE] Failed to notify members on completion:', notifyErr);
+          }
+
+          return {
+            shouldComplete: true,
+            message: `Arrived at ${destName}. Taxi pool completed successfully!`,
+          };
+        }
+
+        return {
+          shouldComplete: false,
+          message: `Still ${distanceToDestination.toFixed(2)} km away from ${destName}.`,
+        };
+      }
+
       const rideRef = doc(db, 'rides', rideId);
       const rideSnap = await getDoc(rideRef);
       if (!rideSnap.exists()) {
@@ -73,13 +137,9 @@ export class GeofenceEngine {
 
         // Broadcast notifications to passengers on completion
         try {
-          const bookingsQ = query(
-            collection(db, 'bookings'),
-            where('rideId', '==', rideId),
-            where('status', '==', 'accepted')
-          );
-          const bookingsSnap = await getDocs(bookingsQ);
-          const passengerIds = bookingsSnap.docs.map(docSnap => docSnap.data().passengerId);
+          const passengerIds = (ride.bookedSeats || [])
+            .filter((seat: any) => seat.status === 'accepted' || seat.status === 'confirmed')
+            .map((seat: any) => seat.passengerId);
 
           for (const passengerId of passengerIds) {
             await sendNotification(
@@ -118,17 +178,24 @@ export class GeofenceEngine {
     currentCoords: { latitude: number; longitude: number }
   ): Promise<void> {
     try {
-      // Find accepted bookings for this ride that are not yet picked up
-      const bookingsQ = query(
-        collection(db, 'bookings'),
-        where('rideId', '==', rideId),
-        where('status', '==', 'accepted')
-      );
-      const bookingsSnap = await getDocs(bookingsQ);
+      // 1. Fetch ride details to get passenger IDs
+      const rideRef = doc(db, 'rides', rideId);
+      const rideSnap = await getDoc(rideRef);
+      if (!rideSnap.exists()) return;
+      const ride = rideSnap.data();
 
-      for (const bookingDoc of bookingsSnap.docs) {
-        const booking = bookingDoc.data();
-        const bookingId = bookingDoc.id;
+      // 2. Fetch each passenger booking sequentially to verify location details
+      const activeSeats = (ride.bookedSeats || []).filter(
+        (seat: any) => seat.status === 'accepted' || seat.status === 'confirmed'
+      );
+
+      for (const seat of activeSeats) {
+        const bookingId = `${rideId}_${seat.passengerId}`;
+        const bookingRef = doc(db, 'bookings', bookingId);
+        const bookingSnap = await getDoc(bookingRef);
+
+        if (!bookingSnap.exists()) continue;
+        const booking = bookingSnap.data();
 
         // Skip if already picked up or notified
         if (booking.pickedUp || booking.notifiedNearby) continue;
@@ -149,7 +216,6 @@ export class GeofenceEngine {
           console.log(`[GEOFENCE ENGINE] Driver is nearby pickup for booking ${bookingId} (${distanceToPickup.toFixed(3)} km)`);
 
           // Update booking document in Firestore to prevent double notifications
-          const bookingRef = doc(db, 'bookings', bookingId);
           await updateDoc(bookingRef, { notifiedNearby: true });
 
           // Send notification to passenger

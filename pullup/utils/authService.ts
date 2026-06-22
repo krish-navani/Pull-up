@@ -9,6 +9,7 @@ import { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where } fro
 import { User } from '../types';
 import { auth, db } from './firebase';
 import { checkEmailExists, deleteOTP, sendOTPEmail, validateVerifiedOTP, verifyOTP } from './otpService';
+import { syncUserSession } from './userSessionService';
 
 const UNIVERSITY_DOMAIN = '@atlasskilltech.university';
 const STORAGE_KEY_USER = 'pullup_user_data';
@@ -142,6 +143,7 @@ export const verifyOTPAndCreateAccount = async (
     }
 
     console.log('[AUTH] Firebase Auth session user UID:', firebaseUser.uid);
+    await syncUserSession(firebaseUser.uid);
 
     // Create user document in Firestore
     const userData: User = {
@@ -223,6 +225,7 @@ export const verifyOTPAndLogin = async (email: string, otp: string): Promise<Use
     }
     console.log('[AUTH] Login: Firebase Auth completed. UID:', auth.currentUser?.uid, '| User Profile ID:', userData.id);
     console.log('[AUTH] Login: UIDs match?', auth.currentUser?.uid === userData.id);
+    await syncUserSession(userData.id);
 
     // Delete OTP after successful verification
     await deleteOTP(email);
@@ -394,6 +397,7 @@ export const verifyOTPAndAutoAuth = async (email: string, otp: string): Promise<
       
       console.log('[AUTH] Auto-Auth: Firebase Auth UID:', auth.currentUser?.uid, '| User Profile ID:', userData.id);
       console.log('[AUTH] Auto-Auth: UIDs match?', auth.currentUser?.uid === userData.id);
+      await syncUserSession(userData.id);
       
       console.log('[AUTH] Firestore user data:', {
         id: userData.id,

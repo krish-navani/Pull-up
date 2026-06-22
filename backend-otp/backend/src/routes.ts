@@ -390,6 +390,16 @@ router.post('/send-otp', rateLimiter, async (req: Request, res: Response) => {
 
     const fullEmail = email.includes('@') ? email : email + config.universityDomain;
 
+    if (!fullEmail.endsWith(config.universityDomain)) {
+      const responseTime = Date.now();
+      console.log(`[RESPONSE SENT TO CLIENT] [${new Date(responseTime).toISOString()}] Status: 400 (Invalid email domain, total time: ${responseTime - requestReceivedTime}ms)`);
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_DOMAIN',
+        message: `Only university emails ending with ${config.universityDomain} are permitted`,
+      });
+    }
+
     // Validate email format
     if (!validateEmail(fullEmail)) {
       const responseTime = Date.now();
@@ -465,6 +475,14 @@ router.post('/verify-otp', rateLimiter, async (req: Request, res: Response) => {
     }
 
     const fullEmail = email.includes('@') ? email : email + config.universityDomain;
+
+    if (!fullEmail.endsWith(config.universityDomain)) {
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_DOMAIN',
+        message: `Only university emails ending with ${config.universityDomain} are permitted`,
+      });
+    }
 
     // Validate email format
     if (!validateEmail(fullEmail)) {
@@ -1455,28 +1473,33 @@ router.post('/complete-ride', async (req: Request, res: Response) => {
 const clearPendingBalances = async (db: admin.firestore.Firestore, userId: string) => {
   try {
     const now = admin.firestore.Timestamp.now();
-    const pendingTxsQuery = await db.collection('walletTransactions')
-      .where('userId', '==', userId)
-      .where('type', '==', 'ride_earning')
-      .where('status', '==', 'pending')
-      .where('clearingAt', '<=', now)
-      .get();
-
-    if (pendingTxsQuery.empty) {
-      return { clearedCount: 0, clearedAmount: 0 };
-    }
-
+    
+    let clearedCount = 0;
     let clearedAmount = 0;
-    const txDocsToUpdate: string[] = [];
 
-    for (const doc of pendingTxsQuery.docs) {
-      const data = doc.data();
-      clearedAmount += data.amount || 0;
-      txDocsToUpdate.push(doc.id);
-    }
+    await db.runTransaction(async (transaction) => {
+      const pendingTxsQuery = db.collection('walletTransactions')
+        .where('userId', '==', userId)
+        .where('type', '==', 'ride_earning')
+        .where('status', '==', 'pending')
+        .where('clearingAt', '<=', now);
+        
+      const pendingTxsSnap = await transaction.get(pendingTxsQuery);
+      
+      if (pendingTxsSnap.empty) {
+        return;
+      }
 
-    if (clearedAmount > 0) {
-      await db.runTransaction(async (transaction) => {
+      let localClearedAmount = 0;
+      const txDocsToUpdate: string[] = [];
+
+      for (const doc of pendingTxsSnap.docs) {
+        const data = doc.data();
+        localClearedAmount += data.amount || 0;
+        txDocsToUpdate.push(doc.id);
+      }
+
+      if (localClearedAmount > 0) {
         const walletRef = db.collection('wallets').doc(userId);
         const walletSnap = await transaction.get(walletRef);
 
@@ -1487,9 +1510,9 @@ const clearPendingBalances = async (db: admin.firestore.Firestore, userId: strin
           const currentLifetimeEarnings = wData.lifetimeEarnings || 0;
 
           transaction.update(walletRef, {
-            walletBalance: parseFloat((currentWalletBalance + clearedAmount).toFixed(2)),
-            pendingBalance: Math.max(0, parseFloat((currentPendingBalance - clearedAmount).toFixed(2))),
-            lifetimeEarnings: parseFloat((currentLifetimeEarnings + clearedAmount).toFixed(2)),
+            walletBalance: parseFloat((currentWalletBalance + localClearedAmount).toFixed(2)),
+            pendingBalance: Math.max(0, parseFloat((currentPendingBalance - localClearedAmount).toFixed(2))),
+            lifetimeEarnings: parseFloat((currentLifetimeEarnings + localClearedAmount).toFixed(2)),
             updatedAt: admin.firestore.Timestamp.now(),
           });
 
@@ -1500,12 +1523,18 @@ const clearPendingBalances = async (db: admin.firestore.Firestore, userId: strin
               clearedAt: admin.firestore.Timestamp.now(),
             });
           }
+          
+          clearedAmount = localClearedAmount;
+          clearedCount = txDocsToUpdate.length;
         }
-      });
-      console.log(`[CLEARING] Cleared ₹${clearedAmount} for driver ${userId} (${txDocsToUpdate.length} transactions)`);
+      }
+    });
+
+    if (clearedAmount > 0) {
+      console.log(`[CLEARING] Cleared ₹${clearedAmount} for driver ${userId} (${clearedCount} transactions)`);
     }
 
-    return { clearedCount: txDocsToUpdate.length, clearedAmount };
+    return { clearedCount, clearedAmount };
   } catch (error: any) {
     console.error(`[CLEARING] Error clearing pending balance for user ${userId}:`, error.message);
     throw error;
@@ -2078,6 +2107,83 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
         }
         await triggerSystemChatMessage(db, rideId, 'Ride marked as Driver No-Show. Chat locked.');
       }
+    }
+
+    // ─── 1.5 PASSENGER CANCELLATION REFUND SWEEP ───
+    const pendingRefundsSnap = await db.collection('bookings')
+      .where('status', '==', 'cancelled')
+      .where('refundStatus', '==', 'pending')
+      .get();
+
+    for (const bDoc of pendingRefundsSnap.docs) {
+      const booking = bDoc.data();
+      const bookingId = bDoc.id;
+      const refundAmount = booking.refundAmount || booking.totalPrice;
+
+      console.log(`[SWEEP] Processing passenger cancellation refund for booking: ${bookingId}, amount: ₹${refundAmount}`);
+
+      await db.runTransaction(async (transaction) => {
+        const bRef = db.collection('bookings').doc(bookingId);
+        const walletRef = db.collection('wallets').doc(booking.passengerId);
+
+        // Execute all reads first
+        const bSnap = await transaction.get(bRef);
+        const walletSnap = await transaction.get(walletRef);
+
+        if (!bSnap.exists) return;
+        const bData = bSnap.data()!;
+        if (bData.refundStatus !== 'pending') return; // Avoid double processing
+
+        // Now perform all writes
+        transaction.update(bRef, {
+          refundStatus: 'completed',
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+
+        let currentBalance = 0;
+        if (walletSnap.exists) {
+          currentBalance = walletSnap.data()!.walletBalance || 0;
+          transaction.update(walletRef, {
+            walletBalance: parseFloat((currentBalance + refundAmount).toFixed(2)),
+            updatedAt: admin.firestore.Timestamp.now()
+          });
+        } else {
+          transaction.set(walletRef, {
+            userId: booking.passengerId,
+            walletBalance: refundAmount,
+            pendingBalance: 0,
+            lockedBalance: 0,
+            lifetimeEarnings: 0,
+            lifetimeWithdrawals: 0,
+            updatedAt: admin.firestore.Timestamp.now()
+          });
+        }
+
+        // Transaction log
+        const txRef = db.collection('walletTransactions').doc();
+        transaction.set(txRef, {
+          userId: booking.passengerId,
+          rideId: booking.rideId,
+          bookingId: bookingId,
+          amount: refundAmount,
+          type: 'refund',
+          status: 'cleared',
+          referenceType: 'booking',
+          referenceId: bookingId,
+          createdAt: admin.firestore.Timestamp.now(),
+        });
+      });
+
+      await triggerNotification(
+        booking.passengerId,
+        'refund_completed',
+        'Refund Completed 💰',
+        `Your refund of INR ${refundAmount} for ride cancellation has been successfully credited to your wallet.`,
+        booking.rideId,
+        bookingId,
+        'my-bookings',
+        booking.rideId
+      );
     }
 
     // ─── 2. TAXI POOL EXPIRED & NO-SHOW SWEEP ───

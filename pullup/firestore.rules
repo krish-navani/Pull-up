@@ -7,24 +7,32 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    function getPersistentUserId() {
+      return request.auth != null ? 
+             (exists(/databases/$(database)/documents/userSessions/$(request.auth.uid)) ?
+              get(/databases/$(database)/documents/userSessions/$(request.auth.uid)).data.userId :
+              request.auth.uid) : 
+             null;
+    }
+
     function isCarpoolDriver(rideId) {
       return exists(/databases/$(database)/documents/rides/$(rideId)) && 
-             request.auth.uid == get(/databases/$(database)/documents/rides/$(rideId)).data.driverId;
+             getPersistentUserId() == get(/databases/$(database)/documents/rides/$(rideId)).data.driverId;
     }
 
     function isTaxiCreator(rideId) {
       return exists(/databases/$(database)/documents/taxiPools/$(rideId)) && 
-             request.auth.uid == get(/databases/$(database)/documents/taxiPools/$(rideId)).data.creatorId;
+             getPersistentUserId() == get(/databases/$(database)/documents/taxiPools/$(rideId)).data.creatorId;
     }
 
     function isPaidCarpoolPassenger(rideId) {
-      return exists(/databases/$(database)/documents/bookings/$(rideId + "_" + request.auth.uid)) && 
-             get(/databases/$(database)/documents/bookings/$(rideId + "_" + request.auth.uid)).data.status == 'confirmed' && 
-             get(/databases/$(database)/documents/bookings/$(rideId + "_" + request.auth.uid)).data.paymentStatus == 'paid';
+      return exists(/databases/$(database)/documents/bookings/$(rideId + "_" + getPersistentUserId())) && 
+             get(/databases/$(database)/documents/bookings/$(rideId + "_" + getPersistentUserId())).data.status == 'confirmed' && 
+             get(/databases/$(database)/documents/bookings/$(rideId + "_" + getPersistentUserId())).data.paymentStatus == 'paid';
     }
 
     function isTaxiPoolMember(rideId) {
-      return exists(/databases/$(database)/documents/poolMembers/$(rideId + "_" + request.auth.uid));
+      return exists(/databases/$(database)/documents/poolMembers/$(rideId + "_" + getPersistentUserId()));
     }
 
     function canAccessChat(rideId) {
@@ -57,8 +65,14 @@ service cloud.firestore {
 
     // ─── OTP Verification ───────────────────────────────────────────────────
     // Must be accessible before authentication (signup / login flow)
+    // Locked down client-side; only backend Admin SDK has read/write privileges.
     match /otpVerification/{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
+    }
+
+    // ─── User Session Mappings ──────────────────────────────────────────────
+    match /userSessions/{sessionId} {
+      allow read, write: if isSignedIn() && request.auth.uid == sessionId;
     }
 
     // ─── Users ──────────────────────────────────────────────────────────────
@@ -66,19 +80,13 @@ service cloud.firestore {
       // Public reads: needed for messaging, booking display, driver profile pages
       allow read: if true;
 
-      // Only authenticated users can create / update / delete user documents
-      // OTP verification is the real security gate — Firebase Auth UID is
-      // assigned after OTP confirms the user, so request.auth != null is safe.
-      allow create: if isSignedIn();
-      allow update: if isSignedIn();
-      allow delete: if isSignedIn();
+      // Only authenticated users can write/modify/delete their own user documents
+      allow create, update, delete: if isSignedIn() && getPersistentUserId() == userId;
 
       // ── Notifications subcollection ──────────────────────────────────────
       match /notifications/{notificationId} {
-        allow read:   if isSignedIn();
-        allow create: if isSignedIn();
-        allow update: if isSignedIn();
-        allow delete: if isSignedIn();
+        allow read, update, delete: if isSignedIn() && getPersistentUserId() == userId;
+        allow create: if isSignedIn(); // Fallback client-side notifications write
       }
     }
 
@@ -88,17 +96,29 @@ service cloud.firestore {
     // permission-denied), sorting is done client-side in rideService.ts.
     match /rides/{rideId} {
       allow read:   if isSignedIn();
-      allow create: if isSignedIn();
-      allow update: if isSignedIn();
-      allow delete: if isSignedIn(); // used by expired-ride cleanup scheduler
+      allow create: if isSignedIn() && request.resource.data.driverId == getPersistentUserId();
+      allow update: if isSignedIn() && (
+        resource.data.driverId == getPersistentUserId() || 
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['bookedSeats', 'updatedAt'])
+      );
+      allow delete: if isSignedIn() && (
+        resource.data.driverId == getPersistentUserId() ||
+        resource.data.status == 'expired' ||
+        resource.data.status == 'completed' ||
+        resource.data.status == 'cancelled'
+      );
     }
 
     // ─── Bookings ───────────────────────────────────────────────────────────
     match /bookings/{bookingId} {
-      allow read:   if isSignedIn();
-      allow create: if isSignedIn();
-      allow update: if isSignedIn();
-      allow delete: if isSignedIn();
+      allow read: if isSignedIn() && (resource == null || resource.data.passengerId == getPersistentUserId() || resource.data.driverId == getPersistentUserId());
+      allow create: if isSignedIn() && request.resource.data.passengerId == getPersistentUserId() && request.resource.data.status == 'pending';
+      // Passengers can cancel; drivers can accept/reject or update transit states (pickedUp, droppedOff, status)
+      allow update: if isSignedIn() && (
+        (getPersistentUserId() == resource.data.passengerId && request.resource.data.status == 'cancelled') ||
+        (getPersistentUserId() == resource.data.driverId)
+      );
+      allow delete: if false;
     }
 
     // ─── Chat Rooms + Messages ───────────────────────────────────────────────
@@ -124,8 +144,8 @@ service cloud.firestore {
         isCarpoolDriver(rideId) || 
         isTaxiCreator(rideId) || 
         (
-          request.auth.uid in resource.data.participants && 
-          ! (request.auth.uid in request.resource.data.participants)
+          canAccessChat(rideId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessage', 'lastMessageTime', 'lastMessageSenderId', 'lastMessageSenderName', 'updatedAt'])
         )
       );
       allow delete: if false;
@@ -150,42 +170,74 @@ service cloud.firestore {
     // Client-side sorting avoids composite index requirements.
     match /taxiPools/{poolId} {
       allow read:   if isSignedIn();
-      allow create: if isSignedIn();
-      allow update: if isSignedIn();
-      allow delete: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.creatorId == getPersistentUserId();
+      allow update: if isSignedIn() && (
+        resource.data.creatorId == getPersistentUserId() || 
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount', 'status', 'currentLocation', 'updatedAt'])
+      );
+      allow delete: if isSignedIn() && (
+        resource.data.creatorId == getPersistentUserId() ||
+        resource.data.status == 'expired' ||
+        resource.data.status == 'completed' ||
+        resource.data.status == 'CANCELLED'
+      );
     }
 
     // ─── Pool Members ───────────────────────────────────────────────────────
     match /poolMembers/{memberId} {
       allow read:   if isSignedIn();
-      allow create: if isSignedIn();
-      allow update: if isSignedIn();
-      allow delete: if isSignedIn();
+      allow create: if isSignedIn() && (
+        request.resource.data.passengerId == getPersistentUserId() ||
+        (
+          exists(/databases/$(database)/documents/taxiPools/$(request.resource.data.poolId)) && 
+          getPersistentUserId() == get(/databases/$(database)/documents/taxiPools/$(request.resource.data.poolId)).data.creatorId
+        )
+      );
+      allow update, delete: if isSignedIn() && (
+        resource.data.passengerId == getPersistentUserId() ||
+        (
+          exists(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)) && 
+          getPersistentUserId() == get(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)).data.creatorId
+        )
+      );
     }
 
     // ─── Pool Requests ──────────────────────────────────────────────────────
     match /poolRequests/{requestId} {
-      allow read:   if isSignedIn();
-      allow create: if isSignedIn();
-      allow update: if isSignedIn();
-      allow delete: if isSignedIn();
+      allow read:   if isSignedIn() && (
+        resource == null || 
+        resource.data.passengerId == getPersistentUserId() || 
+        (
+          exists(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)) && 
+          getPersistentUserId() == get(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)).data.creatorId
+        )
+      );
+      allow create: if isSignedIn() && request.resource.data.passengerId == getPersistentUserId();
+      allow update: if isSignedIn() && (
+        resource.data.passengerId == getPersistentUserId() ||
+        (
+          exists(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)) && 
+          getPersistentUserId() == get(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)).data.creatorId
+        )
+      );
+      allow delete: if isSignedIn() && resource.data.passengerId == getPersistentUserId();
     }
 
     // ─── Wallets ────────────────────────────────────────────────────────────
     match /wallets/{userId} {
-      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow read: if isSignedIn() && getPersistentUserId() == userId;
       allow write: if false; // Only written/updated by backend
     }
 
     // ─── Wallet Transactions ────────────────────────────────────────────────
     match /walletTransactions/{txId} {
-      allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid);
+      allow read: if isSignedIn() && (resource == null || resource.data.userId == getPersistentUserId());
       allow write: if false; // Only written/updated by backend
     }
 
     // ─── Withdrawals ────────────────────────────────────────────────────────
     match /withdrawals/{withdrawalId} {
-      allow read: if isSignedIn() && (resource == null || resource.data.userId == request.auth.uid);
+      allow read: if isSignedIn() && (resource == null || resource.data.userId == getPersistentUserId());
       allow write: if false; // Only written/updated by backend
     }
 

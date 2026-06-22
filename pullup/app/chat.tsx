@@ -155,7 +155,7 @@ export default function ChatScreen() {
   const params = useLocalSearchParams();
   const { rideId, bookingId } = params as { rideId: string; bookingId?: string };
 
-  const { rides, bookings, auth } = useAppContext();
+  const { rides, bookings, auth, authInitializing } = useAppContext();
   const [messageText, setMessageText] = useState('');
   const [messages, setMessages] = useState<Message[]>([]);
   const [recipientName, setRecipientName] = useState('');
@@ -212,7 +212,7 @@ export default function ChatScreen() {
 
   useEffect(() => {
     const initializeChat = async () => {
-      if (!ride || !auth.user) {
+      if (!ride || !auth.user || authInitializing) {
         setLoading(false);
         return;
       }

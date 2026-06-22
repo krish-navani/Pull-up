@@ -6,7 +6,7 @@ import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { WARM_CORE } from '@/constants/theme';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { collection, query, where, onSnapshot, doc, updateDoc } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, doc, updateDoc, Timestamp } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
 import { getRideDirectionType, calculateDistance } from '@/utils/atlasLocationUtils';
 import * as Location from 'expo-location';
@@ -30,8 +30,8 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 export default function RideDetailsScreen() {
   const router = useRouter();
   const { rideId, bookingId } = useLocalSearchParams();
-  const { getRideById, requestRide, auth, bookings } = useAppContext();
-  const [requestStatus, setRequestStatus] = useState<'idle' | 'pending' | 'accepted' | 'rejected' | 'cancelled'>('idle');
+  const { getRideById, requestRide, auth, bookings, authInitializing } = useAppContext();
+  const [requestStatus, setRequestStatus] = useState<'idle' | 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'confirmed'>('idle');
   const [paymentStatus, setPaymentStatus] = useState<'pending' | 'paid' | 'failed' | null>(null);
   const [routeCoordinates, setRouteCoordinates] = useState<any[]>([]);
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
@@ -70,6 +70,8 @@ export default function RideDetailsScreen() {
   const dbRide = getRideById(rideId as string);
   const [liveRide, setLiveRide] = useState<any>(null);
   const [acceptedBookings, setAcceptedBookings] = useState<any[]>([]);
+  const [driverHeading, setDriverHeading] = useState(0);
+  const hudTranslateY = useRef(new Animated.Value(-150)).current;
 
   // Listen to ride document in real-time
   useEffect(() => {
@@ -83,22 +85,26 @@ export default function RideDetailsScreen() {
     return () => unsub();
   }, [rideId]);
 
-  // Listen to accepted bookings for waypoints
+  const ride = liveRide || dbRide;
+
+  // Listen to accepted and confirmed bookings for waypoints
   useEffect(() => {
-    if (!rideId) return;
+    if (!rideId || authInitializing || !auth.user || !ride) return;
+
+    const isDriver = ride.driverId === auth.user.id;
     const q = query(
       collection(db, 'bookings'),
       where('rideId', '==', rideId),
-      where('status', '==', 'accepted')
+      where(isDriver ? 'driverId' : 'passengerId', '==', auth.user.id)
     );
     const unsub = onSnapshot(q, (snap) => {
-      const list = snap.docs.map(doc => doc.data());
+      const list = snap.docs
+        .map(doc => doc.data())
+        .filter(b => b.status === 'accepted' || b.status === 'confirmed');
       setAcceptedBookings(list);
     });
     return () => unsub();
-  }, [rideId]);
-
-  const ride = liveRide || dbRide;
+  }, [rideId, ride?.driverId, authInitializing, auth.user]);
 
   const direction = ride ? getRideDirectionType(
     ride.pickupLocation.latitude,
@@ -126,6 +132,199 @@ export default function RideDetailsScreen() {
     });
     return wps;
   }, [acceptedBookings, direction]);
+
+  const navigationStops = useMemo(() => {
+    if (!ride) return [];
+    const stops: Array<{
+      type: 'pickup' | 'dropoff' | 'atlas_pickup' | 'atlas_dropoff' | 'final';
+      passengerId?: string;
+      passengerName?: string;
+      latitude: number;
+      longitude: number;
+      address: string;
+      label: string;
+    }> = [];
+
+    if (direction === 'home-to-atlas') {
+      acceptedBookings.forEach((b) => {
+        if (b.passengerPickupLocation) {
+          stops.push({
+            type: 'pickup',
+            passengerId: b.passengerId,
+            passengerName: b.passengerName,
+            latitude: b.passengerPickupLocation.latitude,
+            longitude: b.passengerPickupLocation.longitude,
+            address: b.passengerPickupLocation.address || b.passengerPickupLocation.city || 'Passenger pickup',
+            label: `Pick up ${b.passengerName}`,
+          });
+        }
+      });
+      stops.push({
+        type: 'final',
+        latitude: ride.dropLocation.latitude,
+        longitude: ride.dropLocation.longitude,
+        address: ride.dropLocation.address || ride.dropLocation.city || 'Atlas Hub',
+        label: 'Go to Atlas Hub',
+      });
+    } else if (direction === 'atlas-to-home') {
+      stops.push({
+        type: 'atlas_pickup',
+        latitude: ride.pickupLocation.latitude,
+        longitude: ride.pickupLocation.longitude,
+        address: ride.pickupLocation.address || ride.pickupLocation.city || 'Atlas Hub',
+        label: 'Pick up passengers at Atlas Hub',
+      });
+      acceptedBookings.forEach((b) => {
+        if (b.passengerDropLocation) {
+          stops.push({
+            type: 'dropoff',
+            passengerId: b.passengerId,
+            passengerName: b.passengerName,
+            latitude: b.passengerDropLocation.latitude,
+            longitude: b.passengerDropLocation.longitude,
+            address: b.passengerDropLocation.address || b.passengerDropLocation.city || 'Passenger dropoff',
+            label: `Drop off ${b.passengerName}`,
+          });
+        }
+      });
+      stops.push({
+        type: 'final',
+        latitude: ride.dropLocation.latitude,
+        longitude: ride.dropLocation.longitude,
+        address: ride.dropLocation.address || ride.dropLocation.city || 'Final dropoff',
+        label: 'Go to final drop-off location',
+      });
+    } else {
+      stops.push({
+        type: 'final',
+        latitude: ride.dropLocation.latitude,
+        longitude: ride.dropLocation.longitude,
+        address: ride.dropLocation.address || ride.dropLocation.city || 'Destination',
+        label: 'Go to destination',
+      });
+    }
+    return stops;
+  }, [ride, acceptedBookings, direction]);
+
+  useEffect(() => {
+    if (ride?.status === 'in_progress') {
+      Animated.spring(hudTranslateY, {
+        toValue: 0,
+        damping: 15,
+        stiffness: 150,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      Animated.timing(hudTranslateY, {
+        toValue: -150,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [ride?.status]);
+
+  // Driver GPS Foreground location watcher to tilt/rotate camera
+  useEffect(() => {
+    const isDriver = ride?.driverId === auth.user?.id;
+    if (!ride || ride.status !== 'in_progress' || !isDriver) return;
+
+    let sub: Location.LocationSubscription | null = null;
+
+    const startLocWatch = async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') return;
+
+      try {
+        sub = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.BestForNavigation,
+            timeInterval: 2000,
+            distanceInterval: 2,
+          },
+          (loc) => {
+            const { latitude, longitude, heading } = loc.coords;
+            if (heading !== null && heading !== undefined) {
+              setDriverHeading(heading);
+            }
+            if (mapRef.current) {
+              mapRef.current.animateCamera({
+                center: { latitude, longitude },
+                pitch: 45,
+                heading: heading || 0,
+                zoom: 18,
+              }, { duration: 800 });
+            }
+          }
+        );
+      } catch (err) {
+        console.warn('Error starting navigation map tracking:', err);
+      }
+    };
+
+    startLocWatch();
+
+    return () => {
+      if (sub) sub.remove();
+    };
+  }, [ride?.status, ride?.driverId, auth.user?.id]);
+
+  // Passenger live GPS tracker centering camera on driver currentLocation
+  useEffect(() => {
+    const isDriver = ride?.driverId === auth.user?.id;
+    if (!ride || ride.status !== 'in_progress' || isDriver || !ride.currentLocation) return;
+
+    const { latitude, longitude } = ride.currentLocation;
+    if (mapRef.current) {
+      mapRef.current.animateCamera({
+        center: { latitude, longitude },
+        zoom: 16,
+      }, { duration: 1000 });
+    }
+  }, [ride?.currentLocation, ride?.status, ride?.driverId, auth.user?.id]);
+
+  const handleNextStop = async () => {
+    if (!ride) return;
+    const currentIndex = ride.activeStopIndex || 0;
+    const currentStop = navigationStops[currentIndex];
+    
+    try {
+      const rideRef = doc(db, 'rides', ride.id);
+      
+      if (currentStop) {
+        if (currentStop.type === 'pickup' && currentStop.passengerId) {
+          const bookingId = `${ride.id}_${currentStop.passengerId}`;
+          const bookingRef = doc(db, 'bookings', bookingId);
+          await updateDoc(bookingRef, { pickedUp: true, updatedAt: Timestamp.now() });
+
+          const updatedBookedSeats = (ride.bookedSeats || []).map((bs: any) =>
+            bs.passengerId === currentStop.passengerId ? { ...bs, pickedUp: true } : bs
+          );
+          await updateDoc(rideRef, { bookedSeats: updatedBookedSeats });
+        } else if (currentStop.type === 'dropoff' && currentStop.passengerId) {
+          const bookingId = `${ride.id}_${currentStop.passengerId}`;
+          const bookingRef = doc(db, 'bookings', bookingId);
+          await updateDoc(bookingRef, { droppedOff: true, updatedAt: Timestamp.now() });
+
+          const updatedBookedSeats = (ride.bookedSeats || []).map((bs: any) =>
+            bs.passengerId === currentStop.passengerId ? { ...bs, droppedOff: true } : bs
+          );
+          await updateDoc(rideRef, { bookedSeats: updatedBookedSeats });
+        }
+      }
+
+      const nextIndex = currentIndex + 1;
+      if (nextIndex >= navigationStops.length) {
+        const { completeRide } = require('@/utils/rideService');
+        await completeRide(ride.id);
+        Alert.alert('Arrived!', 'You have completed the carpool!');
+      } else {
+        await updateDoc(rideRef, { activeStopIndex: nextIndex, updatedAt: Timestamp.now() });
+      }
+    } catch (err) {
+      console.error('Error updating next stop:', err);
+      Alert.alert('Error', 'Failed to update next stop.');
+    }
+  };
 
   const bottomSheetRef = useRef<BottomSheet>(null);
   const snapPoints = useMemo(() => ['20%', '50%'], []);
@@ -175,7 +374,7 @@ export default function RideDetailsScreen() {
         const activeBooking = bookings.find(
           b => b.rideId === ride.id &&
                 b.passengerId === auth.user?.id &&
-                (b.status === 'pending' || b.status === 'accepted')
+                (b.status === 'pending' || b.status === 'accepted' || b.status === 'confirmed')
         );
         if (activeBooking) {
           setRequestStatus(activeBooking.status as any);
@@ -325,7 +524,7 @@ export default function RideDetailsScreen() {
       };
     }
 
-    if (requestStatus !== 'pending' && requestStatus !== 'accepted' && (ride.availableSeats ?? 0) <= 0) {
+    if (requestStatus !== 'pending' && requestStatus !== 'accepted' && requestStatus !== 'confirmed' && (ride.availableSeats ?? 0) <= 0) {
       return {
         text: 'Ride is Full',
         icon: 'alert-circle',
@@ -345,8 +544,9 @@ export default function RideDetailsScreen() {
           disabled: true,
         };
       case 'accepted':
+      case 'confirmed':
         return {
-          text: 'Accepted',
+          text: requestStatus === 'confirmed' ? 'Confirmed' : 'Accepted',
           icon: 'check-circle',
           color: WARM_CORE.success,
           bgColor: WARM_CORE.card,
@@ -386,6 +586,92 @@ export default function RideDetailsScreen() {
       <View style={styles.root}>
         <StatusBar barStyle="dark-content" backgroundColor={WARM_CORE.background} translucent={true} />
 
+        {ride && ride.status === 'in_progress' && (
+          <Animated.View
+            style={[
+              styles.navHudContainer,
+              {
+                transform: [{ translateY: hudTranslateY }],
+                top: insets.top + 10,
+              },
+            ]}
+          >
+            <View style={styles.navHudCard}>
+              <View style={styles.navHudRow}>
+                <View style={styles.navHudIconBox}>
+                  <MaterialCommunityIcons
+                    name={
+                      navigationStops[ride.activeStopIndex || 0]?.type === 'pickup'
+                        ? 'account-plus'
+                        : navigationStops[ride.activeStopIndex || 0]?.type === 'dropoff'
+                        ? 'account-minus'
+                        : 'flag-checkered'
+                    }
+                    size={28}
+                    color={WARM_CORE.primary}
+                  />
+                </View>
+                <View style={{ flex: 1, marginLeft: 12 }}>
+                  <Text style={styles.navHudNext}>
+                    {ride.driverId === auth.user?.id ? 'NEXT STOP' : 'LIVE TRACKING'}
+                  </Text>
+                  <Text style={styles.navHudLabel} numberOfLines={2}>
+                    {navigationStops[ride.activeStopIndex || 0]?.label || 'Loading route...'}
+                  </Text>
+                  <Text style={styles.navHudAddress} numberOfLines={1}>
+                    {navigationStops[ride.activeStopIndex || 0]?.address || ''}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Progress bar */}
+              <View style={styles.navProgressBarBg}>
+                <View
+                  style={[
+                    styles.navProgressBarFg,
+                    {
+                      width: `${
+                        navigationStops.length > 0
+                          ? ((ride.activeStopIndex || 0) / navigationStops.length) * 100
+                          : 0
+                      }%`,
+                    },
+                  ]}
+                />
+              </View>
+
+              {/* Actions for host / driver */}
+              {ride.driverId === auth.user?.id ? (
+                <TouchableOpacity
+                  style={styles.navHudConfirmButton}
+                  onPress={handleNextStop}
+                  activeOpacity={0.8}
+                >
+                  <MaterialCommunityIcons name="check-circle-outline" size={16} color={WARM_CORE.white} style={{ marginRight: 6 }} />
+                  <Text style={styles.navHudConfirmText}>
+                    {navigationStops[ride.activeStopIndex || 0]?.type === 'pickup'
+                      ? 'Confirm Pickup'
+                      : navigationStops[ride.activeStopIndex || 0]?.type === 'dropoff'
+                      ? 'Confirm Drop-off'
+                      : 'Arrived at Destination'}
+                  </Text>
+                </TouchableOpacity>
+              ) : (
+                <View style={styles.passengerStatusRow}>
+                  <View style={styles.passengerStatusIndicator} />
+                  <Text style={styles.passengerStatusText}>
+                    {navigationStops[ride.activeStopIndex || 0]?.type === 'pickup'
+                      ? 'Driver is heading for pickup'
+                      : navigationStops[ride.activeStopIndex || 0]?.type === 'dropoff'
+                      ? 'Driver is heading for drop-off'
+                      : 'Heading to final destination'}
+                  </Text>
+                </View>
+              )}
+            </View>
+          </Animated.View>
+        )}
+
         <View style={styles.mapContainer}>
           <MapView
             ref={mapRef}
@@ -400,8 +686,8 @@ export default function RideDetailsScreen() {
             }}
             scrollEnabled={true}
             zoomEnabled={true}
-            rotateEnabled={false}
-            pitchEnabled={false}
+            rotateEnabled={ride.status === 'in_progress'}
+            pitchEnabled={ride.status === 'in_progress'}
           >
             {routeCoordinates && routeCoordinates.length > 1 && (
               <>
@@ -686,7 +972,7 @@ export default function RideDetailsScreen() {
           <Text style={styles.totalAmount}>₹{ride.price}</Text>
         </View>
 
-        {ride && auth.user && (ride.driverId === auth.user.id || (requestStatus === 'accepted' && paymentStatus === 'paid')) ? (
+        {ride && auth.user && (ride.driverId === auth.user.id || ((requestStatus === 'accepted' || requestStatus === 'confirmed') && paymentStatus === 'paid')) ? (
           <TouchableOpacity
             style={[
               styles.ctaButton,
@@ -707,7 +993,7 @@ export default function RideDetailsScreen() {
               Group Chat
             </Text>
           </TouchableOpacity>
-        ) : ride && auth.user && requestStatus === 'accepted' && paymentStatus !== 'paid' ? (
+        ) : ride && auth.user && (requestStatus === 'accepted' || requestStatus === 'confirmed') && paymentStatus !== 'paid' ? (
           <TouchableOpacity
             style={[
               styles.ctaButton,
@@ -1296,6 +1582,100 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 5,
+  },
+  navHudContainer: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    zIndex: 9999,
+  },
+  navHudCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(212, 80, 10, 0.2)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  navHudRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  navHudIconBox: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: 'rgba(212, 80, 10, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  navHudNext: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: WARM_CORE.primary,
+    letterSpacing: 1.5,
+    marginBottom: 2,
+  },
+  navHudLabel: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+    lineHeight: 20,
+  },
+  navHudAddress: {
+    fontSize: 11,
+    color: WARM_CORE.textSecondary,
+    marginTop: 2,
+  },
+  navProgressBarBg: {
+    height: 4,
+    backgroundColor: 'rgba(212, 80, 10, 0.08)',
+    borderRadius: 2,
+    marginTop: 14,
+    marginBottom: 12,
+    overflow: 'hidden',
+  },
+  navProgressBarFg: {
+    height: '100%',
+    backgroundColor: WARM_CORE.primary,
+    borderRadius: 2,
+  },
+  navHudConfirmButton: {
+    backgroundColor: WARM_CORE.primary,
+    borderRadius: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  navHudConfirmText: {
+    color: WARM_CORE.white,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  passengerStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    borderRadius: 8,
+    paddingVertical: 6,
+  },
+  passengerStatusIndicator: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: WARM_CORE.success,
+    marginRight: 6,
+  },
+  passengerStatusText: {
+    color: WARM_CORE.success,
+    fontSize: 12,
+    fontWeight: '600',
   },
 });
 

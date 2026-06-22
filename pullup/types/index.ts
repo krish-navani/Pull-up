@@ -84,7 +84,7 @@ export interface BookingInfo {
   passengerId: string;
   passengerName: string;
   seatsBooked: number;
-  status: 'pending' | 'accepted' | 'rejected' | 'cancelled';
+  status: 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'confirmed';
   bookedAt: string;
   cancelledAt?: string;
   penaltyApplied?: number;
@@ -101,7 +101,7 @@ export interface Booking {
   passengerId: string;
   driverId: string;
   seatsBooked: number;
-  status: 'pending' | 'accepted' | 'rejected' | 'cancelled';
+  status: 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'confirmed';
   bookedAt: string;
   cancelledAt?: string;
   penaltyApplied?: number;

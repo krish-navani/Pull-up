@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   ActivityIndicator,
   Animated,
@@ -15,7 +15,7 @@ import {
   ViewStyle,
   Alert
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
@@ -247,6 +247,96 @@ export default function TaxiPoolDetailsScreen() {
   const [isJoinLoading, setIsJoinLoading] = useState(false);
 
   const mapRef = useRef<MapView>(null);
+  const [driverHeading, setDriverHeading] = useState(0);
+  const hudTranslateY = useRef(new Animated.Value(-150)).current;
+  const insets = useSafeAreaInsets();
+
+  const navigationStops = useMemo(() => {
+    if (!pool) return [];
+    return [{
+      type: 'final' as const,
+      latitude: pool.destination.latitude,
+      longitude: pool.destination.longitude,
+      address: pool.destination.address || 'Atlas Hub',
+      label: 'Go to Atlas Hub',
+    }];
+  }, [pool]);
+
+  useEffect(() => {
+    if (pool?.status === 'in_progress') {
+      Animated.spring(hudTranslateY, {
+        toValue: 0,
+        damping: 15,
+        stiffness: 150,
+        useNativeDriver: true,
+      }).start();
+    } else {
+      Animated.timing(hudTranslateY, {
+        toValue: -150,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+    }
+  }, [pool?.status]);
+
+  // Driver GPS Foreground location watcher to tilt/rotate camera
+  useEffect(() => {
+    const isCreator = pool?.creatorId === auth.user?.id;
+    if (!pool || pool.status !== 'in_progress' || !isCreator) return;
+
+    let sub: Location.LocationSubscription | null = null;
+
+    const startLocWatch = async () => {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') return;
+
+      try {
+        sub = await Location.watchPositionAsync(
+          {
+            accuracy: Location.Accuracy.BestForNavigation,
+            timeInterval: 2000,
+            distanceInterval: 2,
+          },
+          (loc) => {
+            const { latitude, longitude, heading } = loc.coords;
+            if (heading !== null && heading !== undefined) {
+              setDriverHeading(heading);
+            }
+            if (mapRef.current) {
+              mapRef.current.animateCamera({
+                center: { latitude, longitude },
+                pitch: 45,
+                heading: heading || 0,
+                zoom: 18,
+              }, { duration: 800 });
+            }
+          }
+        );
+      } catch (err) {
+        console.warn('Error starting taxi navigation map tracking:', err);
+      }
+    };
+
+    startLocWatch();
+
+    return () => {
+      if (sub) sub.remove();
+    };
+  }, [pool?.status, pool?.creatorId, auth.user?.id]);
+
+  // Passenger live GPS tracker centering camera on creator currentLocation
+  useEffect(() => {
+    const isCreator = pool?.creatorId === auth.user?.id;
+    if (!pool || pool.status !== 'in_progress' || isCreator || !pool.currentLocation) return;
+
+    const { latitude, longitude } = pool.currentLocation;
+    if (mapRef.current) {
+      mapRef.current.animateCamera({
+        center: { latitude, longitude },
+        zoom: 16,
+      }, { duration: 1000 });
+    }
+  }, [pool?.currentLocation, pool?.status, pool?.creatorId, auth.user?.id]);
   const infoSlideY = useRef(new Animated.Value(30)).current;
   const infoOpacity = useRef(new Animated.Value(0)).current;
   const taxiPulseAnim = useRef(new Animated.Value(0)).current;
@@ -548,6 +638,62 @@ export default function TaxiPoolDetailsScreen() {
     <View style={styles.root}>
       <StatusBar barStyle="dark-content" translucent backgroundColor="transparent" />
 
+      {pool && pool.status === 'in_progress' && (
+        <Animated.View
+          style={[
+            styles.navHudContainer,
+            {
+              transform: [{ translateY: hudTranslateY }],
+              top: insets.top + 10,
+            },
+          ]}
+        >
+          <View style={styles.navHudCard}>
+            <View style={styles.navHudRow}>
+              <View style={styles.navHudIconBox}>
+                <MaterialCommunityIcons
+                  name="flag-checkered"
+                  size={28}
+                  color={WARM_CORE.primary}
+                />
+              </View>
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <Text style={styles.navHudNext}>
+                  {pool.creatorId === auth.user?.id ? 'ROUTE TARGET' : 'LIVE TRACKING'}
+                </Text>
+                <Text style={styles.navHudLabel} numberOfLines={2}>
+                  {navigationStops[0]?.label || 'Heading to Atlas Hub'}
+                </Text>
+                <Text style={styles.navHudAddress} numberOfLines={1}>
+                  {navigationStops[0]?.address || 'Atlas Hub'}
+                </Text>
+              </View>
+            </View>
+
+            {/* Actions for host / driver */}
+            {pool.creatorId === auth.user?.id ? (
+              <TouchableOpacity
+                style={[styles.navHudConfirmButton, { marginTop: 12 }]}
+                onPress={handleCompleteTaxiPool}
+                activeOpacity={0.8}
+              >
+                <MaterialCommunityIcons name="check-circle-outline" size={16} color={WARM_CORE.white} style={{ marginRight: 6 }} />
+                <Text style={styles.navHudConfirmText}>
+                  Finish Taxi Pool
+                </Text>
+              </TouchableOpacity>
+            ) : (
+              <View style={[styles.passengerStatusRow, { marginTop: 12 }]}>
+                <View style={styles.passengerStatusIndicator} />
+                <Text style={styles.passengerStatusText}>
+                  Live tracking active: heading to Atlas Hub
+                </Text>
+              </View>
+            )}
+          </View>
+        </Animated.View>
+      )}
+
       {/* Google Maps View */}
       <View style={styles.mapContainer}>
         <MapView
@@ -561,6 +707,8 @@ export default function TaxiPoolDetailsScreen() {
             latitudeDelta: 0.12,
             longitudeDelta: 0.12,
           }}
+          rotateEnabled={pool.status === 'in_progress'}
+          pitchEnabled={pool.status === 'in_progress'}
         >
           {/* Atlas Marker */}
           <Marker
@@ -1245,4 +1393,85 @@ const styles = StyleSheet.create({
     backgroundColor: WARM_CORE.accent,
     zIndex: 1,
   } as ViewStyle,
+  navHudContainer: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    zIndex: 9999,
+  },
+  navHudCard: {
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(212, 80, 10, 0.2)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.1,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  navHudRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  navHudIconBox: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    backgroundColor: 'rgba(212, 80, 10, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  navHudNext: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: WARM_CORE.primary,
+    letterSpacing: 1.5,
+    marginBottom: 2,
+  },
+  navHudLabel: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+    lineHeight: 20,
+  },
+  navHudAddress: {
+    fontSize: 11,
+    color: WARM_CORE.textSecondary,
+    marginTop: 2,
+  },
+  navHudConfirmButton: {
+    backgroundColor: WARM_CORE.primary,
+    borderRadius: 12,
+    paddingVertical: 10,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  navHudConfirmText: {
+    color: WARM_CORE.white,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  passengerStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    borderRadius: 8,
+    paddingVertical: 6,
+  },
+  passengerStatusIndicator: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: WARM_CORE.success,
+    marginRight: 6,
+  },
+  passengerStatusText: {
+    color: WARM_CORE.success,
+    fontSize: 12,
+    fontWeight: '600',
+  },
 });
