@@ -129,15 +129,7 @@ export default function NotificationsScreen() {
           console.error('[NOTIFICATIONS] Failed to auto mark all as read:', err)
         );
 
-        // Clear native badge count
-        try {
-          const expoNotifs = require('expo-notifications');
-          if (expoNotifs && typeof expoNotifs.setBadgeCountAsync === 'function') {
-            expoNotifs.setBadgeCountAsync(0).catch((e: any) => console.log('Failed to clear badge count:', e));
-          }
-        } catch (e) {
-          console.warn('[NOTIFICATIONS] Cannot load expo-notifications to clear badge:', e);
-        }
+        // Badge count is managed via FCM payload — no expo-notifications call needed
 
         // Subscribe to real-time notifications
         const unsubFn = subscribeToNotifications(auth.user.id, (updatedNotifications) => {
@@ -270,14 +262,7 @@ export default function NotificationsScreen() {
 
     try {
       await markAllNotificationsAsRead(auth.user.id);
-      try {
-        const expoNotifs = require('expo-notifications');
-        if (expoNotifs && typeof expoNotifs.setBadgeCountAsync === 'function') {
-          await expoNotifs.setBadgeCountAsync(0);
-        }
-      } catch (e) {
-        console.warn('[NOTIFICATIONS] Failed to clear badge in handleMarkAllAsRead:', e);
-      }
+      // Badge count managed by FCM payload on backend
       Alert.alert('Success', 'All notifications marked as read');
     } catch (error) {
       console.error('[NOTIFICATIONS] Error marking all as read:', error);

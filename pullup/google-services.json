@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "286433202099",
+    "project_id": "pullup-production",
+    "storage_bucket": "pullup-production.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:286433202099:android:c94f067cd677b9303005c6",
+        "android_client_info": {
+          "package_name": "com.soham5713.PullUp"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDnBOMpesEh50yFK9xA1NYr2VmXXwvTLDw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

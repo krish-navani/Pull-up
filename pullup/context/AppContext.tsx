@@ -2,39 +2,18 @@ import React, { createContext, useCallback, useContext, useEffect, useReducer } 
 import { Alert, AppState } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
-import Constants from 'expo-constants';
-let Notifications: any;
-try {
-  Notifications = require('expo-notifications');
-} catch (error) {
-  console.warn('[PUSH] expo-notifications failed to load (likely running in Expo Go SDK 53+):', error);
-  Notifications = {
-    getPermissionsAsync: async () => ({ status: 'undetermined' }),
-    requestPermissionsAsync: async () => ({ status: 'undetermined' }),
-    getExpoPushTokenAsync: async () => ({ data: null }),
-    addNotificationReceivedListener: () => ({ remove: () => {} }),
-    addNotificationResponseReceivedListener: () => ({ remove: () => {} }),
-    setNotificationHandler: () => {},
-    setBadgeCountAsync: async () => true,
-  };
-}
-import * as Device from 'expo-device';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { calculateDistance } from '../utils/atlasLocationUtils';
 import { doc, updateDoc, Timestamp, onSnapshot, collection, query, orderBy, where, limitToLast } from 'firebase/firestore';
 import { db } from '../utils/firebase';
 import { GeofenceEngine } from '../utils/geofenceEngine';
 
+// FCM messaging instance — loaded lazily so Expo Go doesn't crash on it
+let messaging: any = null;
 try {
-  Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowAlert: true,
-      shouldPlaySound: true,
-      shouldSetBadge: true,
-    } as any),
-  });
-} catch (error) {
-  console.warn('[PUSH] Failed to set notification handler:', error);
+  // @react-native-firebase/messaging requires a native build; gracefully degrade in Expo Go
+  messaging = require('@react-native-firebase/messaging').default;
+} catch (e) {
+  console.warn('[FCM] @react-native-firebase/messaging not available (Expo Go). Push alerts disabled.', e);
 }
 
 const BACKGROUND_LOCATION_TASK = 'background-driver-location-task';
@@ -835,95 +814,97 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, [state.auth.isSignedIn, state.auth.user]);
 
-  // Register Expo Push Token upon successful authentication
+  // Register FCM token upon successful authentication
   useEffect(() => {
     let isMounted = true;
-    let pushTokenListener: any = null;
+    let unsubTokenRefresh: (() => void) | null = null;
 
-    const registerPushToken = async () => {
+    const registerFCMToken = async () => {
       if (!state.auth.isSignedIn || !state.auth.user) return;
-      
+      if (!messaging) {
+        console.log('[FCM] messaging not available — skipping token registration (Expo Go)');
+        return;
+      }
+
       try {
-        if (!Device.isDevice) {
-          console.log('[PUSH] Must use physical device for Push Notifications');
+        // Request notification permissions (required on iOS)
+        const authStatus = await messaging().requestPermission();
+        const enabled =
+          authStatus === 1 || // messaging.AuthorizationStatus.AUTHORIZED
+          authStatus === 2;   // messaging.AuthorizationStatus.PROVISIONAL
+
+        if (!enabled) {
+          console.warn('[FCM] Notification permission denied by user');
           return;
         }
 
-        const { status: existingStatus } = await Notifications.getPermissionsAsync() as any;
-        let finalStatus = existingStatus;
-        if (existingStatus !== 'granted') {
-          const { status } = await Notifications.requestPermissionsAsync() as any;
-          finalStatus = status;
-        }
-        
-        if (finalStatus !== 'granted') {
-          console.warn('[PUSH] Failed to get push token: permission denied');
+        // Get FCM token
+        const fcmToken = await messaging().getToken();
+        if (!fcmToken) {
+          console.warn('[FCM] Could not obtain FCM token');
           return;
         }
+        console.log('[FCM] Token registered:', fcmToken.substring(0, 20) + '...');
 
-        const projectId = Constants.expoConfig?.extra?.eas?.projectId || '64ea08f6-4939-4ded-81a1-6d3a8cb25738';
-        console.log('[PUSH] Requesting Expo Push Token with Project ID:', projectId);
-        
-        const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
-        const token = tokenData.data;
-        console.log('[PUSH] Retrieved Expo Push Token:', token);
+        if (isMounted && state.auth.user) {
+          const { Platform } = require('react-native');
+          const userRef = doc(db, 'users', state.auth.user.id);
+          await updateDoc(userRef, {
+            fcmToken,
+            devicePlatform: Platform.OS,
+            lastTokenRefresh: Timestamp.now(),
+          });
+          console.log('[FCM] Token saved to Firestore for user:', state.auth.user.id);
+        }
 
-        if (token && isMounted) {
-          const devicePlatform = require('react-native').Platform.OS;
-          const currentToken = state.auth.user.expoPushToken;
-          const currentPlatform = state.auth.user.devicePlatform;
-
-          if (token !== currentToken || devicePlatform !== currentPlatform) {
-            console.log('[PUSH] Updating token and platform in Firestore for user:', state.auth.user.id);
+        // Handle FCM token refreshes
+        unsubTokenRefresh = messaging().onTokenRefresh(async (newToken: string) => {
+          if (!isMounted || !state.auth.user?.id) return;
+          console.log('[FCM] Token refreshed');
+          try {
+            const { Platform } = require('react-native');
             const userRef = doc(db, 'users', state.auth.user.id);
-            await updateDoc(userRef, { 
-              expoPushToken: token,
-              devicePlatform,
-              lastTokenRefresh: Timestamp.now()
+            await updateDoc(userRef, {
+              fcmToken: newToken,
+              devicePlatform: Platform.OS,
+              lastTokenRefresh: Timestamp.now(),
             });
-            console.log(`[NOTIFICATION] TOKEN_REGISTERED - Token: ${token} (Platform: ${devicePlatform})`);
-          } else {
-            console.log('[PUSH] Push token is already up-to-date in Firestore. Skipping write.');
+          } catch (err: any) {
+            console.error('[FCM] Failed to save refreshed token:', err.message);
           }
-        }
+        });
+
+        // Handle foreground FCM messages (show Toast banner)
+        messaging().onMessage(async (remoteMessage: any) => {
+          if (!isMounted) return;
+          try {
+            const { notification, data } = remoteMessage;
+            const title = notification?.title || data?.title || 'New Notification';
+            const body = notification?.body || data?.message || '';
+            console.log('[FCM] Foreground message received:', title);
+            const Toast = require('react-native-toast-message').default;
+            if (Toast) {
+              Toast.show({
+                type: 'info',
+                text1: title,
+                text2: body,
+              });
+            }
+          } catch (err) {
+            console.error('[FCM] Error handling foreground message:', err);
+          }
+        });
+
       } catch (err: any) {
-        console.error(`[NOTIFICATION] TOKEN_INVALID - Error: ${err.message}`);
+        console.error('[FCM] Token registration error:', err.message);
       }
     };
 
-    registerPushToken();
-
-    // Listen for Expo Push Token changes / refreshes dynamically
-    if (Notifications && typeof Notifications.addPushTokenListener === 'function') {
-      try {
-        pushTokenListener = Notifications.addPushTokenListener(async (tokenObj: any) => {
-          if (!isMounted || !state.auth.user?.id) return;
-          const newToken = tokenObj.data;
-          console.log(`[NOTIFICATION] TOKEN_REFRESHED - New Token: ${newToken}`);
-          
-          try {
-            const userRef = doc(db, 'users', state.auth.user.id);
-            const devicePlatform = require('react-native').Platform.OS;
-            await updateDoc(userRef, {
-              expoPushToken: newToken,
-              devicePlatform,
-              lastTokenRefresh: Timestamp.now()
-            });
-            console.log(`[NOTIFICATION] TOKEN_REGISTERED - Token: ${newToken} (Platform: ${devicePlatform})`);
-          } catch (err: any) {
-            console.error(`[NOTIFICATION] TOKEN_INVALID - Error: ${err.message}`);
-          }
-        });
-      } catch (err) {
-        console.warn('[PUSH] Failed to register token refresh listener:', err);
-      }
-    }
+    registerFCMToken();
 
     return () => {
       isMounted = false;
-      if (pushTokenListener) {
-        pushTokenListener.remove();
-      }
+      if (unsubTokenRefresh) unsubTokenRefresh();
     };
   }, [state.auth.isSignedIn, state.auth.user?.id]);
 
@@ -959,13 +940,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       dispatch({ type: 'SET_NOTIFICATIONS', payload: fetchedNotifications });
 
-      // Sync badge count with unread notifications count
-      const unreadCount = fetchedNotifications.filter(n => !n.read).length;
-      if (Notifications && typeof Notifications.setBadgeCountAsync === 'function') {
-        Notifications.setBadgeCountAsync(unreadCount).catch((err: any) => {
-          console.warn('[PUSH] Failed to set badge count:', err);
-        });
-      }
+      // Badge count is managed via FCM payload on the backend; no client-side badge call needed
     }, (error) => {
       console.error('[CONTEXT] Notifications listener error:', error);
     });
@@ -1239,11 +1214,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'SET_LOADING', payload: true });
     try {
       await logoutUser();
-      if (Notifications && typeof Notifications.setBadgeCountAsync === 'function') {
-        await Notifications.setBadgeCountAsync(0).catch((err: any) => {
-          console.warn('[PUSH] Failed to clear badge count on logout:', err);
-        });
-      }
+      // FCM token is tied to device, not user — no need to clear it on logout
       dispatch({ type: 'LOGOUT' });
       dispatch({ type: 'SET_ERROR', payload: null });
     } catch (error: any) {

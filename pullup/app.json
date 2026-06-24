@@ -13,6 +13,7 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
+      "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "UIBackgroundModes": [
           "location"
@@ -27,13 +28,16 @@
       "edgeToEdgeEnabled": false,
       "predictiveBackGestureEnabled": false,
       "package": "com.soham5713.PullUp",
+      "googleServicesFile": "./google-services.json",
       "permissions": [
         "android.permission.ACCESS_FINE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_BACKGROUND_LOCATION",
         "android.permission.FOREGROUND_SERVICE",
         "android.permission.FOREGROUND_SERVICE_LOCATION",
-        "android.permission.INTERNET"
+        "android.permission.INTERNET",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.VIBRATE"
       ],
       "config": {
         "googleMaps": {
@@ -68,13 +72,7 @@
           "isAndroidBackgroundLocationEnabled": true
         }
       ],
-      [
-        "expo-notifications",
-        {
-          "icon": "./assets/logo.png",
-          "color": "#D4500A"
-        }
-      ]
+      "@react-native-firebase/app"
     ],
     "experiments": {
       "typedRoutes": true
@@ -82,8 +80,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "64ea08f6-4939-4ded-81a1-6d3a8cb25738"
+        "projectId": "6dfffcf9-d30c-49f7-b295-b1b765c2a139"
       }
-    }
+    },
+    "owner": "rhythm_029"
   }
 }

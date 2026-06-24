@@ -19,11 +19,12 @@ import {
   BG_LOCATION_CONFIG,
 } from '@/utils/backgroundLocationTask';
 
-let Notifications: any = null;
+// FCM messaging — loaded lazily so we degrade gracefully in Expo Go
+let messaging: any = null;
 try {
-  Notifications = require('expo-notifications');
+  messaging = require('@react-native-firebase/messaging').default;
 } catch (e) {
-  console.warn('[PUSH] expo-notifications failed to load in _layout:', e);
+  console.warn('[FCM] @react-native-firebase/messaging not available in _layout (Expo Go).');
 }
 
 // Global Error Boundary to prevent app crashes in production
@@ -75,18 +76,17 @@ function RootLayoutContent() {
   const segments = useSegments();
   const router = useRouter();
 
-  // Listen for push notification click responses for deep-linking
+  // Handle FCM notification taps for deep-linking (background + cold-boot)
   useEffect(() => {
-    if (!Notifications) return;
+    if (!messaging) return;
 
     const handleNotificationRouting = (data: any) => {
       try {
         const { targetScreen, targetId, rideId, rideType, type } = data;
         const resolvedRideId = rideId || targetId;
-        
-        console.log('[PUSH DEEP LINK] Handling notification route. Screen:', targetScreen, 'Id:', resolvedRideId, 'Type:', type);
 
-        // Resolve screen based on type fallback if targetScreen is missing
+        console.log('[FCM DEEP LINK] Handling notification route. Screen:', targetScreen, 'Id:', resolvedRideId, 'Type:', type);
+
         let resolvedScreen = targetScreen;
         if (!resolvedScreen && type) {
           if (['chat_message', 'message', 'sos'].includes(type)) {
@@ -102,121 +102,49 @@ function RootLayoutContent() {
           }
         }
 
-        // Final fallback if screen still unresolved
         if (!resolvedScreen && resolvedRideId) {
           resolvedScreen = rideType === 'taxipool' ? 'taxi-pool-details' : 'ride-details';
         }
 
         if (resolvedScreen === 'group-chat') {
-          router.push({
-            pathname: '/group-chat',
-            params: { rideId: resolvedRideId, rideType: rideType || 'carpool' }
-          } as any);
+          router.push({ pathname: '/group-chat', params: { rideId: resolvedRideId, rideType: rideType || 'carpool' } } as any);
         } else if (resolvedScreen === 'ride-details') {
-          router.push({
-            pathname: '/ride-details',
-            params: { rideId: resolvedRideId }
-          } as any);
+          router.push({ pathname: '/ride-details', params: { rideId: resolvedRideId } } as any);
         } else if (resolvedScreen === 'taxi-pool-details') {
-          router.push({
-            pathname: '/taxi-pool-details',
-            params: { poolId: resolvedRideId }
-          } as any);
+          router.push({ pathname: '/taxi-pool-details', params: { poolId: resolvedRideId } } as any);
         } else if (resolvedScreen === 'wallet') {
           router.push('/wallet' as any);
         } else if (resolvedScreen === 'notifications') {
           router.push('/notifications' as any);
         }
       } catch (err) {
-        console.error('[PUSH DEEP LINK] Error in handleNotificationRouting:', err);
+        console.error('[FCM DEEP LINK] Error in handleNotificationRouting:', err);
       }
     };
 
-    // Check if the app was launched by tapping a notification (cold boot / killed app)
-    const checkInitialNotification = async () => {
-      try {
-        const response = await Notifications.getLastNotificationResponseAsync();
-        if (response) {
-          const data = response?.notification?.request?.content?.data;
-          if (data) {
-            console.log('[PUSH DEEP LINK] Cold boot notification tapped with data:', data);
-            
-            const notificationId = response?.notification?.request?.identifier || data?.notificationId || 'unknown';
-            console.log(`[NOTIFICATION OPENED]
-notificationId: ${notificationId}`);
-
-            handleNotificationRouting(data);
-          }
-        }
-      } catch (err) {
-        console.error('[PUSH DEEP LINK] Error checking initial notification:', err);
+    // Cold-boot: app opened by tapping a notification while killed
+    messaging().getInitialNotification().then((remoteMessage: any) => {
+      if (remoteMessage?.data) {
+        console.log('[FCM DEEP LINK] Cold-boot notification tapped:', remoteMessage.data);
+        handleNotificationRouting(remoteMessage.data);
       }
-    };
-    checkInitialNotification();
-
-    // Listener for notification taps while the app is in foreground or background (running)
-    const subscription = Notifications.addNotificationResponseReceivedListener((response: any) => {
-      const data = response?.notification?.request?.content?.data;
-      if (!data) return;
-
-      console.log('[PUSH DEEP LINK] Warm/foreground notification tapped with data:', data);
-
-      const notificationId = response?.notification?.request?.identifier || data?.notificationId || 'unknown';
-      console.log(`[NOTIFICATION OPENED]
-notificationId: ${notificationId}`);
-
-      handleNotificationRouting(data);
+    }).catch((err: any) => {
+      console.error('[FCM DEEP LINK] getInitialNotification error:', err);
     });
 
-    // Listener for foreground notifications
-    const foregroundSubscription = Notifications.addNotificationReceivedListener((notification: any) => {
-      try {
-        const date = notification?.date;
-        const sentTime = date ? new Date(date) : new Date();
-        const now = new Date();
-        
-        // Stale check: discard if older than 2 minutes (120 seconds)
-        if (now.getTime() - sentTime.getTime() > 120 * 1000) {
-          console.log('[PUSH] Foreground notification discarded due to age (stale > 2 minutes)');
-          return;
-        }
-
-        console.log('[PUSH] Received foreground notification:', notification);
-
-        const notificationId = notification?.request?.identifier || notification?.request?.content?.data?.notificationId || 'unknown';
-        console.log(`[NOTIFICATION DELIVERED]
-notificationId: ${notificationId}`);
-        
-        const title = notification?.request?.content?.title;
-        const body = notification?.request?.content?.body;
-        const data = notification?.request?.content?.data;
-
-        // Show banner using Toast
-        const Toast = require('react-native-toast-message').default;
-        if (Toast) {
-          Toast.show({
-            type: 'info',
-            text1: title || 'New Notification',
-            text2: body || '',
-            onPress: () => {
-              if (data) {
-                handleNotificationRouting(data);
-              }
-            }
-          });
-        }
-      } catch (err) {
-        console.error('[PUSH] Error receiving foreground notification:', err);
+    // Background: app was in background and brought to foreground by tap
+    const unsubBackground = messaging().onNotificationOpenedApp((remoteMessage: any) => {
+      if (remoteMessage?.data) {
+        console.log('[FCM DEEP LINK] Background notification tapped:', remoteMessage.data);
+        handleNotificationRouting(remoteMessage.data);
       }
     });
 
     return () => {
-      subscription.remove();
-      if (foregroundSubscription && typeof foregroundSubscription.remove === 'function') {
-        foregroundSubscription.remove();
-      }
+      if (unsubBackground) unsubBackground();
     };
   }, [router]);
+
 
   // Request location permission on app launch
   useEffect(() => {

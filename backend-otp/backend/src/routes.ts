@@ -2027,53 +2027,102 @@ export async function triggerNotification(
     await notifRef.set(notifPayload);
     console.log(`[NOTIFICATION DELIVERED]\nnotificationId: ${notifRef.id}\nuserId: ${userId}\ntype: ${type}`);
 
-    // 4. Send Expo Push if allowed and token exists
+    // 4. Send FCM push if allowed and token exists
     let pushSent = false;
-    if (isAllowed && expoPushToken) {
+    // Use fcmToken (new) with fallback to expoPushToken for migration compatibility
+    const fcmToken = userData.fcmToken || userData.expoPushToken;
+
+    if (isAllowed && fcmToken && !fcmToken.startsWith('ExponentPushToken')) {
       try {
-        // Calculate unread count for badge syncing
+        // Calculate unread count for badge
         let unreadCount = 1;
         try {
           const unreadSnap = await db.collection('users').doc(userId).collection('notifications')
             .where('read', '==', false)
             .get();
-          unreadCount = unreadSnap.size; // includes the one we just added since it was setDoc'd
+          unreadCount = unreadSnap.size;
         } catch (e) {
           console.warn('[BADGE] Failed to fetch unread count, defaulting to 1:', e);
         }
 
-        const pushPayload = {
-          to: expoPushToken,
-          sound: 'default',
-          title,
-          body: message,
-          badge: unreadCount,
+        await admin.messaging().send({
+          token: fcmToken,
+          notification: {
+            title,
+            body: message,
+          },
           data: {
             type,
             rideId: rideId || '',
             bookingId: bookingId || '',
             targetScreen: targetScreen || '',
             targetId: targetId || '',
-            campaignId: campaignId || ''
-          }
-        };
+            campaignId: campaignId || '',
+          },
+          android: {
+            priority: 'high',
+            notification: {
+              sound: 'default',
+              channelId: 'default',
+              notificationCount: unreadCount,
+              icon: 'ic_stat_pullup',
+            },
+          },
+          apns: {
+            payload: {
+              aps: {
+                sound: 'default',
+                badge: unreadCount,
+              },
+            },
+          },
+        });
 
+        pushSent = true;
+        console.log(`[FCM] Push sent successfully to user ${userId}`);
+      } catch (err: any) {
+        // If the token is stale / unregistered, clear it from Firestore
+        if (err.code === 'messaging/registration-token-not-registered' ||
+            err.code === 'messaging/invalid-registration-token') {
+          console.warn(`[FCM] Stale token for user ${userId}, clearing from Firestore`);
+          try {
+            await db.collection('users').doc(userId).update({ fcmToken: null, expoPushToken: null });
+          } catch (_) {}
+        } else {
+          console.error('[FCM] Push send error:', err.code, err.message);
+        }
+      }
+    } else if (isAllowed && fcmToken && fcmToken.startsWith('ExponentPushToken')) {
+      // Legacy Expo push path for devices not yet updated to FCM token
+      try {
         const fetchFn = (globalThis as any).fetch;
         if (typeof fetchFn === 'function') {
+          let unreadCount = 1;
+          try {
+            const unreadSnap = await db.collection('users').doc(userId).collection('notifications')
+              .where('read', '==', false).get();
+            unreadCount = unreadSnap.size;
+          } catch (_) {}
+
           const expoResponse = await fetchFn('https://exp.host/--/api/v2/push/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(pushPayload)
+            body: JSON.stringify({
+              to: fcmToken,
+              sound: 'default',
+              title,
+              body: message,
+              badge: unreadCount,
+              data: { type, rideId: rideId || '', bookingId: bookingId || '', targetScreen: targetScreen || '', targetId: targetId || '', campaignId: campaignId || '' }
+            })
           });
-          
-          if (expoResponse.ok) {
-            pushSent = true;
-          }
+          if (expoResponse.ok) pushSent = true;
         }
       } catch (err) {
-        console.error('[PUSH ERROR] Failed to send push:', err);
+        console.error('[PUSH ERROR] Failed to send legacy Expo push:', err);
       }
     }
+
 
     // 5. Update Campaign Analytics if campaignId exists
     if (campaignId) {
