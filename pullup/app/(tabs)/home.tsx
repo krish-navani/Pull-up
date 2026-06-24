@@ -83,23 +83,37 @@ function UnifiedFeedCard({ item, onPress }: { item: any; onPress: () => void }) 
     minute: '2-digit',
   });
 
+  const isTaxi = item.type === 'taxi';
+
   return (
     <TouchableOpacity
-      style={styles.newCard}
+      style={[
+        styles.newCard,
+        isTaxi ? styles.newCardTaxi : styles.newCardCar,
+      ]}
       onPress={onPress}
       activeOpacity={0.9}
     >
+      {/* Gradient overlay — top-left to bottom-right tint */}
+      <View
+        style={[
+          styles.cardGradientOverlay,
+          isTaxi ? styles.cardGradientOverlayTaxi : styles.cardGradientOverlayCar,
+        ]}
+        pointerEvents="none"
+      />
+
       {/* Top Header Row */}
       <View style={styles.cardHeaderRow}>
         <View style={[
           styles.typePill,
-          item.type === 'car' ? styles.typePillCar : styles.typePillTaxi
+          isTaxi ? styles.typePillTaxi : styles.typePillCar
         ]}>
           <Text style={[
             styles.typePillText,
-            item.type === 'car' ? styles.typePillTextCar : styles.typePillTextTaxi
+            isTaxi ? styles.typePillTextTaxi : styles.typePillTextCar
           ]}>
-            {item.type === 'car' ? 'CAR POOL' : 'TAXI POOL'}
+            {isTaxi ? 'TAXI POOL' : 'CAR POOL'}
           </Text>
         </View>
         <Text style={styles.cardTimeText}>{formattedTime}</Text>
@@ -1745,17 +1759,48 @@ const styles = StyleSheet.create({
     color: WARM_CORE.white,
   } as TextStyle,
   newCard: {
-    backgroundColor: WARM_CORE.card,
     borderRadius: 22,
     padding: 16,
     marginBottom: 16,
     borderWidth: 1,
     borderColor: WARM_CORE.border,
-    shadowColor: '#000',
+    shadowColor: '#C2703A',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
+    shadowOpacity: 0.10,
+    shadowRadius: 10,
+    elevation: 3,
+    overflow: 'hidden',
+    position: 'relative',
+  } as ViewStyle,
+  // Taxi Pool card: warm peach-orange base
+  newCardTaxi: {
+    backgroundColor: '#FFEEDE',
+    borderColor: '#F5C9A0',
+  } as ViewStyle,
+  // Car Pool card: off-white cream base
+  newCardCar: {
+    backgroundColor: '#FFF8F0',
+    borderColor: '#EFE0CC',
+  } as ViewStyle,
+  // Gradient overlay sits on top of the base, adds a top-left brighten
+  cardGradientOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 22,
+    // Direction: top-left corner fades to transparent toward bottom-right
+  } as ViewStyle,
+  cardGradientOverlayTaxi: {
+    // Top-left: bright warm white tint fading toward bottom-right deep orange
+    backgroundColor: 'rgba(255,255,255,0.38)',
+    // Clip to top-left quadrant using border radii trick
+    borderBottomRightRadius: 200,
+  } as ViewStyle,
+  cardGradientOverlayCar: {
+    backgroundColor: 'rgba(255,255,255,0.55)',
+    borderBottomRightRadius: 200,
   } as ViewStyle,
   cardHeaderRow: {
     flexDirection: 'row',
