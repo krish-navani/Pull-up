@@ -12,7 +12,8 @@ import {
   arrayUnion,
   arrayRemove,
   Timestamp,
-  Unsubscribe
+  Unsubscribe,
+  limitToLast
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { sendNotification } from './notificationService';
@@ -25,7 +26,29 @@ export interface GroupChatMessage {
   senderPhoto: string;
   text: string;
   createdAt: any;
-  type: 'message' | 'system';
+  type: 'text' | 'image' | 'location' | 'destination' | 'ride_card' | 'system';
+  imageUrl?: string;
+  public_id?: string;
+  location?: {
+    latitude: number;
+    longitude: number;
+    durationMinutes?: number;
+    expiresAt?: string;
+  };
+  destination?: {
+    address: string;
+    latitude: number;
+    longitude: number;
+  };
+  rideCard?: {
+    rideId: string;
+    rideType: 'carpool' | 'taxipool';
+    pickupAddress: string;
+    dropAddress: string;
+    price: number;
+    departureTime: string;
+  };
+  readBy?: string[];
 }
 
 export interface GroupChatRoom {
@@ -161,7 +184,31 @@ export const sendGroupMessage = async (
   senderName: string,
   senderPhoto: string,
   text: string,
-  type: 'message' | 'system' = 'message'
+  type: 'text' | 'image' | 'location' | 'destination' | 'ride_card' | 'system' = 'text',
+  extraData?: {
+    imageUrl?: string;
+    public_id?: string;
+    location?: {
+      latitude: number;
+      longitude: number;
+      durationMinutes?: number;
+      expiresAt?: string;
+    };
+    destination?: {
+      address: string;
+      latitude: number;
+      longitude: number;
+    };
+    rideCard?: {
+      rideId: string;
+      rideType: 'carpool' | 'taxipool';
+      pickupAddress: string;
+      dropAddress: string;
+      price: number;
+      departureTime: string;
+    };
+    triggerUserId?: string;
+  }
 ): Promise<string> => {
   try {
     const messagesRef = collection(db, 'rideChats', rideId, 'messages');
@@ -175,6 +222,8 @@ export const sendGroupMessage = async (
       text: text.trim(),
       createdAt: serverTimestamp(),
       type,
+      readBy: [senderId], // Initialize readBy with the sender
+      ...extraData
     });
 
     // Update last message in room
@@ -189,26 +238,35 @@ export const sendGroupMessage = async (
       rideType = data.rideType || 'carpool';
     }
 
+    let lastMsgText = text;
+    if (type === 'image') lastMsgText = 'Sent an image';
+    else if (type === 'location') lastMsgText = 'Shared live location';
+    else if (type === 'destination') lastMsgText = 'Shared a destination';
+    else if (type === 'ride_card') lastMsgText = 'Shared ride details';
+
     await updateDoc(roomRef, {
-      lastMessage: type === 'system' ? text : `${senderName}: ${text}`,
+      lastMessage: type === 'system' ? text : `${senderName}: ${lastMsgText}`,
       lastMessageTime: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
 
-    // Send Firestore notifications to other participants (except sender)
-    if (type === 'message') {
-      const otherParticipants = participants.filter((p) => p !== senderId);
+    // Send Firestore notifications to other participants (except sender/triggerer)
+    const isSOS = text.includes('SOS alert') || text.includes('DISTRESS ALERT') || text.includes('EMERGENCY SOS');
+    const triggerUserId = (extraData && extraData.triggerUserId) ? extraData.triggerUserId : senderId;
+
+    if (type !== 'system' || isSOS) {
+      const otherParticipants = participants.filter((p) => p !== triggerUserId);
       for (const recipientId of otherParticipants) {
         try {
           await sendNotification(
             recipientId,
-            'message',
-            'New Group Message',
-            `${senderName}: ${text}`,
+            isSOS ? 'sos' as any : 'message',
+            isSOS ? 'SOS EMERGENCY ALERT 🚨' : 'New Group Message',
+            isSOS ? text : `${senderName}: ${lastMsgText}`,
             rideId,
             undefined, // bookingId
-            senderId,
-            senderName,
+            triggerUserId,
+            isSOS ? 'Emergency' : senderName,
             `/group-chat?rideId=${rideId}&rideType=${rideType}`
           );
         } catch (notifErr) {
@@ -229,10 +287,21 @@ export const sendGroupMessage = async (
  */
 export const subscribeToGroupMessages = (
   rideId: string,
-  onMessagesUpdate: (messages: GroupChatMessage[]) => void
+  limitOrCallback: number | ((messages: GroupChatMessage[]) => void),
+  callback?: (messages: GroupChatMessage[]) => void
 ): Unsubscribe => {
+  let limitCount = 50;
+  let onMessagesUpdate: (messages: GroupChatMessage[]) => void;
+
+  if (typeof limitOrCallback === 'function') {
+    onMessagesUpdate = limitOrCallback;
+  } else {
+    limitCount = limitOrCallback;
+    onMessagesUpdate = callback!;
+  }
+
   const messagesRef = collection(db, 'rideChats', rideId, 'messages');
-  const q = query(messagesRef, orderBy('createdAt', 'asc'));
+  const q = query(messagesRef, orderBy('createdAt', 'asc'), limitToLast(limitCount));
 
   return onSnapshot(
     q,
@@ -249,13 +318,19 @@ export const subscribeToGroupMessages = (
           text: data.text,
           createdAt: data.createdAt,
           type: data.type,
+          imageUrl: data.imageUrl,
+          public_id: data.public_id,
+          location: data.location,
+          destination: data.destination,
+          rideCard: data.rideCard,
+          readBy: data.readBy || [],
         } as GroupChatMessage);
       });
       onMessagesUpdate(messages);
     },
     (error) => {
       console.log('[COLLECTION] rideChats/' + rideId + '/messages');
-      console.log('[QUERY] query(collection(db, "rideChats", "' + rideId + '", "messages"), orderBy("createdAt", "asc"))');
+      console.log('[QUERY] query(collection(db, "rideChats", "' + rideId + '", "messages"), orderBy("createdAt", "asc"), limitToLast(' + limitCount + '))');
       console.error('[PERMISSION ERROR] ' + error.message);
     }
   );

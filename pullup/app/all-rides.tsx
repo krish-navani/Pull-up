@@ -113,7 +113,7 @@ export default function AllRidesScreen() {
   };
 
   const filteredRides = rides
-    .filter(ride => ride.status === 'active' && ride.driverId !== auth.user?.id && (searchQuery === '' || ride.pickupLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) || ride.dropLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) || ride.driverName.toLowerCase().includes(searchQuery.toLowerCase())))
+    .filter(ride => ride.status === 'active' && (searchQuery === '' || ride.pickupLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) || ride.dropLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) || ride.driverName.toLowerCase().includes(searchQuery.toLowerCase())))
     .sort((a, b) => (rideDistances[a.id] ?? Infinity) - (rideDistances[b.id] ?? Infinity));
 
   return (
@@ -150,6 +150,11 @@ export default function AllRidesScreen() {
             {filteredRides.length > 0 ? (
               filteredRides.map(ride => (
                 <SpringCard key={ride.id} style={styles.rideCard} onPress={() => router.push({ pathname: '/ride-details', params: { rideId: ride.id } })}>
+                  {ride.driverId === auth.user?.id && (
+                    <View style={styles.yourRideBadge}>
+                      <Text style={styles.yourRideBadgeText}>YOUR RIDE</Text>
+                    </View>
+                  )}
                   <View style={styles.routeSection}>
                     <View style={styles.routeIndicator}>
                       <View style={styles.routeDot} />
@@ -241,4 +246,6 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: 'center', paddingVertical: 80, gap: 12 } as ViewStyle,
   emptyTitle: { fontSize: 18, fontWeight: '700', color: WARM_CORE.text } as TextStyle,
   emptySubtitle: { fontSize: 14, color: WARM_CORE.textSecondary, textAlign: 'center' } as TextStyle,
+  yourRideBadge: { backgroundColor: '#22c55e', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, alignSelf: 'flex-start', margin: 12, marginBottom: 0 } as ViewStyle,
+  yourRideBadgeText: { fontSize: 10, fontWeight: '800', color: '#ffffff', letterSpacing: 0.8 } as TextStyle,
 });

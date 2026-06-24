@@ -20,6 +20,7 @@ import { useRouter } from 'expo-router';
 
 import HomeScreen from './home';
 import MyBookingsScreen from './my-bookings';
+import ChatsScreen from './chats';
 import ProfileScreen from './profile';
 import RideHistoryScreen from './ride-history';
 import PostRideScreen from './post-ride';
@@ -80,10 +81,10 @@ function CustomTabBar({ state, descriptors, navigation }: any) {
 
   // Visible tabs in order — excludes the hidden post-ride screen
   const TABS = [
-    { name: 'home',        label: 'Home',    activeIcon: 'home',            inactiveIcon: 'home-outline' },
-    { name: 'my-bookings', label: 'Rides',   activeIcon: 'car',             inactiveIcon: 'car-outline' },
-    { name: 'ride-history',label: 'History', activeIcon: 'history',         inactiveIcon: 'history' },
-    { name: 'profile',     label: 'You',     activeIcon: 'account',         inactiveIcon: 'account-outline' },
+    { name: 'home',         label: 'Home',    activeIcon: 'home',           inactiveIcon: 'home-outline' },
+    { name: 'my-bookings',  label: 'Rides',   activeIcon: 'car',            inactiveIcon: 'car-outline' },
+    { name: 'ride-history', label: 'History', activeIcon: 'history',        inactiveIcon: 'history' },
+    { name: 'profile',      label: 'You',     activeIcon: 'account',        inactiveIcon: 'account-outline' },
   ];
 
   const BAR_HEIGHT = 60;
@@ -338,6 +339,11 @@ export default function TabLayout() {
         <Tab.Screen name="ride-history" component={RideHistoryScreen} />
         <Tab.Screen name="profile"      component={ProfileScreen} />
         {/* Hidden — navigated to programmatically; never appears in tab bar */}
+        <Tab.Screen
+          name="chats"
+          component={ChatsScreen}
+          options={{ tabBarButton: () => null }}
+        />
         <Tab.Screen
           name="post-ride"
           component={PostRideScreen}

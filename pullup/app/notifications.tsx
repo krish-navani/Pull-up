@@ -14,7 +14,7 @@ import { useCallback, useState } from 'react';
 import {
     ActivityIndicator,
     Alert,
-    FlatList,
+    SectionList,
     RefreshControl,
     ScrollView,
     StatusBar,
@@ -64,6 +64,55 @@ export default function NotificationsScreen() {
     return true;
   });
 
+  const groupNotifications = (notifs: Notification[]) => {
+    const today: Notification[] = [];
+    const yesterday: Notification[] = [];
+    const thisWeek: Notification[] = [];
+    const older: Notification[] = [];
+
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfYesterday = new Date(startOfToday.getTime() - 24 * 60 * 60 * 1000);
+    const startOfThisWeek = new Date(startOfToday.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    notifs.forEach((notif) => {
+      let notifDate: Date;
+      if (notif.createdAt && typeof (notif.createdAt as any).toDate === 'function') {
+        notifDate = (notif.createdAt as any).toDate();
+      } else if (typeof notif.createdAt === 'string') {
+        notifDate = new Date(notif.createdAt);
+      } else if (notif.createdAt instanceof Date) {
+        notifDate = notif.createdAt;
+      } else {
+        notifDate = new Date();
+      }
+
+      if (notifDate >= startOfToday) {
+        today.push(notif);
+      } else if (notifDate >= startOfYesterday) {
+        yesterday.push(notif);
+      } else if (notifDate >= startOfThisWeek) {
+        thisWeek.push(notif);
+      } else {
+        older.push(notif);
+      }
+    });
+
+    const sections = [];
+    if (today.length > 0) sections.push({ title: 'Today', data: today });
+    if (yesterday.length > 0) sections.push({ title: 'Yesterday', data: yesterday });
+    if (thisWeek.length > 0) sections.push({ title: 'This Week', data: thisWeek });
+    if (older.length > 0) sections.push({ title: 'Older', data: older });
+
+    return sections;
+  };
+
+  const renderSectionHeader = ({ section: { title } }: any) => (
+    <View style={styles.sectionHeaderContainer}>
+      <Text style={styles.sectionHeaderTitle}>{title}</Text>
+    </View>
+  );
+
   // Initialize notifications subscription
   useFocusEffect(
     useCallback(() => {
@@ -74,6 +123,21 @@ export default function NotificationsScreen() {
 
       try {
         setLoading(true);
+
+        // Auto mark all notifications as read when opening notifications center
+        markAllNotificationsAsRead(auth.user.id).catch(err => 
+          console.error('[NOTIFICATIONS] Failed to auto mark all as read:', err)
+        );
+
+        // Clear native badge count
+        try {
+          const expoNotifs = require('expo-notifications');
+          if (expoNotifs && typeof expoNotifs.setBadgeCountAsync === 'function') {
+            expoNotifs.setBadgeCountAsync(0).catch((e: any) => console.log('Failed to clear badge count:', e));
+          }
+        } catch (e) {
+          console.warn('[NOTIFICATIONS] Cannot load expo-notifications to clear badge:', e);
+        }
 
         // Subscribe to real-time notifications
         const unsubFn = subscribeToNotifications(auth.user.id, (updatedNotifications) => {
@@ -206,6 +270,14 @@ export default function NotificationsScreen() {
 
     try {
       await markAllNotificationsAsRead(auth.user.id);
+      try {
+        const expoNotifs = require('expo-notifications');
+        if (expoNotifs && typeof expoNotifs.setBadgeCountAsync === 'function') {
+          await expoNotifs.setBadgeCountAsync(0);
+        }
+      } catch (e) {
+        console.warn('[NOTIFICATIONS] Failed to clear badge in handleMarkAllAsRead:', e);
+      }
       Alert.alert('Success', 'All notifications marked as read');
     } catch (error) {
       console.error('[NOTIFICATIONS] Error marking all as read:', error);
@@ -399,9 +471,10 @@ export default function NotificationsScreen() {
           </Text>
         </View>
       ) : (
-        <FlatList
-          data={filteredNotifications}
+        <SectionList
+          sections={groupNotifications(filteredNotifications)}
           renderItem={renderNotificationItem}
+          renderSectionHeader={renderSectionHeader}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
           refreshControl={
@@ -413,6 +486,7 @@ export default function NotificationsScreen() {
             />
           }
           scrollEnabled={true}
+          stickySectionHeadersEnabled={false}
         />
       )}
 
@@ -653,5 +727,19 @@ const styles = StyleSheet.create({
   },
   filterButtonTextActive: {
     color: WARM_CORE.white,
+  },
+  sectionHeaderContainer: {
+    backgroundColor: WARM_CORE.background,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    marginBottom: 4,
+    marginTop: 8,
+  },
+  sectionHeaderTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: WARM_CORE.primary,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
   },
 });

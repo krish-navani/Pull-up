@@ -6,6 +6,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import LocationSearchInput from '@/components/LocationSearchInput';
 import { getRideDirectionType } from '@/utils/atlasLocationUtils';
+import { calculateDistance } from '@/utils/locationUtils';
 import {
     Animated,
     Easing,
@@ -297,6 +298,19 @@ export default function BookingConfirmationScreen() {
 
   const [customLocation, setCustomLocation] = useState<any>(null);
 
+  const detourDistance = customLocation && ride
+    ? calculateDistance(
+        customLocation.latitude,
+        customLocation.longitude,
+        direction === 'home-to-atlas' ? ride.pickupLocation.latitude : ride.dropLocation.latitude,
+        direction === 'home-to-atlas' ? ride.pickupLocation.longitude : ride.dropLocation.longitude
+      )
+    : 0;
+
+  const detourDistanceMeters = detourDistance * 1000;
+  const detourLimit = ride?.detourRadiusMeters ?? 0;
+  const isDetourValid = detourDistanceMeters <= detourLimit;
+
   useEffect(() => {
     if (ride) {
       if (direction === 'home-to-atlas') {
@@ -408,6 +422,13 @@ export default function BookingConfirmationScreen() {
     if (auth.user.id === ride.driverId) {
       setErrorMessage('You cannot book your own ride.');
       return;
+    }
+
+    if (detourLimit > 0) {
+      if (!isDetourValid) {
+        setErrorMessage(`Detour distance (${detourDistance.toFixed(1)} km) exceeds the driver's limit of ${(detourLimit / 1000).toFixed(1)} km.`);
+        return;
+      }
     }
 
     setIsConfirming(true);
@@ -553,7 +574,44 @@ export default function BookingConfirmationScreen() {
               setErrorMessage(null);
             }}
             placeholder={direction === 'home-to-atlas' ? 'Search pickup address...' : 'Search drop-off address...'}
+            readOnly={detourLimit === 0}
           />
+
+          {detourLimit > 0 ? (
+            <View style={[
+              st.detourInfoCard,
+              isDetourValid ? st.detourValidCard : st.detourInvalidCard
+            ]}>
+              <MaterialCommunityIcons 
+                name={isDetourValid ? "check-circle" : "alert-circle"} 
+                size={16} 
+                color={isDetourValid ? WARM_CORE.success : "#EF4444"} 
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={[
+                  st.detourInfoTitle,
+                  { color: isDetourValid ? WARM_CORE.success : "#EF4444" }
+                ]}>
+                  {isDetourValid ? "Detour is within limit" : "Detour exceeds driver limit"}
+                </Text>
+                <Text style={st.detourInfoText}>
+                  Your point is {detourDistance.toFixed(1)} km away. Driver limit: ${(detourLimit / 1000).toFixed(1)} km.
+                </Text>
+              </View>
+            </View>
+          ) : (
+            <View style={[st.detourInfoCard, st.detourFixedCard]}>
+              <MaterialCommunityIcons name="lock" size={16} color={WARM_CORE.textSecondary} />
+              <View style={{ flex: 1 }}>
+                <Text style={[st.detourInfoTitle, { color: WARM_CORE.textSecondary }]}>
+                  Fixed Route
+                </Text>
+                <Text style={st.detourInfoText}>
+                  This ride follows a fixed route. Custom pickup/dropoff points are locked.
+                </Text>
+              </View>
+            </View>
+          )}
         </Animated.View>
 
         {/* Price breakdown */}
@@ -618,7 +676,7 @@ export default function BookingConfirmationScreen() {
           <View style={st.termsRow}>
             <MaterialCommunityIcons name="alert-circle-outline" size={13} color={WARM_CORE.textSecondary} />
             <Text style={st.termsText}>
-              By confirming, you agree to the cancellation policy. 20 min before departure you can cancel with a 50% penalty.
+              By confirming, you agree to the cancellation policy. 20 min before departure you can cancel with a flat ₹50 penalty.
             </Text>
           </View>
         </Animated.View>
@@ -701,6 +759,37 @@ const st = StyleSheet.create({
   shimmerStripe:  { position: 'absolute', top: 0, bottom: 0, width: 90, backgroundColor: 'rgba(255,255,255,0.15)' },
   termsRow:       { flexDirection: 'row', gap: 8, alignItems: 'flex-start' },
   termsText:      { flex: 1, fontSize: 11, color: WARM_CORE.textSecondary, lineHeight: 17, fontWeight: '500' },
+  detourInfoCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    padding: 12,
+    marginTop: 12,
+  },
+  detourValidCard: {
+    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+    borderColor: 'rgba(16, 185, 129, 0.18)',
+  },
+  detourInvalidCard: {
+    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+    borderColor: 'rgba(239, 68, 68, 0.18)',
+  },
+  detourFixedCard: {
+    backgroundColor: 'rgba(107, 114, 128, 0.06)',
+    borderColor: 'rgba(107, 114, 128, 0.15)',
+  },
+  detourInfoTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  detourInfoText: {
+    fontSize: 11,
+    color: WARM_CORE.textSecondary,
+    marginTop: 2,
+    lineHeight: 15,
+  },
 
   // ── Success screen ────────────────────────────────────────────────────────
   successScroll: {

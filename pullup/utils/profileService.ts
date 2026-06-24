@@ -46,13 +46,36 @@ export const getDriverStats = async (driverId: string) => {
       });
     });
 
+    // Calculate trust metrics based on received booking requests
+    let totalBookingsReceived = 0;
+    let acceptedBookings = 0;
+    let respondedBookings = 0;
+
+    rides.forEach(ride => {
+      if (ride.bookedSeats) {
+        ride.bookedSeats.forEach(booking => {
+          totalBookingsReceived++;
+          if (booking.status === 'accepted' || booking.status === 'confirmed') {
+            acceptedBookings++;
+            respondedBookings++;
+          } else if (booking.status === 'rejected') {
+            respondedBookings++;
+          } else if (booking.status === 'cancelled') {
+            // Cancelled by passenger: doesn't hurt the driver's response rate, count as responded
+            respondedBookings++;
+          }
+        });
+      }
+    });
+
     const stats = {
       totalRides,
       completedRides,
       totalEarnings: Math.round(totalEarnings),
       passengersServed: passengersServed.size,
       averageRating: 4.8, // TODO: Implement rating system
-      acceptanceRate: totalRides > 0 ? Math.round((completedRides / totalRides) * 100) : 0,
+      acceptanceRate: totalBookingsReceived > 0 ? Math.round((acceptedBookings / totalBookingsReceived) * 100) : 100,
+      responseRate: totalBookingsReceived > 0 ? Math.round((respondedBookings / totalBookingsReceived) * 100) : 100,
     };
 
     console.log('[PROFILE] ✅ Driver stats:', stats);
@@ -105,6 +128,9 @@ export const getPassengerStats = async (passengerId: string) => {
       }
     }
 
+    const totalBookingsRequested = bookings.length;
+    const acceptedOrConfirmedBookings = bookings.filter(b => b.status === 'accepted' || b.status === 'confirmed').length;
+
     const stats = {
       totalRides,
       completedRides,
@@ -112,6 +138,10 @@ export const getPassengerStats = async (passengerId: string) => {
       totalSavings: Math.round(totalSavings),
       averageRating: 4.9, // TODO: Implement rating system
       cancelledRides: bookings.filter(b => b.status === 'cancelled').length,
+      acceptanceRate: totalBookingsRequested > 0 ? Math.round((acceptedOrConfirmedBookings / totalBookingsRequested) * 100) : 100,
+      responseRate: totalBookingsRequested > 0
+        ? Math.round(((totalBookingsRequested - bookings.filter(b => b.status === 'cancelled').length) / totalBookingsRequested) * 100)
+        : 100,
     };
 
     console.log('[PROFILE] ✅ Passenger stats:', stats);

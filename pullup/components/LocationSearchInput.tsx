@@ -10,6 +10,7 @@ import {
     View,
     ViewStyle,
 } from 'react-native';
+import { WARM_CORE } from '@/constants/theme';
 import LocationPickerModal from './LocationPickerModal';
 
 interface LocationSearchInputProps {
@@ -24,6 +25,7 @@ interface LocationSearchInputProps {
   inputStyle?: TextStyle;
   isAtlasLocation?: boolean;
   readOnly?: boolean;
+  location?: LocationType | null;
 }
 
 export default function LocationSearchInput({
@@ -38,9 +40,14 @@ export default function LocationSearchInput({
   inputStyle,
   isAtlasLocation = false,
   readOnly = false,
+  location,
 }: LocationSearchInputProps) {
   const [showModal, setShowModal] = useState(false);
-  const [selectedLocation, setSelectedLocation] = useState<LocationType | undefined>();
+  const [selectedLocation, setSelectedLocation] = useState<LocationType | undefined>(location || undefined);
+
+  React.useEffect(() => {
+    setSelectedLocation(location || undefined);
+  }, [location]);
   const [isPressed, setIsPressed] = useState(false);
   const scaleAnim = React.useRef(new Animated.Value(1)).current;
   const [modalError, setModalError] = useState<string | null>(null);
@@ -143,7 +150,7 @@ export default function LocationSearchInput({
                   <MaterialCommunityIcons
                     name={isSelected ? 'map-marker-check' : 'map-marker'}
                     size={18}
-                    color={isSelected ? '#22C55E' : '#FFFFFF'}
+                    color={isSelected ? WARM_CORE.success : WARM_CORE.primary}
                   />
                 )}
               </View>
@@ -167,7 +174,7 @@ export default function LocationSearchInput({
               <MaterialCommunityIcons
                 name={isSelected ? 'map-search' : 'chevron-right'}
                 size={20}
-                color={error ? '#FF6B35' : isSelected ? '#22C55E' : '#8A8A8A'}
+                color={error ? WARM_CORE.error : isSelected ? WARM_CORE.success : WARM_CORE.textSecondary}
               />
             </View>
           </Pressable>
@@ -259,33 +266,33 @@ const styles = StyleSheet.create({
 
   /* INPUT WRAPPER */
   inputWrapper: {
-    backgroundColor: '#1E1E1E',
+    backgroundColor: '#FAF3E8', // Warm cream background
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 12,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 10,
-    borderWidth: 1,
-    borderColor: '#2A2A2A',
+    borderWidth: 1.5,
+    borderColor: 'rgba(255, 122, 51, 0.25)', // Subtle orange accent border
   },
   inputWrapperError: {
-    borderColor: '#FF6B35',
-    backgroundColor: '#1E1E1E',
+    borderColor: WARM_CORE.error,
+    backgroundColor: '#FFF2F2',
   },
   inputWrapperSelected: {
-    borderColor: '#22C55E',
-    backgroundColor: 'rgba(34, 197, 94, 0.08)',
+    borderColor: WARM_CORE.success,
+    backgroundColor: 'rgba(16, 185, 129, 0.05)',
   },
   inputWrapperPressed: {
-    backgroundColor: '#252525',
+    backgroundColor: '#EFE3D3',
   },
 
   inputWrapperReadOnly: {
-    opacity: 0.7,
-    backgroundColor: '#1A1A1A',
-    borderColor: '#3B82F6',
-    borderWidth: 2,
+    opacity: 0.8,
+    backgroundColor: '#F3EADF',
+    borderColor: WARM_CORE.primary,
+    borderWidth: 1.5,
   },
 
   /* ICON STYLES */
@@ -293,13 +300,12 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 8,
-    backgroundColor: '#2A3A3A',
+    backgroundColor: 'rgba(212, 80, 10, 0.1)', // Burnt orange background tint
     justifyContent: 'center',
     alignItems: 'center',
-    borderWidth: 0,
   },
   iconContainerActive: {
-    backgroundColor: 'rgba(34, 197, 94, 0.2)',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
   },
   customIcon: {
     justifyContent: 'center',
@@ -324,13 +330,13 @@ const styles = StyleSheet.create({
   addressText: {
     fontSize: 13,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: WARM_CORE.text, // Dark brown text
     lineHeight: 20,
   },
   placeholderText: {
     fontSize: 13,
     fontWeight: '500',
-    color: '#8A8A8A',
+    color: '#A08E88', // Soft brown placeholder text
   },
 
   /* ACTION ICON */

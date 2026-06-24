@@ -2,7 +2,7 @@ import { useAppContext } from '@/context/AppContext';
 import { formatTime } from '@/utils/mockData';
 import { getTimeBasedGreeting } from '@/utils/stringUtils';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useRouter, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import {
   Animated,
@@ -27,6 +27,8 @@ import { WARM_CORE } from '@/constants/theme';
 import { subscribeToActivePools, subscribeToPassengerRequests, TaxiPool, PoolRequest } from '@/utils/taxiPoolService';
 import PoolCard from '@/components/PoolCard';
 import { TouchableOpacity } from 'react-native';
+import GreetingBanner from '@/components/GreetingBanner';
+import UserAvatar from '@/components/UserAvatar';
 
 // ---------------------------------------------------------------------------
 // Skeleton shimmer row shown while rides are loading
@@ -143,8 +145,16 @@ function UnifiedFeedCard({ item, onPress }: { item: any; onPress: () => void }) 
 // ---------------------------------------------------------------------------
 export default function HomeScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{
+    search?: string;
+    prefillPickup?: string;
+    prefillDrop?: string;
+    prefillRideType?: 'car' | 'taxi';
+  }>();
   const { rides, auth, notifications, loadAllAvailableRides, authInitializing, switchRolePersistent } = useAppContext();
   const [searchQuery, setSearchQuery] = useState('');
+  const [prefilledPickup, setPrefilledPickup] = useState<any>(null);
+  const [prefilledDrop, setPrefilledDrop] = useState<any>(null);
   const [searchFocused, setSearchFocused] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -158,6 +168,51 @@ export default function HomeScreen() {
   const [showRolePrompt, setShowRolePrompt] = useState(false);
   const [joinLoading, setJoinLoading] = useState<Record<string, boolean>>({});
   const [poolDistances, setPoolDistances] = useState<Record<string, number>>({});
+
+  // Prefill search from "Book Again" parameters
+  useEffect(() => {
+    if (params.search) {
+      setSearchQuery(params.search);
+    }
+    if (params.prefillPickup) {
+      try {
+        const pickupLoc = JSON.parse(decodeURIComponent(params.prefillPickup));
+        setPrefilledPickup(pickupLoc);
+      } catch (e) {
+        console.warn('Failed to parse prefillPickup:', e);
+      }
+    }
+    if (params.prefillDrop) {
+      try {
+        const dropLoc = JSON.parse(decodeURIComponent(params.prefillDrop));
+        setPrefilledDrop(dropLoc);
+        if (dropLoc && dropLoc.address) {
+          const shortAddress = dropLoc.address.split(',')[0];
+          setSearchQuery(shortAddress);
+        }
+      } catch (e) {
+        console.warn('Failed to parse prefillDrop:', e);
+      }
+    }
+    if (params.prefillRideType) {
+      setActiveTab(params.prefillRideType === 'car' ? 'rides' : 'pools');
+    }
+  }, [params]);
+
+  // Watch search query to clear prefilled locations if search text diverges
+  useEffect(() => {
+    if (searchQuery.trim() === '') {
+      setPrefilledPickup(null);
+      setPrefilledDrop(null);
+    } else if (prefilledDrop) {
+      const q = searchQuery.toLowerCase();
+      const shortDrop = prefilledDrop.address.split(',')[0].toLowerCase();
+      if (!shortDrop.includes(q) && !q.includes(shortDrop)) {
+        setPrefilledPickup(null);
+        setPrefilledDrop(null);
+      }
+    }
+  }, [searchQuery]);
 
   // Combine rides and pools into a unified list
   const combinedFeed = useMemo(() => {
@@ -193,20 +248,29 @@ export default function HomeScreen() {
     (pools ?? []).forEach(pool => {
       if ((pool.status === 'OPEN' || pool.status === 'FULL') && pool.creatorId !== auth.user?.id) {
         const distanceVal = poolDistances[pool.id] ?? Infinity;
-        const priceVal = (pool as any).price ?? 40; // Default to 40 per seat
+        const priceVal = (pool as any).price ?? 40;
         
-        const isToAtlas = pool.destination.address.includes('Atlas') || 
-                          pool.destination.address.includes('SkillTech') ||
-                          pool.destination.address.includes('Gate') ||
-                          pool.destination.address.includes('Campus');
-                          
-        const cleanDest = pool.destination.address.split(',')[0];
+        let pickupVal = 'Atlas Gate';
+        let dropoffVal = 'Atlas Gate';
+
+        if ((pool as any).pickupLocation && pool.destination) {
+          pickupVal = (pool as any).pickupLocation.address.split(',')[0];
+          dropoffVal = pool.destination.address.split(',')[0];
+        } else {
+          const isToAtlas = pool.destination.address.includes('Atlas') || 
+                            pool.destination.address.includes('SkillTech') ||
+                            pool.destination.address.includes('Gate') ||
+                            pool.destination.address.includes('Campus');
+          const cleanDest = pool.destination.address.split(',')[0];
+          pickupVal = isToAtlas ? cleanDest : 'Atlas Gate';
+          dropoffVal = isToAtlas ? 'Atlas Gate' : cleanDest;
+        }
         
         feed.push({
           id: pool.id,
           type: 'taxi',
-          pickup: isToAtlas ? cleanDest : 'Atlas Gate',
-          dropoff: isToAtlas ? 'Atlas Gate' : cleanDest,
+          pickup: pickupVal,
+          dropoff: dropoffVal,
           time: pool.departureTime,
           price: priceVal,
           seatsLeft: pool.maxMembers - pool.memberCount,
@@ -230,11 +294,39 @@ export default function HomeScreen() {
     // Filter by searchQuery
     if (searchQuery.trim() !== '') {
       const q = searchQuery.toLowerCase();
-      filtered = filtered.filter(item => 
-        item.pickup.toLowerCase().includes(q) ||
-        item.dropoff.toLowerCase().includes(q) ||
-        item.creatorName.toLowerCase().includes(q)
-      );
+      const isBookAgainMatched = prefilledDrop && 
+        (prefilledDrop.address.toLowerCase().includes(q) || q.includes(prefilledDrop.address.split(',')[0].toLowerCase()));
+
+      if (prefilledPickup && prefilledDrop && isBookAgainMatched) {
+        filtered = filtered.filter(item => {
+          const raw = item.rawItem;
+          const isCar = item.type === 'car';
+          const itemPickup = isCar ? raw.pickupLocation : (raw.pickupLocation || raw.destination);
+          const itemDrop = isCar ? raw.dropLocation : raw.destination;
+
+          if (!itemPickup || !itemDrop) return false;
+
+          const pMatch = (itemPickup.placeId && prefilledPickup.placeId && itemPickup.placeId === prefilledPickup.placeId) ||
+                         itemPickup.address.toLowerCase().includes(prefilledPickup.address.toLowerCase()) ||
+                         prefilledPickup.address.toLowerCase().includes(itemPickup.address.toLowerCase()) ||
+                         (Math.abs(itemPickup.latitude - prefilledPickup.latitude) < 0.005 &&
+                          Math.abs(itemPickup.longitude - prefilledPickup.longitude) < 0.005);
+
+          const dMatch = (itemDrop.placeId && prefilledDrop.placeId && itemDrop.placeId === prefilledDrop.placeId) ||
+                         itemDrop.address.toLowerCase().includes(prefilledDrop.address.toLowerCase()) ||
+                         prefilledDrop.address.toLowerCase().includes(itemDrop.address.toLowerCase()) ||
+                         (Math.abs(itemDrop.latitude - prefilledDrop.latitude) < 0.005 &&
+                          Math.abs(itemDrop.longitude - prefilledDrop.longitude) < 0.005);
+
+          return pMatch && dMatch;
+        });
+      } else {
+        filtered = filtered.filter(item => 
+          item.pickup.toLowerCase().includes(q) ||
+          item.dropoff.toLowerCase().includes(q) ||
+          item.creatorName.toLowerCase().includes(q)
+        );
+      }
     }
 
     // Sort by distance (closest first), fallback to departure time
@@ -244,7 +336,7 @@ export default function HomeScreen() {
       }
       return new Date(a.time).getTime() - new Date(b.time).getTime();
     });
-  }, [rides, pools, activeTab, searchQuery, rideDistances, poolDistances]);
+  }, [rides, pools, activeTab, searchQuery, rideDistances, poolDistances, prefilledPickup, prefilledDrop]);
 
   // ── Entry animations ─────────────────────────────────────────────────────
   // All three groups start invisible and slide up together as a clean stagger
@@ -543,6 +635,8 @@ export default function HomeScreen() {
     }
   };
 
+  const firstName = auth.user?.fullName ? auth.user.fullName.trim().split(' ')[0] : 'there';
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor={WARM_CORE.background} />
@@ -578,13 +672,7 @@ export default function HomeScreen() {
 
             {/* LEFT: Headline */}
             <View style={styles.headerLeft}>
-              <View style={styles.headerTextContainer}>
-                <Text style={styles.subtitleText}>MUMBAI  ·  ATLAS</Text>
-                <Text style={styles.headlineText}>
-                  Rides to{'\n'}
-                  <Text style={styles.headlineTextHighlight}>campus</Text>
-                </Text>
-              </View>
+              <GreetingBanner firstName={firstName} style={{ paddingHorizontal: 0, paddingVertical: 0 }} />
             </View>
 
             {/* RIGHT: Bell Icon & Profile Circle */}
@@ -628,13 +716,7 @@ export default function HomeScreen() {
                 onPress={() => router.push('/(tabs)/profile')}
                 activeOpacity={0.8}
               >
-                <View style={styles.topRightCircle}>
-                  {auth.user?.profileImage ? (
-                    <Image source={{ uri: auth.user.profileImage }} style={styles.topRightAvatarImage} />
-                  ) : (
-                    <View style={styles.topRightOrangeCircle} />
-                  )}
-                </View>
+                <UserAvatar imageUrl={auth.user?.profileImage} name={auth.user?.fullName} size={44} />
               </TouchableOpacity>
             </View>
 
@@ -1647,12 +1729,21 @@ const styles = StyleSheet.create({
     height: 44,
     borderRadius: 22,
   },
-  topRightOrangeCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+  topRightInitialBadge: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: WARM_CORE.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: WARM_CORE.border,
   } as ViewStyle,
+  topRightInitialText: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: WARM_CORE.white,
+  } as TextStyle,
   newCard: {
     backgroundColor: WARM_CORE.card,
     borderRadius: 22,

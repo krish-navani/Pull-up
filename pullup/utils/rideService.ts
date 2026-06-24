@@ -15,6 +15,7 @@ import { Location, Ride } from '../types';
 import { db } from './firebase';
 import apiClient from './backendApiClient';
 import { initializeGroupChat } from './rideGroupChatService';
+import { sendNotification } from './notificationService';
 
 /**
  * Create a new ride in Firestore
@@ -33,6 +34,7 @@ export const createRideInFirestore = async (
     carModel: string;
     carColor?: string;
     description?: string;
+    detourRadiusMeters?: number;
   }
 ): Promise<string> => {
   try {
@@ -53,6 +55,7 @@ export const createRideInFirestore = async (
       createdAt: Timestamp.now(),
       status: 'active',
       bookedSeats: [],
+      detourRadiusMeters: rideData.detourRadiusMeters ?? 0,
     };
 
     console.log('[RIDE SERVICE] Ride data to save:', firebaseRideData);
@@ -117,6 +120,7 @@ export const getAllRides = async (): Promise<Ride[]> => {
         createdAt: data.createdAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
         status: data.status,
         bookedSeats: data.bookedSeats || [],
+        detourRadiusMeters: data.detourRadiusMeters || 0,
       });
     });
 
@@ -170,6 +174,7 @@ export const getAllRidesIncludingHistory = async (): Promise<Ride[]> => {
         createdAt: data.createdAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
         status: data.status,
         bookedSeats: data.bookedSeats || [],
+        detourRadiusMeters: data.detourRadiusMeters || 0,
       });
     });
 
@@ -222,6 +227,7 @@ export const getDriverRides = async (driverId: string): Promise<Ride[]> => {
         createdAt: data.createdAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
         status: data.status,
         bookedSeats: data.bookedSeats || [],
+        detourRadiusMeters: data.detourRadiusMeters || 0,
       });
     });
 
@@ -271,6 +277,7 @@ export const getRideById = async (rideId: string): Promise<Ride | null> => {
       createdAt: data.createdAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
       status: data.status,
       bookedSeats: data.bookedSeats || [],
+      detourRadiusMeters: data.detourRadiusMeters || 0,
     };
 
     console.log('[RIDE SERVICE] ✅ Ride fetched:', ride);
@@ -454,7 +461,22 @@ export const startRide = async (rideId: string): Promise<void> => {
       updatedAt: now,
     });
 
-    console.log('[RIDE SERVICE] ✅ Ride started');
+    console.log('[RIDE SERVICE] ✅ Ride started. Notifying passengers...');
+
+    // Notify all confirmed passengers
+    const activeSeats = (ride.bookedSeats || []).filter(
+      (seat: any) => seat.status === 'accepted' || seat.status === 'confirmed'
+    );
+
+    for (const seat of activeSeats) {
+      await sendNotification(
+        seat.passengerId,
+        'ride_started',
+        'Ride Started 🚀',
+        `${ride.driverName || 'The driver'} has started the ride. Track location now.`,
+        rideId
+      ).catch(err => console.error('[RIDE SERVICE] Failed to notify passenger', seat.passengerId, 'on ride start:', err));
+    }
   } catch (error: any) {
     console.error('[RIDE SERVICE] ❌ Failed to start ride:', error);
     throw {

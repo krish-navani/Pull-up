@@ -315,6 +315,13 @@ export default function MyBookingsScreen() {
   const [cancelBookingId, setCancelBookingId] = useState<string | null>(null);
   const [isCancelingBooking, setIsCancelingBooking] = useState(false);
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
+  const [isUnderstood, setIsUnderstood] = useState(false);
+
+  useEffect(() => {
+    if (cancelBookingId !== null) {
+      setIsUnderstood(false);
+    }
+  }, [cancelBookingId]);
 
   useEffect(() => {
     const handleDeepLink = async (event: { url: string }) => {
@@ -908,7 +915,7 @@ export default function MyBookingsScreen() {
               <View style={styles.penaltyWarningBanner}>
                 <MaterialCommunityIcons name="alert" size={13} color={WARM_CORE.primary} />
                 <Text style={styles.penaltyWarningText}>
-                  Cancelling now incurs a 50% penalty — ₹{Math.round(ride.price * 0.5)} will be charged
+                  Cancelling now incurs a flat ₹50 penalty — ₹50 will be deducted from your refund
                 </Text>
               </View>
             )}
@@ -953,6 +960,23 @@ export default function MyBookingsScreen() {
                     <Text style={styles.chatButtonText}>Group Chat</Text>
                   </AnimatedPressButton>
                 )}
+
+                {/* Track Ride Banner for Passenger */}
+                {ride.status === 'in_progress' && (
+                  <View style={styles.liveTrackingBanner}>
+                    <View style={styles.liveTrackingTextRow}>
+                      <MaterialCommunityIcons name="map-marker-radius" size={16} color={WARM_CORE.accent} />
+                      <Text style={styles.liveTrackingText}>Your ride is live</Text>
+                    </View>
+                    <AnimatedPressButton
+                      style={[styles.chatButton, { backgroundColor: WARM_CORE.success, marginTop: 8 }]}
+                      onPress={() => router.push({ pathname: '/navigation', params: { rideId: ride.id } })}
+                    >
+                      <MaterialCommunityIcons name="navigation" size={16} color={WARM_CORE.white} />
+                      <Text style={styles.chatButtonText}>Track Ride</Text>
+                    </AnimatedPressButton>
+                  </View>
+                )}
               </View>
             )}
 
@@ -966,11 +990,31 @@ export default function MyBookingsScreen() {
                 <Text style={styles.cancelActionButtonText}>Cancel Booking</Text>
                 {minutesBefore > 0 && minutesBefore <= 20 && (
                   <View style={styles.penaltyPill}>
-                    <Text style={styles.penaltyPillText}>50% fee</Text>
+                    <Text style={styles.penaltyPillText}>₹50 fee</Text>
                   </View>
                 )}
               </AnimatedPressButton>
             )}
+          </View>
+        )}
+
+        {/* Book Again Button: completed, cancelled, or rejected bookings */}
+        {(booking.status === 'cancelled' || booking.status === 'rejected' || ride.status === 'completed' || ride.status === 'cancelled') && (
+          <View style={[styles.acceptedActionsContainer, { paddingHorizontal: 16, paddingBottom: 16 }]}>
+            <AnimatedPressButton
+              style={[styles.chatButton, { backgroundColor: WARM_CORE.primary }]}
+              onPress={() => {
+                const params = {
+                  prefillPickup: JSON.stringify(ride.pickupLocation),
+                  prefillDrop: JSON.stringify(ride.dropLocation),
+                  prefillRideType: 'car',
+                };
+                router.push({ pathname: '/(tabs)/home', params });
+              }}
+            >
+              <MaterialCommunityIcons name="cached" size={16} color={WARM_CORE.white} />
+              <Text style={styles.chatButtonText}>Book Again</Text>
+            </AnimatedPressButton>
           </View>
         )}
 
@@ -979,7 +1023,7 @@ export default function MyBookingsScreen() {
           <View style={styles.penaltySection}>
             <MaterialCommunityIcons name="alert-circle" size={14} color="#EF4444" />
             <Text style={styles.penaltyText}>
-              Penalty Applied: ₹{(ride.price * (booking.penaltyApplied / 100)).toFixed(0)}
+              Penalty Applied: ₹{booking.penaltyApplied.toFixed(0)}
             </Text>
           </View>
         )}
@@ -1084,9 +1128,7 @@ export default function MyBookingsScreen() {
   const bookingToCancel = cancelBookingId ? bookings.find(b => b.id === cancelBookingId) : null;
   const rideForBooking = bookingToCancel ? rides.find(r => r.id === bookingToCancel.rideId) : null;
   const penaltyInfo = bookingToCancel && rideForBooking ? calculateCancellationPenalty(rideForBooking.departureTime) : null;
-  const penaltyAmount = penaltyInfo && bookingToCancel
-    ? Math.round(rideForBooking!.price * (penaltyInfo.penalty / 100))
-    : 0;
+  const penaltyAmount = penaltyInfo && bookingToCancel ? penaltyInfo.penalty : 0;
 
   // Book now button press
   const onBookNowIn = () =>
@@ -1154,10 +1196,10 @@ export default function MyBookingsScreen() {
                   <View style={[styles.modalInfoSection, styles.modalPenaltyCard]}>
                     <View style={styles.infoHeader}>
                       <MaterialCommunityIcons name="alert-circle" size={16} color="#EF4444" />
-                      <Text style={[styles.infoTitle, { color: '#EF4444' }]}>Penalty ({penaltyInfo.penalty}%)</Text>
+                      <Text style={[styles.infoTitle, { color: '#EF4444' }]}>Penalty (Flat Fee)</Text>
                     </View>
                     <View style={styles.infoContent}>
-                      <Text style={[styles.infoPrimaryValue, { color: '#EF4444' }]}>-₹{penaltyAmount.toFixed(0)}</Text>
+                      <Text style={[styles.infoPrimaryValue, { color: '#EF4444' }]}>-₹50</Text>
                       <Text style={[styles.infoSecondaryValue, { color: '#EF4444' }]}>Will be deducted from refund</Text>
                     </View>
                   </View>
@@ -1170,6 +1212,21 @@ export default function MyBookingsScreen() {
                     <Text style={styles.successText}>You can cancel for free</Text>
                   </View>
                 )}
+
+                {/* Validation Agreement Checkbox */}
+                <Pressable
+                  style={styles.checkboxContainer}
+                  onPress={() => setIsUnderstood(!isUnderstood)}
+                >
+                  <View style={[styles.checkbox, isUnderstood && styles.checkboxChecked]}>
+                    {isUnderstood && <MaterialCommunityIcons name="check" size={14} color="#FFF" />}
+                  </View>
+                  <Text style={styles.checkboxLabel}>
+                    {penaltyAmount > 0
+                      ? "I understand that cancelling within 20 minutes of departure incurs a flat ₹50 penalty."
+                      : "I understand that I am cancelling this booking."}
+                  </Text>
+                </Pressable>
               </View>
             )}
 
@@ -1188,8 +1245,9 @@ export default function MyBookingsScreen() {
 
               {/* Dominant red confirm cancel */}
               <AnimatedPressButton
-                style={[styles.modalPrimaryBtn, isCancelingBooking && styles.buttonDisabled]}
+                style={[styles.modalPrimaryBtn, (isCancelingBooking || !isUnderstood) && styles.buttonDisabled]}
                 onPress={handleCancelBooking}
+                disabled={isCancelingBooking || !isUnderstood}
               >
                 {isCancelingBooking ? (
                   <>
@@ -1462,6 +1520,8 @@ export default function MyBookingsScreen() {
           }}
           onStartRide={async (rideId) => {
             await startRide(rideId);
+            setSelectedRideForDetails(null);
+            router.push({ pathname: '/navigation', params: { rideId } });
           }}
           onCompleteRide={async (rideId) => {
             await completeRide(rideId);
@@ -2149,7 +2209,8 @@ function RideDetailsModal({
               <TouchableOpacity 
                 style={[styles.driverInfoButton, { flex: 1, marginBottom: 12, borderColor: '#7C3AED', backgroundColor: 'rgba(124, 58, 237, 0.08)' }]}
                 onPress={() => {
-                  handleOpenExternalNavigation(ride, passengers);
+                  onClose();
+                  router.push({ pathname: '/navigation', params: { rideId: ride.id } });
                 }}
               >
                 <MaterialCommunityIcons name="navigation-variant" size={18} color="#7C3AED" />
@@ -2213,6 +2274,25 @@ function RideDetailsModal({
 }
 
 const styles = StyleSheet.create({
+  liveTrackingBanner: {
+    backgroundColor: 'rgba(255, 122, 51, 0.1)',
+    borderRadius: 12,
+    padding: 12,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 122, 51, 0.25)',
+    width: '100%',
+  } as ViewStyle,
+  liveTrackingTextRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  } as ViewStyle,
+  liveTrackingText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: WARM_CORE.accent,
+  } as TextStyle,
   safeArea: {
     flex: 1,
     backgroundColor: WARM_CORE.background,
@@ -3514,6 +3594,34 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#D97706',
+  } as TextStyle,
+  checkboxContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginVertical: 12,
+    paddingHorizontal: 4,
+    gap: 10,
+  } as ViewStyle,
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: WARM_CORE.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: WARM_CORE.card,
+  } as ViewStyle,
+  checkboxChecked: {
+    backgroundColor: WARM_CORE.primary,
+    borderColor: WARM_CORE.primary,
+  } as ViewStyle,
+  checkboxLabel: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '500',
+    color: WARM_CORE.text,
+    lineHeight: 18,
   } as TextStyle,
 });
 

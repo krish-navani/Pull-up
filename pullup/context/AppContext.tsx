@@ -1,7 +1,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useReducer } from 'react';
-import { Alert } from 'react-native';
+import { Alert, AppState } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
+import Constants from 'expo-constants';
 let Notifications: any;
 try {
   Notifications = require('expo-notifications');
@@ -14,12 +15,13 @@ try {
     addNotificationReceivedListener: () => ({ remove: () => {} }),
     addNotificationResponseReceivedListener: () => ({ remove: () => {} }),
     setNotificationHandler: () => {},
+    setBadgeCountAsync: async () => true,
   };
 }
 import * as Device from 'expo-device';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { calculateDistance } from '../utils/atlasLocationUtils';
-import { doc, updateDoc, Timestamp, onSnapshot, collection, query, orderBy, where } from 'firebase/firestore';
+import { doc, updateDoc, Timestamp, onSnapshot, collection, query, orderBy, where, limitToLast } from 'firebase/firestore';
 import { db } from '../utils/firebase';
 import { GeofenceEngine } from '../utils/geofenceEngine';
 
@@ -46,7 +48,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
     const { locations } = data as any;
     if (locations && locations.length > 0) {
       const location = locations[0];
-      const { latitude, longitude } = location.coords;
+      const { latitude, longitude, heading, speed } = location.coords;
       console.log('[BACKGROUND TASK] Driver coordinates update:', latitude, longitude);
 
       try {
@@ -58,12 +60,19 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
 
         const activeRideType = (await AsyncStorage.getItem('active_ride_type')) || 'carpool';
 
-        // 1. Update ride currentLocation in Firestore
+        // 1. Update ride currentLocation and liveLocation in Firestore
         const docRef = doc(db, activeRideType === 'carpool' ? 'rides' : 'taxiPools', activeRideId);
         await updateDoc(docRef, {
           currentLocation: {
             latitude,
             longitude,
+            updatedAt: new Date().toISOString(),
+          },
+          liveLocation: {
+            latitude,
+            longitude,
+            heading: heading ?? 0,
+            speed: speed ?? 0,
             updatedAt: new Date().toISOString(),
           },
         });
@@ -460,6 +469,113 @@ function appReducer(state: State, action: ExtendedAction): State {
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
+  const [unreadChatsCount, setUnreadChatsCount] = React.useState<number>(0);
+
+  // Listen to rideChats and count unread messages
+  useEffect(() => {
+    const currentUserId = state.auth.user?.id;
+    if (!currentUserId) {
+      setUnreadChatsCount(0);
+      return;
+    }
+
+    console.log('[CONTEXT] Listening to rideChats for unread counts for:', currentUserId);
+    const chatsQuery = query(
+      collection(db, 'rideChats'),
+      where('participants', 'array-contains', currentUserId)
+    );
+
+    const messageUnsubs: { [roomId: string]: () => void } = {};
+    const unreadCounts: { [roomId: string]: number } = {};
+
+    const updateGlobalUnreadCount = () => {
+      const total = Object.values(unreadCounts).reduce((a, b) => a + b, 0);
+      setUnreadChatsCount(total);
+    };
+
+    const unsubChats = onSnapshot(chatsQuery, (snapshot) => {
+      const activeRoomIds = new Set<string>();
+
+      snapshot.forEach((roomDoc) => {
+        const roomId = roomDoc.id;
+        activeRoomIds.add(roomId);
+
+        if (!messageUnsubs[roomId]) {
+          const msgsRef = collection(db, 'rideChats', roomId, 'messages');
+          const msgsQuery = query(msgsRef, orderBy('createdAt', 'desc'), limitToLast(20));
+
+          messageUnsubs[roomId] = onSnapshot(msgsQuery, (msgSnapshot) => {
+            let roomUnreadCount = 0;
+            msgSnapshot.forEach((msgDoc) => {
+              const msgData = msgDoc.data();
+              const readBy = msgData.readBy || [];
+              if (msgData.senderId !== 'system' && !readBy.includes(currentUserId)) {
+                roomUnreadCount++;
+              }
+            });
+            unreadCounts[roomId] = roomUnreadCount;
+            updateGlobalUnreadCount();
+          }, (err) => {
+            console.warn(`[CONTEXT] Error reading messages for room ${roomId}:`, err);
+          });
+        }
+      });
+
+      Object.keys(messageUnsubs).forEach((roomId) => {
+        if (!activeRoomIds.has(roomId)) {
+          if (messageUnsubs[roomId]) {
+            messageUnsubs[roomId]();
+            delete messageUnsubs[roomId];
+          }
+          delete unreadCounts[roomId];
+        }
+      });
+
+      updateGlobalUnreadCount();
+    }, (error) => {
+      console.error('[CONTEXT] Error listening to rideChats for unread counts:', error);
+    });
+
+    return () => {
+      unsubChats();
+      Object.values(messageUnsubs).forEach((unsub) => unsub());
+    };
+  }, [state.auth.user?.id]);
+
+  // AppState Presence Listener
+  useEffect(() => {
+    const currentUserId = state.auth.user?.id;
+    if (!currentUserId) return;
+
+    const updatePresence = async (statusVal: 'online' | 'offline') => {
+      try {
+        const userRef = doc(db, 'users', currentUserId);
+        await updateDoc(userRef, {
+          status: statusVal,
+          lastSeen: new Date().toISOString()
+        });
+        console.log(`[PRESENCE] Updated status to ${statusVal} for:`, currentUserId);
+      } catch (err) {
+        console.warn('[PRESENCE] Failed to update status:', err);
+      }
+    };
+
+    updatePresence('online');
+
+    const subscription = AppState.addEventListener('change', (nextAppState) => {
+      if (nextAppState === 'active') {
+        updatePresence('online');
+      } else {
+        updatePresence('offline');
+      }
+    });
+
+    return () => {
+      subscription.remove();
+      updatePresence('offline');
+    };
+  }, [state.auth.user?.id]);
+
 
   // Verify app configuration on startup (development only)
   useEffect(() => {
@@ -572,15 +688,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
               distanceInterval: 10,
             },
             async (loc) => {
-              const { latitude, longitude } = loc.coords;
+              const { latitude, longitude, heading, speed } = loc.coords;
               console.log(`[CONTEXT] Driver coordinates update (FG) for ${type}:`, latitude, longitude);
 
-              // 1. Update ride/pool currentLocation in Firestore
+              // 1. Update ride/pool currentLocation and liveLocation in Firestore
               const docRef = doc(db, type === 'carpool' ? 'rides' : 'taxiPools', rideId);
               await updateDoc(docRef, {
                 currentLocation: {
                   latitude,
                   longitude,
+                  updatedAt: new Date().toISOString(),
+                },
+                liveLocation: {
+                  latitude,
+                  longitude,
+                  heading: heading ?? 0,
+                  speed: speed ?? 0,
                   updatedAt: new Date().toISOString(),
                 },
               });
@@ -714,6 +837,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   // Register Expo Push Token upon successful authentication
   useEffect(() => {
+    let isMounted = true;
+    let pushTokenListener: any = null;
+
     const registerPushToken = async () => {
       if (!state.auth.isSignedIn || !state.auth.user) return;
       
@@ -735,21 +861,70 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           return;
         }
 
-        const tokenData = await Notifications.getExpoPushTokenAsync();
+        const projectId = Constants.expoConfig?.extra?.eas?.projectId || '64ea08f6-4939-4ded-81a1-6d3a8cb25738';
+        console.log('[PUSH] Requesting Expo Push Token with Project ID:', projectId);
+        
+        const tokenData = await Notifications.getExpoPushTokenAsync({ projectId });
         const token = tokenData.data;
         console.log('[PUSH] Retrieved Expo Push Token:', token);
 
-        if (token && token !== state.auth.user.expoPushToken) {
-          console.log('[PUSH] Updating token in Firestore for user:', state.auth.user.id);
-          const userRef = doc(db, 'users', state.auth.user.id);
-          await updateDoc(userRef, { expoPushToken: token });
+        if (token && isMounted) {
+          const devicePlatform = require('react-native').Platform.OS;
+          const currentToken = state.auth.user.expoPushToken;
+          const currentPlatform = state.auth.user.devicePlatform;
+
+          if (token !== currentToken || devicePlatform !== currentPlatform) {
+            console.log('[PUSH] Updating token and platform in Firestore for user:', state.auth.user.id);
+            const userRef = doc(db, 'users', state.auth.user.id);
+            await updateDoc(userRef, { 
+              expoPushToken: token,
+              devicePlatform,
+              lastTokenRefresh: Timestamp.now()
+            });
+            console.log(`[NOTIFICATION] TOKEN_REGISTERED - Token: ${token} (Platform: ${devicePlatform})`);
+          } else {
+            console.log('[PUSH] Push token is already up-to-date in Firestore. Skipping write.');
+          }
         }
-      } catch (err) {
-        console.error('[PUSH ERROR] Failed to register token:', err);
+      } catch (err: any) {
+        console.error(`[NOTIFICATION] TOKEN_INVALID - Error: ${err.message}`);
       }
     };
 
     registerPushToken();
+
+    // Listen for Expo Push Token changes / refreshes dynamically
+    if (Notifications && typeof Notifications.addPushTokenListener === 'function') {
+      try {
+        pushTokenListener = Notifications.addPushTokenListener(async (tokenObj: any) => {
+          if (!isMounted || !state.auth.user?.id) return;
+          const newToken = tokenObj.data;
+          console.log(`[NOTIFICATION] TOKEN_REFRESHED - New Token: ${newToken}`);
+          
+          try {
+            const userRef = doc(db, 'users', state.auth.user.id);
+            const devicePlatform = require('react-native').Platform.OS;
+            await updateDoc(userRef, {
+              expoPushToken: newToken,
+              devicePlatform,
+              lastTokenRefresh: Timestamp.now()
+            });
+            console.log(`[NOTIFICATION] TOKEN_REGISTERED - Token: ${newToken} (Platform: ${devicePlatform})`);
+          } catch (err: any) {
+            console.error(`[NOTIFICATION] TOKEN_INVALID - Error: ${err.message}`);
+          }
+        });
+      } catch (err) {
+        console.warn('[PUSH] Failed to register token refresh listener:', err);
+      }
+    }
+
+    return () => {
+      isMounted = false;
+      if (pushTokenListener) {
+        pushTokenListener.remove();
+      }
+    };
   }, [state.auth.isSignedIn, state.auth.user?.id]);
 
   // Real-time notifications listener
@@ -783,6 +958,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       });
 
       dispatch({ type: 'SET_NOTIFICATIONS', payload: fetchedNotifications });
+
+      // Sync badge count with unread notifications count
+      const unreadCount = fetchedNotifications.filter(n => !n.read).length;
+      if (Notifications && typeof Notifications.setBadgeCountAsync === 'function') {
+        Notifications.setBadgeCountAsync(unreadCount).catch((err: any) => {
+          console.warn('[PUSH] Failed to set badge count:', err);
+        });
+      }
     }, (error) => {
       console.error('[CONTEXT] Notifications listener error:', error);
     });
@@ -1056,6 +1239,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     dispatch({ type: 'SET_LOADING', payload: true });
     try {
       await logoutUser();
+      if (Notifications && typeof Notifications.setBadgeCountAsync === 'function') {
+        await Notifications.setBadgeCountAsync(0).catch((err: any) => {
+          console.warn('[PUSH] Failed to clear badge count on logout:', err);
+        });
+      }
       dispatch({ type: 'LOGOUT' });
       dispatch({ type: 'SET_ERROR', payload: null });
     } catch (error: any) {
@@ -1729,6 +1917,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     getRideHistory,
     getVehicleInfo,
     updateProfileData: updateProfileDataLocal,
+    unreadChatsCount,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;

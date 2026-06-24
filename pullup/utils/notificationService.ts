@@ -3,6 +3,7 @@ import {
     collection,
     deleteDoc,
     doc,
+    getDoc,
     getDocs,
     onSnapshot,
     orderBy,
@@ -63,6 +64,23 @@ export const sendNotification = async (
   senderName?: string,
   actionUrl?: string
 ): Promise<string> => {
+  // Fetch token for logging
+  let token = 'unknown';
+  try {
+    const userRef = doc(db, 'users', userId);
+    const userSnap = await getDoc(userRef);
+    if (userSnap.exists()) {
+      token = userSnap.data()?.expoPushToken || 'unknown';
+    }
+  } catch (err) {
+    console.warn('[NOTIFICATIONS] Failed to fetch recipient token for logging:', err);
+  }
+
+  console.log(`[NOTIFICATION SENT]
+recipientId: ${userId}
+token: ${token}
+type: ${type}`);
+
   try {
     // 1. Determine target screen routing metadata for deep links
     let targetScreen: string | null = null;

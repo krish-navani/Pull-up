@@ -7,6 +7,8 @@ import { getCurrentLocation } from '@/utils/locationUtils';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { fetchRoute } from '@/utils/routeUtils';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import {
     ActivityIndicator,
     Alert,
@@ -20,6 +22,7 @@ import {
     TextInput,
     TouchableOpacity,
     View,
+    Pressable,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -467,7 +470,9 @@ function PostRideScreenInner() {
     availableSeats: 2,
     carModel: '',
     notes: '',
+    detourRadiusMeters: 0,
   });
+  const [isRecurringWeekdays, setIsRecurringWeekdays] = useState(false);
   const [error, setError] = useState('');
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
@@ -475,6 +480,85 @@ function PostRideScreenInner() {
   const [pickerDate, setPickerDate] = useState(new Date());
   const hasDetectedLocation = useRef(false);
   const isDetectingRef = useRef(false);
+
+  const [routeInfo, setRouteInfo] = useState<{
+    points: any[];
+    distance: string;
+    duration: string;
+    distanceMeters: number;
+    durationSeconds: number;
+  } | null>(null);
+  const [loadingRoute, setLoadingRoute] = useState(false);
+  const [priceSuggestion, setPriceSuggestion] = useState('₹80-₹120');
+
+  const handleSwapRoute = () => {
+    setFormData(prev => {
+      const temp = prev.pickupLocation;
+      return {
+        ...prev,
+        pickupLocation: prev.dropLocation,
+        dropLocation: temp,
+      };
+    });
+    setAtlasLocation(prev => prev === 'pickup' ? 'dropoff' : 'pickup');
+    setError('');
+  };
+
+  useEffect(() => {
+    if (!formData.pickupLocation || !formData.dropLocation) {
+      setRouteInfo(null);
+      return;
+    }
+
+    const loadRoutePreview = async () => {
+      setLoadingRoute(true);
+      try {
+        const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCIZ1Lccen5Ek7-0cXIU3Pxv5he7vhmZ6Y';
+        const result = await fetchRoute(
+          formData.pickupLocation!,
+          formData.dropLocation!,
+          apiKey
+        );
+
+        if (result.success) {
+          setRouteInfo({
+            points: result.points,
+            distance: result.distance || '0 km',
+            duration: result.duration || '0 mins',
+            distanceMeters: result.distanceMeters || 0,
+            durationSeconds: result.durationSeconds || 0,
+          });
+
+          const distanceKm = (result.distanceMeters || 0) / 1000;
+          if (distanceKm > 0) {
+            const minSugg = Math.round(distanceKm * 8);
+            const maxSugg = Math.round(distanceKm * 12);
+            setPriceSuggestion(`₹${minSugg}-₹${maxSugg}`);
+            if (!formData.price) {
+              setFormData(prev => ({ ...prev, price: Math.round(distanceKm * 10).toString() }));
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[POST RIDE] Failed to fetch route preview:', err);
+      } finally {
+        setLoadingRoute(false);
+      }
+    };
+
+    loadRoutePreview();
+  }, [formData.pickupLocation, formData.dropLocation]);
+
+  const darkMapStyle = [
+    { elementType: "geometry", stylers: [{ color: "#0B1220" }] },
+    { elementType: "labels.text.fill", stylers: [{ color: "#94A3B8" }] },
+    { elementType: "labels.text.stroke", stylers: [{ color: "#020617" }] },
+    { featureType: "road", elementType: "geometry", stylers: [{ color: "#1E293B" }] },
+    { featureType: "road.arterial", elementType: "geometry", stylers: [{ color: "#334155" }] },
+    { featureType: "road.highway", elementType: "geometry", stylers: [{ color: "#475569" }] },
+    { featureType: "water", elementType: "geometry", stylers: [{ color: "#020617" }] },
+    { featureType: "poi.park", elementType: "geometry", stylers: [{ color: "#0B1A2A" }] }
+  ];
 
   // Default form state with Atlas as fallback
   const getDefaultFormData = useCallback((atlasAs: 'pickup' | 'dropoff') => {
@@ -493,6 +577,7 @@ function PostRideScreenInner() {
       availableSeats: 2,
       carModel: '',
       notes: '',
+      detourRadiusMeters: 0,
     };
   }, []);
 
@@ -728,20 +813,50 @@ function PostRideScreenInner() {
 
     setIsLoading(true);
     try {
-      const departureDateTime = new Date(`${formData.departureDate}T${formData.departureTime}`);
-      const rideData = {
-        pickupLocation: formData.pickupLocation,
-        dropLocation: formData.dropLocation,
-        departureTime: departureDateTime.toISOString(),
-        price: parseFloat(formData.price),
-        availableSeats: formData.availableSeats,
-        totalSeats: formData.availableSeats,
-        carModel: formData.carModel,
-      };
-      
-      // Await the async createRide function
-      await createRide(rideData);
-      setPostedRideData(rideData);
+      const selectedDate = new Date(`${formData.departureDate}T${formData.departureTime}`);
+      let weekdayDates: Date[] = [];
+
+      if (isRecurringWeekdays) {
+        const day = selectedDate.getDay();
+        const diffToMonday = selectedDate.getDate() - day + (day === 0 ? -6 : 1);
+        const monday = new Date(selectedDate);
+        monday.setDate(diffToMonday);
+
+        for (let i = 0; i < 5; i++) {
+          const wDay = new Date(monday);
+          wDay.setDate(monday.getDate() + i);
+          const [hours, minutes] = formData.departureTime.split(':').map(Number);
+          wDay.setHours(hours, minutes, 0, 0);
+
+          if (wDay.getTime() > Date.now()) {
+            weekdayDates.push(wDay);
+          }
+        }
+      } else {
+        weekdayDates.push(selectedDate);
+      }
+
+      if (weekdayDates.length === 0) {
+        throw new Error('All scheduled weekday dates for this week are in the past.');
+      }
+
+      let lastRideData: any = null;
+      for (const date of weekdayDates) {
+        const rideData = {
+          pickupLocation: formData.pickupLocation,
+          dropLocation: formData.dropLocation,
+          departureTime: date.toISOString(),
+          price: parseFloat(formData.price),
+          availableSeats: formData.availableSeats,
+          totalSeats: formData.availableSeats,
+          carModel: formData.carModel,
+          detourRadiusMeters: formData.detourRadiusMeters,
+        };
+        await createRide(rideData);
+        lastRideData = rideData;
+      }
+
+      setPostedRideData(lastRideData);
 
       // Show success message
       setError('');
@@ -872,26 +987,135 @@ function PostRideScreenInner() {
 
           <View pointerEvents={isDetectingLocation ? 'none' : 'auto'}
                 style={isDetectingLocation ? { opacity: 0.4 } : undefined}>
-            <LocationSearchInput
-              label="Pickup Location"
-              value={formData.pickupLocation?.address || ''}
-              onChange={(location) => setFormData(prev => ({ ...prev, pickupLocation: location }))}
-              onAddressChange={() => setError('')}
-              placeholder="Select your starting point"
-              containerStyle={styles.locationInputContainer}
-              isAtlasLocation={atlasLocation === 'pickup'}
-              readOnly={atlasLocation === 'pickup'}
-            />
-            <LocationSearchInput
-              label="Drop Location"
-              value={formData.dropLocation?.address || ''}
-              onChange={(location) => setFormData(prev => ({ ...prev, dropLocation: location }))}
-              onAddressChange={() => setError('')}
-              placeholder="Select your destination"
-              containerStyle={styles.locationInputContainer}
-              isAtlasLocation={atlasLocation === 'dropoff'}
-              readOnly={atlasLocation === 'dropoff'}
-            />
+            <View style={{ position: 'relative', flexDirection: 'row', alignItems: 'center' }}>
+              <View style={{ flex: 1, marginRight: 48 }}>
+                <LocationSearchInput
+                  label="Pickup Location"
+                  value={formData.pickupLocation?.address || ''}
+                  location={formData.pickupLocation}
+                  onChange={(location) => setFormData(prev => ({ ...prev, pickupLocation: location }))}
+                  onAddressChange={() => setError('')}
+                  placeholder="Select your starting point"
+                  containerStyle={styles.locationInputContainer}
+                  isAtlasLocation={atlasLocation === 'pickup'}
+                  readOnly={atlasLocation === 'pickup'}
+                />
+                <LocationSearchInput
+                  label="Drop Location"
+                  value={formData.dropLocation?.address || ''}
+                  location={formData.dropLocation}
+                  onChange={(location) => setFormData(prev => ({ ...prev, dropLocation: location }))}
+                  onAddressChange={() => setError('')}
+                  placeholder="Select your destination"
+                  containerStyle={styles.locationInputContainer}
+                  isAtlasLocation={atlasLocation === 'dropoff'}
+                  readOnly={atlasLocation === 'dropoff'}
+                />
+              </View>
+              <TouchableOpacity
+                onPress={handleSwapRoute}
+                activeOpacity={0.85}
+                style={{
+                  position: 'absolute',
+                  right: 0,
+                  top: '50%',
+                  marginTop: -25,
+                  width: 38,
+                  height: 38,
+                  borderRadius: 19,
+                  backgroundColor: WARM_CORE.primary,
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  shadowColor: WARM_CORE.primary,
+                  shadowOffset: { width: 0, height: 2 },
+                  shadowOpacity: 0.35,
+                  shadowRadius: 4,
+                  elevation: 6,
+                  zIndex: 999,
+                }}
+              >
+                <MaterialCommunityIcons name="swap-vertical" size={20} color={WARM_CORE.white} />
+              </TouchableOpacity>
+            </View>
+
+            {/* ROUTE PREVIEW CARD */}
+            {routeInfo && formData.pickupLocation && formData.dropLocation && (
+              <View style={{
+                marginTop: 12,
+                backgroundColor: WARM_CORE.card,
+                borderRadius: 14,
+                borderWidth: 1,
+                borderColor: WARM_CORE.border,
+                padding: 12,
+                overflow: 'hidden'
+              }}>
+                <View style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  marginBottom: 8
+                }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <MaterialCommunityIcons name="map-marker-distance" size={18} color={WARM_CORE.primary} />
+                    <Text style={{ color: WARM_CORE.text, fontSize: 13, fontWeight: '700' }}>
+                      {routeInfo.distance}  ·  {routeInfo.duration}
+                    </Text>
+                  </View>
+                  <View style={{
+                    backgroundColor: 'rgba(212, 80, 10, 0.15)',
+                    paddingHorizontal: 8,
+                    paddingVertical: 3,
+                    borderRadius: 8
+                  }}>
+                    <Text style={{ color: WARM_CORE.primary, fontSize: 11, fontWeight: '800' }}>Route Map</Text>
+                  </View>
+                </View>
+
+                {/* Map Preview Wrapper */}
+                <View style={{
+                  height: 120,
+                  borderRadius: 10,
+                  overflow: 'hidden',
+                  backgroundColor: '#1E1E1E'
+                }}>
+                  {loadingRoute ? (
+                    <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                      <ActivityIndicator size="small" color={WARM_CORE.primary} />
+                    </View>
+                  ) : (
+                    <MapView
+                      style={{ width: '100%', height: '100%' }}
+                      provider={PROVIDER_GOOGLE}
+                      scrollEnabled={false}
+                      zoomEnabled={false}
+                      pitchEnabled={false}
+                      rotateEnabled={false}
+                      customMapStyle={darkMapStyle}
+                      initialRegion={{
+                        latitude: (formData.pickupLocation.latitude + formData.dropLocation.latitude) / 2,
+                        longitude: (formData.pickupLocation.longitude + formData.dropLocation.longitude) / 2,
+                        latitudeDelta: Math.max(Math.abs(formData.pickupLocation.latitude - formData.dropLocation.latitude) * 1.5, 0.05),
+                        longitudeDelta: Math.max(Math.abs(formData.pickupLocation.longitude - formData.dropLocation.longitude) * 1.5, 0.05),
+                      }}
+                    >
+                      <Marker 
+                        coordinate={formData.pickupLocation}
+                        pinColor="#22C55E"
+                      />
+                      <Marker 
+                        coordinate={formData.dropLocation}
+                        pinColor="#EF4444"
+                      />
+                      <Polyline 
+                        coordinates={routeInfo.points}
+                        strokeWidth={3}
+                        strokeColor={WARM_CORE.primary}
+                      />
+                    </MapView>
+                  )}
+                </View>
+              </View>
+            )}
           </View>
         </Animated.View>
 
@@ -935,6 +1159,28 @@ function PostRideScreenInner() {
             <View style={styles.timeRemainingCard}>
               <MaterialCommunityIcons name="clock-fast" size={16} color={WARM_CORE.primary} />
               <Text style={styles.timeRemainingText}>{getTimeRemaining()}</Text>
+            </View>
+          )}
+
+          {/* Recurring Weekday schedule */}
+          <Pressable
+            style={styles.recurringToggleContainer}
+            onPress={() => setIsRecurringWeekdays(!isRecurringWeekdays)}
+          >
+            <View style={[styles.checkbox, isRecurringWeekdays && styles.checkboxChecked]}>
+              {isRecurringWeekdays && <MaterialCommunityIcons name="check" size={14} color="#FFF" />}
+            </View>
+            <Text style={styles.checkboxLabel}>
+              Repeat on Weekdays (Mon-Fri)
+            </Text>
+          </Pressable>
+
+          {isRecurringWeekdays && (
+            <View style={styles.recurringHintCard}>
+              <MaterialCommunityIcons name="information-outline" size={16} color={WARM_CORE.primary} />
+              <Text style={styles.recurringHintText}>
+                Creates matching rides for Mon-Fri at this time. Only future days will be posted.
+              </Text>
             </View>
           )}
         </Animated.View>
@@ -1038,6 +1284,33 @@ function PostRideScreenInner() {
               maxLength={100}
               editable={!isLoading}
             />
+          </View>
+
+          {/* Detour Preferences chip selector */}
+          <View style={{ marginTop: 12 }}>
+            <Text style={styles.seatsLabel}>Detour Preference</Text>
+            <Text style={styles.seatsSubtitle}>Max off-route distance you are willing to pick up passengers</Text>
+            <View style={styles.detourChipsRow}>
+              {[
+                { label: 'No Detour', value: 0 },
+                { label: '2 km', value: 2000 },
+                { label: '5 km', value: 5000 },
+                { label: '10 km', value: 10000 }
+              ].map((opt) => {
+                const isSelected = formData.detourRadiusMeters === opt.value;
+                return (
+                  <TouchableOpacity
+                    key={opt.value}
+                    style={[styles.detourChip, isSelected && styles.detourChipActive]}
+                    onPress={() => setFormData(prev => ({ ...prev, detourRadiusMeters: opt.value }))}
+                  >
+                    <Text style={[styles.detourChipText, isSelected && styles.detourChipTextActive]}>
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           </View>
         </Animated.View>
 
@@ -1982,6 +2255,79 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: WARM_CORE.textSecondary,
+  },
+  detourChipsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+    flexWrap: 'wrap',
+  },
+  detourChip: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    backgroundColor: WARM_CORE.card,
+    borderWidth: 1.5,
+    borderColor: WARM_CORE.border,
+  },
+  detourChipActive: {
+    backgroundColor: WARM_CORE.primary,
+    borderColor: WARM_CORE.primary,
+  },
+  detourChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: WARM_CORE.textSecondary,
+  },
+  detourChipTextActive: {
+    color: WARM_CORE.white,
+    fontWeight: '700',
+  },
+  recurringToggleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 14,
+    gap: 10,
+    paddingHorizontal: 4,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: WARM_CORE.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: WARM_CORE.card,
+  },
+  checkboxChecked: {
+    backgroundColor: WARM_CORE.primary,
+    borderColor: WARM_CORE.primary,
+  },
+  checkboxLabel: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '600',
+    color: WARM_CORE.text,
+  },
+  recurringHintCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(212, 80, 10, 0.06)',
+    borderColor: 'rgba(212, 80, 10, 0.15)',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    marginTop: 8,
+  },
+  recurringHintText: {
+    flex: 1,
+    fontSize: 11,
+    fontWeight: '500',
+    color: WARM_CORE.textSecondary,
+    lineHeight: 15,
   },
 });
 

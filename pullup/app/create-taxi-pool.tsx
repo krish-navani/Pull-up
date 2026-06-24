@@ -27,6 +27,9 @@ import LocationSearchInput from '@/components/LocationSearchInput';
 import { Location } from '@/types';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
+import { fetchRoute } from '@/utils/routeUtils';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
+import { ATLAS_LOCATION } from '@/utils/atlasLocationUtils';
 
 // Lazy-load DateTimePicker to prevent crash if native module fails (e.g. on web)
 let DateTimePicker: any = null;
@@ -63,7 +66,14 @@ export default function CreateTaxiPoolScreen() {
   const router = useRouter();
   const { auth } = useAppContext();
   
+  const [pickup, setPickup] = useState<Location | null>({
+    latitude: ATLAS_LOCATION.latitude,
+    longitude: ATLAS_LOCATION.longitude,
+    address: ATLAS_LOCATION.address,
+    city: 'Mumbai',
+  });
   const [destination, setDestination] = useState<Location | null>(null);
+  const [atlasLocation, setAtlasLocation] = useState<'pickup' | 'dropoff'>('pickup');
   const [departureDate, setDepartureDate] = useState<string>('');
   const [departureTime, setDepartureTime] = useState<string>('');
   const [maxMembers, setMaxMembers] = useState<number>(4);
@@ -75,6 +85,80 @@ export default function CreateTaxiPoolScreen() {
   const [isLoading, setIsLoading] = useState(false);
   const [checkingSubscription, setCheckingSubscription] = useState(true);
   const [error, setError] = useState('');
+
+  const [routeInfo, setRouteInfo] = useState<{
+    points: any[];
+    distance: string;
+    duration: string;
+    distanceMeters: number;
+    durationSeconds: number;
+  } | null>(null);
+  const [loadingRoute, setLoadingRoute] = useState(false);
+  const [priceSuggestion, setPriceSuggestion] = useState('₹40');
+
+  const handleSwapRoute = () => {
+    const temp = pickup;
+    setPickup(destination);
+    setDestination(temp);
+    setAtlasLocation(prev => prev === 'pickup' ? 'dropoff' : 'pickup');
+    setError('');
+  };
+
+  useEffect(() => {
+    if (!pickup || !destination) {
+      setRouteInfo(null);
+      return;
+    }
+
+    const loadRoutePreview = async () => {
+      setLoadingRoute(true);
+      try {
+        const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCIZ1Lccen5Ek7-0cXIU3Pxv5he7vhmZ6Y';
+        const result = await fetchRoute(
+          pickup,
+          destination,
+          apiKey
+        );
+
+        if (result.success) {
+          setRouteInfo({
+            points: result.points,
+            distance: result.distance || '0 km',
+            duration: result.duration || '0 mins',
+            distanceMeters: result.distanceMeters || 0,
+            durationSeconds: result.durationSeconds || 0,
+          });
+
+          const distanceKm = (result.distanceMeters || 0) / 1000;
+          if (distanceKm > 0) {
+            const totalFare = distanceKm * 20;
+            const suggestedPerSeat = Math.max(30, Math.round(totalFare / maxMembers));
+            setPriceSuggestion(`₹${suggestedPerSeat}`);
+            if (!price || price === '40') {
+              setPrice(suggestedPerSeat.toString());
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[CREATE TAXI] Failed to fetch route preview:', err);
+      } finally {
+        setLoadingRoute(false);
+      }
+    };
+
+    loadRoutePreview();
+  }, [pickup, destination, maxMembers]);
+
+  const darkMapStyle = [
+    { elementType: "geometry", stylers: [{ color: "#0B1220" }] },
+    { elementType: "labels.text.fill", stylers: [{ color: "#94A3B8" }] },
+    { elementType: "labels.text.stroke", stylers: [{ color: "#020617" }] },
+    { featureType: "road", elementType: "geometry", stylers: [{ color: "#1E293B" }] },
+    { featureType: "road.arterial", elementType: "geometry", stylers: [{ color: "#334155" }] },
+    { featureType: "road.highway", elementType: "geometry", stylers: [{ color: "#475569" }] },
+    { featureType: "water", elementType: "geometry", stylers: [{ color: "#020617" }] },
+    { featureType: "poi.park", elementType: "geometry", stylers: [{ color: "#0B1A2A" }] }
+  ];
 
   // ── Entrance animations ──────────────────────────────────────────────────
   const formOpacity = useRef(new Animated.Value(0)).current;
@@ -177,6 +261,10 @@ export default function CreateTaxiPoolScreen() {
     if (!auth.user) return;
     
     // Form Validations
+    if (!pickup) {
+      setError('Please select pickup location');
+      return;
+    }
     if (!destination) {
       setError('Please select a destination');
       return;
@@ -222,6 +310,11 @@ export default function CreateTaxiPoolScreen() {
         creatorImage: auth.user.profileImage || undefined,
         creatorCourse: auth.user.course || 'BBA',
         creatorDivision: auth.user.division || 'A',
+        pickupLocation: {
+          address: pickup.address,
+          latitude: pickup.latitude,
+          longitude: pickup.longitude
+        },
         destination: {
           address: destination.address,
           latitude: destination.latitude,
@@ -296,20 +389,145 @@ export default function CreateTaxiPoolScreen() {
 
           <Animated.View style={{ opacity: formOpacity, transform: [{ translateY: formSlideY }] }}>
             
-            {/* DESTINATION */}
+            {/* ROUTE SECTION */}
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>DESTINATION</Text>
-              <LocationSearchInput
-                label="Where to?"
-                value={destination?.address || ''}
-                onChange={(location) => {
-                  setDestination(location);
-                  setError('');
-                }}
-                onAddressChange={() => setError('')}
-                placeholder="Search destination landmark or locality"
-                containerStyle={styles.inputContainer}
-              />
+              <Text style={styles.sectionTitle}>ROUTE</Text>
+              
+              <View style={{ position: 'relative', flexDirection: 'row', alignItems: 'center' }}>
+                <View style={{ flex: 1, marginRight: 48 }}>
+                  <LocationSearchInput
+                    label="Pickup Location"
+                    value={pickup?.address || ''}
+                    location={pickup}
+                    onChange={(location) => {
+                      setPickup(location);
+                      setError('');
+                    }}
+                    onAddressChange={() => setError('')}
+                    placeholder="Search pickup locality or point"
+                    containerStyle={styles.inputContainer}
+                    isAtlasLocation={atlasLocation === 'pickup'}
+                    readOnly={atlasLocation === 'pickup'}
+                  />
+                  <LocationSearchInput
+                    label="Destination"
+                    value={destination?.address || ''}
+                    location={destination}
+                    onChange={(location) => {
+                      setDestination(location);
+                      setError('');
+                    }}
+                    onAddressChange={() => setError('')}
+                    placeholder="Search destination locality or point"
+                    containerStyle={styles.inputContainer}
+                    isAtlasLocation={atlasLocation === 'dropoff'}
+                    readOnly={atlasLocation === 'dropoff'}
+                  />
+                </View>
+                <TouchableOpacity
+                  onPress={handleSwapRoute}
+                  activeOpacity={0.85}
+                  style={{
+                    position: 'absolute',
+                    right: 0,
+                    top: '50%',
+                    marginTop: -25,
+                    width: 38,
+                    height: 38,
+                    borderRadius: 19,
+                    backgroundColor: WARM_CORE.primary,
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    shadowColor: WARM_CORE.primary,
+                    shadowOffset: { width: 0, height: 2 },
+                    shadowOpacity: 0.35,
+                    shadowRadius: 4,
+                    elevation: 6,
+                    zIndex: 999,
+                  }}
+                >
+                  <MaterialCommunityIcons name="swap-vertical" size={20} color={WARM_CORE.white} />
+                </TouchableOpacity>
+              </View>
+
+              {/* ROUTE PREVIEW CARD */}
+              {routeInfo && pickup && destination && (
+                <View style={{
+                  marginTop: 12,
+                  backgroundColor: WARM_CORE.card,
+                  borderRadius: 14,
+                  borderWidth: 1,
+                  borderColor: WARM_CORE.border,
+                  padding: 12,
+                  overflow: 'hidden'
+                }}>
+                  <View style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    marginBottom: 8
+                  }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <MaterialCommunityIcons name="map-marker-distance" size={18} color={WARM_CORE.primary} />
+                      <Text style={{ color: WARM_CORE.text, fontSize: 13, fontWeight: '700' }}>
+                        {routeInfo.distance}  ·  {routeInfo.duration}
+                      </Text>
+                    </View>
+                    <View style={{
+                      backgroundColor: 'rgba(212, 80, 10, 0.15)',
+                      paddingHorizontal: 8,
+                      paddingVertical: 3,
+                      borderRadius: 8
+                    }}>
+                      <Text style={{ color: WARM_CORE.primary, fontSize: 11, fontWeight: '800' }}>Route Map</Text>
+                    </View>
+                  </View>
+
+                  {/* Map Preview Wrapper */}
+                  <View style={{
+                    height: 120,
+                    borderRadius: 10,
+                    overflow: 'hidden',
+                    backgroundColor: '#1E1E1E'
+                  }}>
+                    {loadingRoute ? (
+                      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+                        <ActivityIndicator size="small" color={WARM_CORE.primary} />
+                      </View>
+                    ) : (
+                      <MapView
+                        style={{ width: '100%', height: '100%' }}
+                        provider={PROVIDER_GOOGLE}
+                        scrollEnabled={false}
+                        zoomEnabled={false}
+                        pitchEnabled={false}
+                        rotateEnabled={false}
+                        customMapStyle={darkMapStyle}
+                        initialRegion={{
+                          latitude: (pickup.latitude + destination.latitude) / 2,
+                          longitude: (pickup.longitude + destination.longitude) / 2,
+                          latitudeDelta: Math.max(Math.abs(pickup.latitude - destination.latitude) * 1.5, 0.05),
+                          longitudeDelta: Math.max(Math.abs(pickup.longitude - destination.longitude) * 1.5, 0.05),
+                        }}
+                      >
+                        <Marker 
+                          coordinate={pickup}
+                          pinColor="#22C55E"
+                        />
+                        <Marker 
+                          coordinate={destination}
+                          pinColor="#EF4444"
+                        />
+                        <Polyline 
+                          coordinates={routeInfo.points}
+                          strokeWidth={3}
+                          strokeColor={WARM_CORE.primary}
+                        />
+                      </MapView>
+                    )}
+                  </View>
+                </View>
+              )}
             </View>
 
             {/* DATE & TIME */}

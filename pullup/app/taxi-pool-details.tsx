@@ -21,6 +21,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import { useAppContext } from '@/context/AppContext';
 import { WARM_CORE } from '@/constants/theme';
+import UserAvatar from '@/components/UserAvatar';
 import { ATLAS_LOCATION, calculateDistance } from '@/utils/atlasLocationUtils';
 import * as Location from 'expo-location';
 import { fetchRoute } from '@/utils/routeUtils';
@@ -87,13 +88,7 @@ function TaxiPoolCreatorRow({ creatorId, defaultName, defaultCourse, defaultDivi
 
   return (
     <View style={styles.personRow}>
-      <View style={styles.avatar}>
-        {displayImage ? (
-          <Image source={{ uri: displayImage }} style={styles.avatarImg} />
-        ) : (
-          <Text style={styles.avatarText}>{displayName.charAt(0).toUpperCase()}</Text>
-        )}
-      </View>
+      <UserAvatar imageUrl={displayImage} name={displayName} size={44} />
       <View style={styles.personDetails}>
         <Text style={styles.personName}>{displayName}</Text>
         <Text style={styles.personSub}>{displayCourse} • Division {displayDivision}</Text>
@@ -130,13 +125,7 @@ function TaxiPoolMemberRow({ member, creatorId }: { member: PoolMember; creatorI
 
   return (
     <View style={styles.memberRow}>
-      <View style={styles.avatarSmall}>
-        {displayImage ? (
-          <Image source={{ uri: displayImage }} style={styles.avatarImgSmall} />
-        ) : (
-          <Text style={styles.avatarTextSmall}>{displayName.charAt(0).toUpperCase()}</Text>
-        )}
-      </View>
+      <UserAvatar imageUrl={displayImage} name={displayName} size={32} />
       <View style={styles.memberDetails}>
         <Text style={styles.memberName}>
           {displayName} {member.passengerId === creatorId ? '(Admin)' : ''}
@@ -186,13 +175,7 @@ function TaxiPoolRequestRow({
   return (
     <View style={styles.requestCard}>
       <View style={styles.requestProfile}>
-        <View style={styles.avatarSmall}>
-          {displayImage ? (
-            <Image source={{ uri: displayImage }} style={styles.avatarImgSmall} />
-          ) : (
-            <Text style={styles.avatarTextSmall}>{displayName.charAt(0).toUpperCase()}</Text>
-          )}
-        </View>
+        <UserAvatar imageUrl={displayImage} name={displayName} size={32} />
         <View style={styles.requestMeta}>
           <Text style={styles.reqName}>{displayName}</Text>
           <Text style={styles.reqSub}>{displayCourse} • Div {displayDivision}</Text>

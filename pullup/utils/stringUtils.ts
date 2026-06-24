@@ -53,6 +53,37 @@ export const getTimeBasedGreeting = (firstName?: string): string => {
   }
 };
 
+export const getGreetingContent = (firstName?: string) => {
+  const name = firstName || 'there';
+  const hour = new Date().getHours();
+
+  if (hour >= 5 && hour < 12) {
+    return {
+      title: `☀️ Good Morning, ${name}!`,
+      subtitle: 'Ready for your ride today?',
+    };
+  }
+
+  if (hour >= 12 && hour < 17) {
+    return {
+      title: `🌤️ Good Afternoon, ${name}!`,
+      subtitle: 'Hope your day is going smoothly.',
+    };
+  }
+
+  if (hour >= 17 && hour < 21) {
+    return {
+      title: `🌇 Good Evening, ${name}!`,
+      subtitle: 'Heading home from Atlas?',
+    };
+  }
+
+  return {
+    title: `🌙 Good Night, ${name}!`,
+    subtitle: 'Traveling late? Stay safe.',
+  };
+};
+
 /**
  * Extract and capitalize full name from a university email address.
  * E.g., krish.navani.bba2027@atlasskilltech.university => Krish Navani

@@ -21,6 +21,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WARM_CORE } from '@/constants/theme';
+import UserAvatar from '@/components/UserAvatar';
 
 interface ProfileState {
   driverStats: DriverStats | null;
@@ -548,18 +549,7 @@ export default function ProfileScreen() {
               
               <View style={styles.idCardHeaderRow}>
                 <PulsingAvatarRing isVerified={auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'verified'}>
-                  <View style={styles.avatar}>
-                    {auth.user.profileImage ? (
-                      <Image
-                        source={{ uri: auth.user.profileImage }}
-                        style={styles.avatarImage}
-                      />
-                    ) : (
-                      <Text style={styles.avatarText}>
-                        {auth.user.fullName.charAt(0).toUpperCase()}
-                      </Text>
-                    )}
-                  </View>
+                  <UserAvatar imageUrl={auth.user?.profileImage} name={auth.user?.fullName} size={64} />
                 </PulsingAvatarRing>
 
                 <View style={styles.userInfoContainer}>
@@ -792,6 +782,36 @@ export default function ProfileScreen() {
                   </View>
                 )
               )}
+
+              {/* TRUST METRICS SECTION */}
+              <View style={styles.trustSection}>
+                <Text style={styles.sectionTitle}>Trust & Reliability</Text>
+                <View style={styles.trustCard}>
+                  <View style={styles.trustCol}>
+                    <MaterialCommunityIcons name="check-decagram-outline" size={22} color={WARM_CORE.success} />
+                    <Text style={styles.trustVal}>
+                      {isDriver ? (driverStats?.completedRides ?? 0) : (passengerStats?.completedRides ?? 0)}
+                    </Text>
+                    <Text style={styles.trustLbl}>Completed Rides</Text>
+                  </View>
+                  <View style={styles.trustDivider} />
+                  <View style={styles.trustCol}>
+                    <MaterialCommunityIcons name="message-check-outline" size={22} color={WARM_CORE.primary} />
+                    <Text style={styles.trustVal}>
+                      {isDriver ? (driverStats?.responseRate ?? 100) : (passengerStats?.responseRate ?? 100)}%
+                    </Text>
+                    <Text style={styles.trustLbl}>Response Rate</Text>
+                  </View>
+                  <View style={styles.trustDivider} />
+                  <View style={styles.trustCol}>
+                    <MaterialCommunityIcons name="thumb-up-outline" size={22} color={WARM_CORE.accent} />
+                    <Text style={styles.trustVal}>
+                      {isDriver ? (driverStats?.acceptanceRate ?? 100) : (passengerStats?.acceptanceRate ?? 100)}%
+                    </Text>
+                    <Text style={styles.trustLbl}>Acceptance Rate</Text>
+                  </View>
+                </View>
+              </View>
 
               {/* UPCOMING RIDE */}
               {upcomingRide && (
@@ -1469,4 +1489,45 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: WARM_CORE.white,
   } as TextStyle,
+  trustSection: {
+    marginBottom: 20,
+  } as ViewStyle,
+  trustCard: {
+    flexDirection: 'row',
+    backgroundColor: WARM_CORE.card,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    borderRadius: 16,
+    paddingVertical: 16,
+    paddingHorizontal: 12,
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.02,
+    shadowRadius: 6,
+    elevation: 2,
+  } as ViewStyle,
+  trustCol: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 4,
+  } as ViewStyle,
+  trustVal: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: WARM_CORE.text,
+    marginTop: 4,
+  } as TextStyle,
+  trustLbl: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: WARM_CORE.textSecondary,
+    textAlign: 'center',
+  } as TextStyle,
+  trustDivider: {
+    width: 1,
+    height: 32,
+    backgroundColor: WARM_CORE.border,
+  } as ViewStyle,
 });

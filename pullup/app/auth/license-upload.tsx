@@ -200,9 +200,10 @@ export default function LicenseUploadScreen() {
         }, [navigation])
     );
 
-    // Check for rejection status when auth changes
+    // Check for rejection / resubmission_requested status when auth changes
     useEffect(() => {
-        if (auth.user?.licenseVerificationStatus === 'rejected') {
+        const st = auth.user?.licenseVerificationStatus;
+        if (st === 'rejected' || st === 'resubmission_requested') {
             setIsRejected(true);
             setLicenseUploaded(false);
             setIsVerificationPending(false);
@@ -253,9 +254,12 @@ export default function LicenseUploadScreen() {
                                 router.replace('/(tabs)/home');
                             }, 1000);
                         }
-                    } else if (updatedUser?.licenseVerificationStatus === 'rejected') {
-                        // License was rejected by admin
-                        console.log('[LICENSE] ❌ License rejected by admin');
+                    } else if (
+                        updatedUser?.licenseVerificationStatus === 'rejected' ||
+                        updatedUser?.licenseVerificationStatus === 'resubmission_requested'
+                    ) {
+                        // License was rejected / resubmission requested by admin
+                        console.log('[LICENSE] ❌ License rejected/resubmission by admin');
                         setIsVerificationPending(false);
                         setLicenseUploaded(false);
                         setIsRejected(true);
@@ -511,30 +515,44 @@ export default function LicenseUploadScreen() {
                     </Animated.Text>
                 </View>
 
-                {/* License Rejection Alert */}
+                {/* License Rejection / Resubmission Alert */}
                 {isRejected && (
-                    <Animated.View
-                        style={[
-                            styles.rejectionAlertContainer,
-                        ]}
-                    >
-                        <View style={styles.rejectionAlert}>
-                            <View style={styles.rejectionIconBg}>
-                                <MaterialCommunityIcons name="close-circle" size={28} color="#FFFFFF" />
+                    <Animated.View style={[styles.rejectionAlertContainer]}>
+                        <View style={[
+                            styles.rejectionAlert,
+                            auth.user?.licenseVerificationStatus === 'resubmission_requested' && { borderLeftColor: '#F59E0B' }
+                        ]}>
+                            <View style={[
+                                styles.rejectionIconBg,
+                                auth.user?.licenseVerificationStatus === 'resubmission_requested' && { backgroundColor: '#F59E0B' }
+                            ]}>
+                                <MaterialCommunityIcons
+                                    name={auth.user?.licenseVerificationStatus === 'resubmission_requested' ? 'alert-circle' : 'close-circle'}
+                                    size={28} color="#FFFFFF"
+                                />
                             </View>
                             <View style={styles.rejectionContent}>
-                                <Text style={styles.rejectionTitle}>Verification Unsuccessful</Text>
-                                <Text style={styles.rejectionMessage}>
-                                    Please upload a clearer photo of your license. Ensure the text is fully visible and readable.
+                                <Text style={styles.rejectionTitle}>
+                                    {auth.user?.licenseVerificationStatus === 'resubmission_requested'
+                                        ? '📋 Resubmission Required'
+                                        : '⚠️ Verification Unsuccessful'}
                                 </Text>
+                                {auth.user?.licenseRejectionReason ? (
+                                    <Text style={[styles.rejectionMessage, { fontStyle: 'italic', color: WARM_CORE.error }]}>
+                                        Admin: "{auth.user.licenseRejectionReason}"
+                                    </Text>
+                                ) : (
+                                    <Text style={styles.rejectionMessage}>
+                                        Please upload a clearer photo of your license. Ensure the text is fully visible and readable.
+                                    </Text>
+                                )}
                             </View>
                         </View>
-                        <TouchableOpacity
-                            style={styles.reapplyButton}
-                            onPress={handleReapply}
-                        >
+                        <TouchableOpacity style={styles.reapplyButton} onPress={handleReapply}>
                             <MaterialCommunityIcons name="refresh" size={18} color="#FFFFFF" />
-                            <Text style={styles.reapplyButtonText}>Reapply</Text>
+                            <Text style={styles.reapplyButtonText}>
+                                {auth.user?.licenseVerificationStatus === 'resubmission_requested' ? 'Re-upload License' : 'Reapply'}
+                            </Text>
                         </TouchableOpacity>
                     </Animated.View>
                 )}

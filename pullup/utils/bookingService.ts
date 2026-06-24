@@ -94,6 +94,18 @@ export const createBookingInFirestore = async (
     // Also add to ride's bookedSeats array for driver view
     await addBookingToRide(rideId, passengerId, passengerName, seatsBooked);
 
+    // Notify the driver about the new booking request
+    await sendNotification(
+      driverId,
+      'booking_request',
+      'New Booking Request 🚗',
+      `${passengerName} requested ${seatsBooked} seat(s) on your ride.`,
+      rideId,
+      bookingId,
+      passengerId,
+      passengerName
+    ).catch(err => console.error('[BOOKING SERVICE] Failed to send booking_request notification to driver:', err));
+
     console.log('[BOOKING SERVICE] ✅ Booking created successfully with ID:', bookingId);
     return bookingId;
   } catch (error: any) {
@@ -132,6 +144,13 @@ export const getPassengerBookings = async (passengerId: string): Promise<Booking
         bookedAt: data.bookedAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
         cancelledAt: data.cancelledAt?.toDate?.()?.toISOString?.() || undefined,
         penaltyApplied: data.penaltyApplied,
+        passengerPickupLocation: data.passengerPickupLocation || undefined,
+        passengerDropLocation: data.passengerDropLocation || undefined,
+        pickedUp: data.pickedUp,
+        droppedOff: data.droppedOff,
+        paymentStatus: data.paymentStatus,
+        totalPrice: data.totalPrice,
+        orderId: data.orderId,
       });
     });
 
@@ -176,6 +195,13 @@ export const getDriverBookings = async (driverId: string): Promise<Booking[]> =>
         bookedAt: data.bookedAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
         cancelledAt: data.cancelledAt?.toDate?.()?.toISOString?.() || undefined,
         penaltyApplied: data.penaltyApplied,
+        passengerPickupLocation: data.passengerPickupLocation || undefined,
+        passengerDropLocation: data.passengerDropLocation || undefined,
+        pickedUp: data.pickedUp,
+        droppedOff: data.droppedOff,
+        paymentStatus: data.paymentStatus,
+        totalPrice: data.totalPrice,
+        orderId: data.orderId,
       });
     });
 
@@ -219,6 +245,13 @@ export const getBookingById = async (bookingId: string): Promise<Booking | null>
       bookedAt: data.bookedAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
       cancelledAt: data.cancelledAt?.toDate?.()?.toISOString?.() || undefined,
       penaltyApplied: data.penaltyApplied,
+      passengerPickupLocation: data.passengerPickupLocation || undefined,
+      passengerDropLocation: data.passengerDropLocation || undefined,
+      pickedUp: data.pickedUp,
+      droppedOff: data.droppedOff,
+      paymentStatus: data.paymentStatus,
+      totalPrice: data.totalPrice,
+      orderId: data.orderId,
     };
 
     console.log('[BOOKING SERVICE] ✅ Booking fetched');
@@ -243,41 +276,34 @@ export const getBookingByRideAndPassenger = async (
   try {
     console.log('[BOOKING SERVICE] Fetching booking for ride:', rideId, 'passenger:', passengerId);
 
-    const q = query(
-      collection(db, 'bookings'),
-      where('rideId', '==', rideId),
-      where('passengerId', '==', passengerId)
-    );
+    const bookingId = `${rideId}_${passengerId}`;
+    const docRef = doc(db, 'bookings', bookingId);
+    const docSnap = await getDoc(docRef);
 
-    const querySnapshot = await getDocs(q);
-
-    if (querySnapshot.empty) {
+    if (!docSnap.exists()) {
       console.warn('[BOOKING SERVICE] ⚠️ Booking not found for ride:', rideId, 'passenger:', passengerId);
       return null;
     }
 
-    const bookings: Booking[] = [];
-    querySnapshot.forEach((doc) => {
-      const data = doc.data();
-      bookings.push({
-        id: doc.id,
-        rideId: data.rideId,
-        passengerId: data.passengerId,
-        driverId: data.driverId,
-        seatsBooked: data.seatsBooked,
-        status: data.status,
-        bookedAt: data.bookedAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
-        cancelledAt: data.cancelledAt?.toDate?.()?.toISOString?.() || undefined,
-        penaltyApplied: data.penaltyApplied,
-      });
-    });
-
-    // Sort client-side by bookedAt descending (latest first)
-    bookings.sort((a, b) => new Date(b.bookedAt).getTime() - new Date(a.bookedAt).getTime());
-
-    // Prefer an active booking (pending or accepted) if one exists
-    const activeBooking = bookings.find(b => b.status === 'pending' || b.status === 'accepted');
-    const selectedBooking = activeBooking || bookings[0];
+    const data = docSnap.data();
+    const selectedBooking: Booking = {
+      id: docSnap.id,
+      rideId: data.rideId,
+      passengerId: data.passengerId,
+      driverId: data.driverId,
+      seatsBooked: data.seatsBooked,
+      status: data.status,
+      bookedAt: data.bookedAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
+      cancelledAt: data.cancelledAt?.toDate?.()?.toISOString?.() || undefined,
+      penaltyApplied: data.penaltyApplied,
+      passengerPickupLocation: data.passengerPickupLocation || undefined,
+      passengerDropLocation: data.passengerDropLocation || undefined,
+      pickedUp: data.pickedUp,
+      droppedOff: data.droppedOff,
+      paymentStatus: data.paymentStatus,
+      totalPrice: data.totalPrice,
+      orderId: data.orderId,
+    };
 
     console.log('[BOOKING SERVICE] ✅ Booking fetched:', selectedBooking.id, 'with status:', selectedBooking.status);
     return selectedBooking;
@@ -371,7 +397,7 @@ export const cancelBookingWithPenalty = async (
     };
     if (isPaid) {
       updateData.refundStatus = 'pending';
-      const refundAmount = penalty > 0 ? (bookingData.totalPrice * 0.5) : bookingData.totalPrice;
+      const refundAmount = penalty > 0 ? Math.max(0, (bookingData.totalPrice || 0) - penalty) : (bookingData.totalPrice || 0);
       updateData.refundAmount = refundAmount;
     }
 

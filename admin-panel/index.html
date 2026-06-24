@@ -3,1343 +3,936 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PullUp - Admin License Management</title>
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <title>PullUp — Admin Dashboard</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
     <style>
+        *, *::before, *::after { margin:0; padding:0; box-sizing:border-box; }
+        :root {
+            --bg: #0a0f1e;
+            --surface: #111827;
+            --card: #1a2235;
+            --border: #1e2d45;
+            --primary: #D4500A;
+            --primary-hover: #bb4307;
+            --success: #22c55e;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --info: #3b82f6;
+            --text: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+        }
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
         /* ── PIN Lock ── */
         #pinOverlay {
-            position: fixed;
-            inset: 0;
-            z-index: 99999;
-            background: #0a0f1e;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            position: fixed; inset: 0; z-index: 99999;
+            background: var(--bg);
+            display: flex; align-items: center; justify-content: center;
         }
         #pinOverlay.hidden { display: none; }
         .pin-card {
-            background: #1e293b;
-            border: 1px solid #334155;
-            border-radius: 20px;
-            padding: 48px 40px;
-            width: 100%;
-            max-width: 380px;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 24px;
+            padding: 52px 44px;
+            width: 100%; max-width: 400px;
             text-align: center;
-            box-shadow: 0 24px 64px rgba(0,0,0,0.5);
+            box-shadow: 0 32px 80px rgba(0,0,0,0.6);
         }
-        .pin-logo {
-            font-size: 36px;
-            margin-bottom: 8px;
+        .pin-logo { font-size: 40px; margin-bottom: 10px; }
+        .pin-title { font-size: 24px; font-weight: 800; color: var(--text); margin-bottom: 6px; letter-spacing: -0.5px; }
+        .pin-subtitle { font-size: 13px; color: var(--text-secondary); margin-bottom: 36px; }
+        .pin-dots { display:flex; justify-content:center; gap:14px; margin-bottom:32px; }
+        .pin-dot { width:16px; height:16px; border-radius:50%; border:2px solid var(--border); background:transparent; transition:all 0.15s; }
+        .pin-dot.filled { background:var(--primary); border-color:var(--primary); transform:scale(1.15); }
+        .pin-dot.error { background:var(--error); border-color:var(--error); }
+        .pin-keypad { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin-bottom:16px; }
+        .pin-key { background:var(--surface); border:1px solid var(--border); border-radius:14px; color:var(--text); font-size:22px; font-weight:700; padding:20px; cursor:pointer; transition:all 0.12s; user-select:none; }
+        .pin-key:hover { background:var(--border); }
+        .pin-key:active { transform:scale(0.93); background:var(--primary); border-color:var(--primary); }
+        .pin-key.del { font-size:18px; color:var(--text-secondary); }
+        .pin-key.empty { background:transparent; border:transparent; cursor:default; }
+        .pin-key.empty:hover { background:transparent; }
+        .pin-error { font-size:12px; color:var(--error); font-weight:600; min-height:18px; margin-top:6px; }
+
+        /* ── Layout ── */
+        #mainContent { display:none; }
+        .app { display:flex; min-height:100vh; }
+
+        /* Sidebar */
+        .sidebar {
+            width: 240px; min-height: 100vh;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            padding: 24px 16px;
+            position: fixed; left:0; top:0;
+            display: flex; flex-direction:column; gap:4px;
         }
-        .pin-title {
-            font-size: 22px;
-            font-weight: 800;
-            color: #f1f5f9;
-            margin-bottom: 6px;
-            letter-spacing: -0.5px;
-        }
-        .pin-subtitle {
-            font-size: 13px;
-            color: #64748b;
-            margin-bottom: 32px;
-        }
-        .pin-dots {
-            display: flex;
-            justify-content: center;
-            gap: 12px;
-            margin-bottom: 28px;
-        }
-        .pin-dot {
-            width: 14px;
-            height: 14px;
-            border-radius: 50%;
-            border: 2px solid #334155;
-            background: transparent;
-            transition: all 0.15s;
-        }
-        .pin-dot.filled {
-            background: #D4500A;
-            border-color: #D4500A;
-            transform: scale(1.15);
-        }
-        .pin-dot.error {
-            background: #ef4444;
-            border-color: #ef4444;
-        }
-        .pin-keypad {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 10px;
+        .sidebar-logo {
+            padding: 8px 12px 24px;
+            font-size: 20px; font-weight: 800;
+            color: var(--text); letter-spacing: -0.5px;
+            border-bottom: 1px solid var(--border);
             margin-bottom: 16px;
         }
-        .pin-key {
-            background: #334155;
-            border: none;
-            border-radius: 12px;
-            color: #f1f5f9;
-            font-size: 20px;
-            font-weight: 700;
-            padding: 18px;
+        .sidebar-logo span { color: var(--primary); }
+        .nav-item {
+            display: flex; align-items: center; gap: 10px;
+            padding: 10px 14px;
+            border-radius: 10px;
             cursor: pointer;
-            transition: background 0.12s, transform 0.08s;
-            user-select: none;
+            color: var(--text-secondary);
+            font-size: 14px; font-weight: 600;
+            transition: all 0.15s;
+            border: none; background: none; width: 100%; text-align: left;
         }
-        .pin-key:hover { background: #475569; }
-        .pin-key:active { transform: scale(0.93); background: #D4500A; }
-        .pin-key.del { font-size: 18px; color: #94a3b8; }
-        .pin-key.empty { background: transparent; cursor: default; }
-        .pin-key.empty:hover { background: transparent; }
-        .pin-error {
-            font-size: 12px;
-            color: #ef4444;
-            font-weight: 600;
-            min-height: 18px;
-            margin-top: 4px;
+        .nav-item:hover { background: var(--card); color: var(--text); }
+        .nav-item.active { background: rgba(212,80,10,0.15); color: var(--primary); }
+        .nav-item .badge {
+            margin-left: auto;
+            background: var(--primary);
+            color: white; font-size: 10px; font-weight: 800;
+            padding: 1px 6px; border-radius: 99px;
         }
-        .pin-lockout {
-            font-size: 13px;
-            color: #f59e0b;
-            font-weight: 600;
-            margin-top: 8px;
-        }
-        #mainContent { display: none; }
-    </style>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+        .sidebar-bottom { margin-top: auto; padding-top: 24px; border-top: 1px solid var(--border); }
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: #0f172a;
-            color: #e2e8f0;
-            line-height: 1.6;
-        }
+        /* Main */
+        .main { margin-left: 240px; flex:1; padding: 32px; min-height:100vh; }
+        .page-header { margin-bottom: 28px; }
+        .page-header h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
+        .page-header p { color: var(--text-secondary); font-size: 14px; margin-top: 4px; }
 
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-
-        header {
-            background: #1e293b;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 30px;
-            border-left: 4px solid #0ea5e9;
-        }
-
-        header h1 {
-            font-size: 28px;
-            margin-bottom: 10px;
-        }
-
-        header p {
-            color: #94a3b8;
-            font-size: 14px;
-        }
-
-        .controls {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-        }
-
-        button {
-            background: #0ea5e9;
-            color: white;
-            border: none;
-            padding: 10px 16px;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 14px;
-            font-weight: 600;
-            transition: background 0.2s;
-        }
-
-        button:hover {
-            background: #0284c7;
-        }
-
-        button.secondary {
-            background: #64748b;
-        }
-
-        button.secondary:hover {
-            background: #475569;
-        }
-
-        .filter-group {
-            display: flex;
-            gap: 10px;
-            align-items: center;
-        }
-
-        .filter-group label {
-            font-size: 14px;
-            color: #cbd5e1;
-        }
-
-        .filter-group select {
-            background: #1e293b;
-            color: #e2e8f0;
-            border: 1px solid #334155;
-            padding: 8px 12px;
-            border-radius: 6px;
-            font-size: 14px;
-        }
-
-        .stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 15px;
-            margin-bottom: 30px;
-        }
-
+        /* Stats Grid */
+        .stats-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(160px,1fr)); gap:16px; margin-bottom:28px; }
         .stat-card {
-            background: #1e293b;
-            padding: 20px;
-            border-radius: 8px;
-            border-left: 3px solid #0ea5e9;
+            background: var(--card); border: 1px solid var(--border);
+            border-radius: 14px; padding: 20px;
         }
+        .stat-card .label { font-size:11px; text-transform:uppercase; letter-spacing:0.8px; color:var(--text-secondary); margin-bottom:8px; }
+        .stat-card .value { font-size:30px; font-weight:800; }
+        .stat-card .sub { font-size:11px; color:var(--text-muted); margin-top:4px; }
 
-        .stat-card h3 {
-            color: #94a3b8;
-            font-size: 12px;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 8px;
+        /* Table */
+        .table-wrap { background:var(--card); border:1px solid var(--border); border-radius:14px; overflow:hidden; }
+        .table-header {
+            display:flex; align-items:center; justify-content:space-between;
+            padding: 18px 20px; border-bottom:1px solid var(--border);
         }
-
-        .stat-card .value {
-            font-size: 28px;
-            font-weight: bold;
+        .table-header h3 { font-size:15px; font-weight:700; }
+        table { width:100%; border-collapse:collapse; }
+        th {
+            background:var(--surface); padding:12px 16px;
+            text-align:left; font-size:11px; text-transform:uppercase;
+            letter-spacing:0.6px; color:var(--text-secondary);
+            font-weight:700;
         }
+        td { padding:14px 16px; border-bottom:1px solid var(--border); font-size:13px; vertical-align:middle; }
+        tr:last-child td { border-bottom:none; }
+        tr:hover td { background:rgba(255,255,255,0.02); }
 
-        .licenses-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-            gap: 20px;
+        /* Badges */
+        .badge {
+            display:inline-block; padding:3px 10px; border-radius:99px;
+            font-size:11px; font-weight:700;
         }
+        .badge-pending { background:rgba(245,158,11,0.15); color:#f59e0b; }
+        .badge-verified { background:rgba(34,197,94,0.15); color:#22c55e; }
+        .badge-rejected { background:rgba(239,68,68,0.15); color:#ef4444; }
+        .badge-resubmit { background:rgba(59,130,246,0.15); color:#60a5fa; }
+        .badge-active { background:rgba(59,130,246,0.15); color:#60a5fa; }
+        .badge-in-progress { background:rgba(251,191,36,0.15); color:#fbbf24; }
+        .badge-completed { background:rgba(34,197,94,0.15); color:#22c55e; }
+        .badge-cancelled { background:rgba(239,68,68,0.15); color:#ef4444; }
+        .badge-driver { background:rgba(212,80,10,0.15); color:var(--primary); }
+        .badge-passenger { background:rgba(148,163,184,0.15); color:#94a3b8; }
 
-        .license-card {
-            background: #1e293b;
-            border-radius: 12px;
-            overflow: hidden;
-            border: 1px solid #334155;
-            transition: all 0.3s;
+        /* Buttons */
+        .btn {
+            padding:8px 14px; border-radius:8px; font-size:12px; font-weight:700;
+            cursor:pointer; border:none; transition:all 0.15s; display:inline-flex;
+            align-items:center; gap:5px;
         }
+        .btn-primary { background:var(--primary); color:#fff; }
+        .btn-primary:hover { background:var(--primary-hover); }
+        .btn-success { background:rgba(34,197,94,0.15); color:#22c55e; border:1px solid rgba(34,197,94,0.3); }
+        .btn-success:hover { background:rgba(34,197,94,0.25); }
+        .btn-danger { background:rgba(239,68,68,0.15); color:#ef4444; border:1px solid rgba(239,68,68,0.3); }
+        .btn-danger:hover { background:rgba(239,68,68,0.25); }
+        .btn-warning { background:rgba(245,158,11,0.15); color:#f59e0b; border:1px solid rgba(245,158,11,0.3); }
+        .btn-warning:hover { background:rgba(245,158,11,0.25); }
+        .btn-ghost { background:transparent; color:var(--text-secondary); border:1px solid var(--border); }
+        .btn-ghost:hover { background:var(--surface); color:var(--text); }
+        .btn-sm { padding:5px 10px; font-size:11px; }
 
-        .license-card:hover {
-            border-color: #0ea5e9;
-            box-shadow: 0 8px 16px rgba(14, 165, 233, 0.1);
+        /* Actions row */
+        .action-row { display:flex; gap:6px; flex-wrap:wrap; }
+
+        /* Modal */
+        .modal-overlay {
+            position:fixed; inset:0; background:rgba(0,0,0,0.75);
+            display:none; align-items:center; justify-content:center; z-index:9000;
         }
-
-        .license-image-container {
-            position: relative;
-            width: 100%;
-            height: 200px;
-            background: #0f172a;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            overflow: hidden;
-        }
-
-        .license-image-container img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-
-        .license-image-container.no-image {
-            color: #64748b;
-            font-size: 12px;
-        }
-
-        .license-info {
-            padding: 20px;
-        }
-
-        .driver-name {
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 8px;
-        }
-
-        .driver-email {
-            color: #94a3b8;
-            font-size: 13px;
-            margin-bottom: 12px;
-        }
-
-        .driver-details {
-            font-size: 13px;
-            color: #cbd5e1;
-            margin-bottom: 12px;
-            line-height: 1.8;
-        }
-
-        .driver-details div {
-            display: flex;
-            gap: 8px;
-            margin-bottom: 6px;
-        }
-
-        .driver-details label {
-            color: #94a3b8;
-            min-width: 80px;
-        }
-
-        .status-badge {
-            display: inline-block;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            margin-bottom: 12px;
-        }
-
-        .status-pending {
-            background: #fbbf24;
-            color: #000;
-        }
-
-        .status-verified {
-            background: #22c55e;
-            color: #000;
-        }
-
-        .status-rejected {
-            background: #ef4444;
-            color: #fff;
-        }
-
-        .action-buttons {
-            display: flex;
-            gap: 10px;
-            margin-top: 16px;
-        }
-
-        .action-buttons button {
-            flex: 1;
-            padding: 10px 12px;
-            font-size: 13px;
-        }
-
-        .btn-verify {
-            background: #22c55e;
-        }
-
-        .btn-verify:hover {
-            background: #16a34a;
-        }
-
-        .btn-reject {
-            background: #ef4444;
-        }
-
-        .btn-reject:hover {
-            background: #dc2626;
-        }
-
-        .btn-pending {
-            background: #64748b;
-        }
-
-        .btn-pending:hover {
-            background: #475569;
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 60px 20px;
-            color: #64748b;
-        }
-
-        .empty-state h2 {
-            font-size: 24px;
-            margin-bottom: 10px;
-        }
-
-        .loading {
-            text-align: center;
-            padding: 40px;
-            color: #94a3b8;
-        }
-
-        .spinner {
-            border: 3px solid #334155;
-            border-top: 3px solid #0ea5e9;
-            border-radius: 50%;
-            width: 40px;
-            height: 40px;
-            animation: spin 1s linear infinite;
-            margin: 0 auto 20px;
-        }
-
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-
+        .modal-overlay.open { display:flex; }
         .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.7);
-            z-index: 1000;
-            align-items: center;
-            justify-content: center;
+            background:var(--card); border:1px solid var(--border);
+            border-radius:16px; width:90%; max-width:520px; max-height:90vh; overflow-y:auto;
         }
+        .modal-head { padding:22px 24px 0; display:flex; align-items:center; justify-content:space-between; }
+        .modal-head h3 { font-size:17px; font-weight:800; }
+        .modal-close { background:none; border:none; color:var(--text-secondary); cursor:pointer; font-size:20px; line-height:1; }
+        .modal-body { padding:20px 24px; }
+        .modal-body img { width:100%; max-height:320px; object-fit:contain; border-radius:10px; margin-bottom:16px; border:1px solid var(--border); }
+        .modal-detail { background:var(--surface); border-radius:10px; padding:14px; margin-bottom:16px; }
+        .modal-detail-row { display:flex; gap:12px; margin-bottom:8px; font-size:13px; }
+        .modal-detail-row:last-child { margin-bottom:0; }
+        .modal-detail-row label { color:var(--text-secondary); min-width:130px; }
+        .modal-footer { padding:0 24px 24px; display:flex; gap:10px; justify-content:flex-end; flex-wrap:wrap; }
 
-        .modal.active {
-            display: flex;
+        /* Form elements */
+        .form-group { margin-bottom:14px; }
+        .form-group label { display:block; font-size:12px; font-weight:700; color:var(--text-secondary); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px; }
+        .form-control {
+            width:100%; padding:10px 14px; border-radius:8px;
+            background:var(--surface); border:1px solid var(--border);
+            color:var(--text); font-size:13px; font-family:inherit;
+            outline:none; transition:border-color 0.15s;
         }
+        .form-control:focus { border-color:var(--primary); }
+        textarea.form-control { resize:vertical; min-height:80px; }
 
-        .modal-content {
-            background: #1e293b;
-            border-radius: 12px;
-            padding: 30px;
-            max-width: 600px;
-            width: 90%;
-            max-height: 90vh;
-            overflow-y: auto;
+        /* Filter/controls */
+        .controls { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
+        .controls select { padding:8px 12px; background:var(--card); border:1px solid var(--border); border-radius:8px; color:var(--text); font-size:13px; cursor:pointer; outline:none; }
+        .search-input {
+            padding:8px 14px; background:var(--card); border:1px solid var(--border);
+            border-radius:8px; color:var(--text); font-size:13px; outline:none; min-width:200px;
         }
+        .search-input:focus { border-color:var(--primary); }
 
-        .modal-header {
-            font-size: 20px;
-            font-weight: 600;
-            margin-bottom: 20px;
-        }
+        /* Alert */
+        .alert { padding:12px 16px; border-radius:10px; margin-bottom:16px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:8px; }
+        .alert-success { background:rgba(34,197,94,0.12); color:#22c55e; border:1px solid rgba(34,197,94,0.25); }
+        .alert-error { background:rgba(239,68,68,0.12); color:#ef4444; border:1px solid rgba(239,68,68,0.25); }
+        .alert-info { background:rgba(59,130,246,0.12); color:#60a5fa; border:1px solid rgba(59,130,246,0.25); }
 
-        .modal-body {
-            margin-bottom: 20px;
-        }
+        /* Loading */
+        .spinner { border:2px solid var(--border); border-top:2px solid var(--primary); border-radius:50%; width:18px; height:18px; animation:spin 0.8s linear infinite; display:inline-block; }
+        @keyframes spin { to { transform:rotate(360deg); } }
 
-        .modal-image {
-            width: 100%;
-            max-height: 400px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            object-fit: contain;
-        }
+        /* Section toggle */
+        .section { display:none; }
+        .section.active { display:block; }
 
-        .modal-details {
-            background: #0f172a;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            font-size: 13px;
-        }
+        /* Audit log */
+        .audit-item { padding:14px 16px; border-bottom:1px solid var(--border); }
+        .audit-item:last-child { border-bottom:none; }
+        .audit-action { font-size:12px; font-weight:700; color:var(--primary); text-transform:uppercase; letter-spacing:0.5px; margin-bottom:3px; }
+        .audit-desc { font-size:13px; color:var(--text); }
+        .audit-note { font-size:11px; color:var(--text-secondary); margin-top:2px; font-style:italic; }
+        .audit-time { font-size:11px; color:var(--text-muted); margin-top:3px; }
 
-        .modal-details div {
-            display: flex;
-            margin-bottom: 10px;
-            gap: 10px;
-        }
+        /* Empty state */
+        .empty-state { text-align:center; padding:60px 20px; color:var(--text-muted); }
+        .empty-state p { font-size:14px; margin-top:8px; }
 
-        .modal-details label {
-            color: #94a3b8;
-            min-width: 140px;
-        }
+        /* License image grid */
+        .license-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(300px,1fr)); gap:16px; }
+        .license-card { background:var(--card); border:1px solid var(--border); border-radius:14px; overflow:hidden; transition:border-color 0.15s; }
+        .license-card:hover { border-color:var(--primary); }
+        .license-card-img { height:160px; background:var(--surface); display:flex; align-items:center; justify-content:center; cursor:pointer; overflow:hidden; }
+        .license-card-img img { width:100%; height:100%; object-fit:cover; }
+        .license-card-body { padding:16px; }
+        .license-card-name { font-size:16px; font-weight:700; margin-bottom:2px; }
+        .license-card-email { font-size:12px; color:var(--text-secondary); margin-bottom:10px; }
+        .license-card-meta { font-size:12px; color:var(--text-secondary); margin-bottom:12px; line-height:1.8; }
+        .rejection-reason { background:rgba(239,68,68,0.08); border:1px solid rgba(239,68,68,0.2); border-radius:8px; padding:10px 12px; font-size:12px; color:#fca5a5; margin-bottom:10px; }
 
-        .modal-details span {
-            color: #e2e8f0;
-        }
-
-        .modal-footer {
-            display: flex;
-            gap: 10px;
-            justify-content: flex-end;
-        }
-
-        .modal-footer button {
-            padding: 10px 20px;
-        }
-
-        .btn-close {
-            background: #64748b;
-        }
-
-        .btn-close:hover {
-            background: #475569;
-        }
-
-        .alert {
-            padding: 15px 20px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            font-size: 14px;
-        }
-
-        .alert-success {
-            background: #22c55e;
-            color: #000;
-            border-left: 4px solid #16a34a;
-        }
-
-        .alert-error {
-            background: #ef4444;
-            color: #fff;
-            border-left: 4px solid #dc2626;
-        }
-
-        .alert-info {
-            background: #0ea5e9;
-            color: #fff;
-            border-left: 4px solid #0284c7;
-        }
-
-        .auth-section {
-            background: #1e293b;
-            padding: 20px;
-            border-radius: 8px;
-            margin-bottom: 30px;
-            text-align: center;
-        }
-
-        .auth-section button {
-            background: #ef4444;
-        }
-
-        .auth-section button:hover {
-            background: #dc2626;
-        }
-
-        @media (max-width: 768px) {
-            .licenses-grid {
-                grid-template-columns: 1fr;
-            }
-
-            header h1 {
-                font-size: 20px;
-            }
-
-            .controls {
-                flex-direction: column;
-            }
-
-            .filter-group {
-                flex-direction: column;
-                align-items: flex-start;
-            }
+        @media (max-width:768px) {
+            .sidebar { display:none; }
+            .main { margin-left:0; padding:16px; }
+            .license-grid { grid-template-columns:1fr; }
         }
     </style>
 </head>
 <body>
 
-    <!-- ── PIN Lock Overlay ── -->
-    <div id="pinOverlay">
-        <div class="pin-card">
-            <div class="pin-logo">🔐</div>
-            <div class="pin-title">PullUp Admin</div>
-            <div class="pin-subtitle">Enter your 6-digit PIN to continue</div>
-
-            <div class="pin-dots">
-                <div class="pin-dot"></div>
-                <div class="pin-dot"></div>
-                <div class="pin-dot"></div>
-                <div class="pin-dot"></div>
-                <div class="pin-dot"></div>
-                <div class="pin-dot"></div>
-            </div>
-
-            <div class="pin-keypad">
-                <button class="pin-key" onclick="pressKey('1')">1</button>
-                <button class="pin-key" onclick="pressKey('2')">2</button>
-                <button class="pin-key" onclick="pressKey('3')">3</button>
-                <button class="pin-key" onclick="pressKey('4')">4</button>
-                <button class="pin-key" onclick="pressKey('5')">5</button>
-                <button class="pin-key" onclick="pressKey('6')">6</button>
-                <button class="pin-key" onclick="pressKey('7')">7</button>
-                <button class="pin-key" onclick="pressKey('8')">8</button>
-                <button class="pin-key" onclick="pressKey('9')">9</button>
-                <button class="pin-key empty"></button>
-                <button class="pin-key" onclick="pressKey('0')">0</button>
-                <button class="pin-key del" onclick="pressKey('del')">⌫</button>
-            </div>
-
-            <div class="pin-error" id="pinError"></div>
+<!-- PIN Overlay -->
+<div id="pinOverlay">
+    <div class="pin-card">
+        <div class="pin-logo">🔐</div>
+        <div class="pin-title">PullUp Admin</div>
+        <div class="pin-subtitle">Enter your 6-digit PIN to continue</div>
+        <div class="pin-dots">
+            <div class="pin-dot"></div><div class="pin-dot"></div><div class="pin-dot"></div>
+            <div class="pin-dot"></div><div class="pin-dot"></div><div class="pin-dot"></div>
         </div>
+        <div class="pin-keypad">
+            <button class="pin-key" onclick="pressKey('1')">1</button>
+            <button class="pin-key" onclick="pressKey('2')">2</button>
+            <button class="pin-key" onclick="pressKey('3')">3</button>
+            <button class="pin-key" onclick="pressKey('4')">4</button>
+            <button class="pin-key" onclick="pressKey('5')">5</button>
+            <button class="pin-key" onclick="pressKey('6')">6</button>
+            <button class="pin-key" onclick="pressKey('7')">7</button>
+            <button class="pin-key" onclick="pressKey('8')">8</button>
+            <button class="pin-key" onclick="pressKey('9')">9</button>
+            <button class="pin-key empty"></button>
+            <button class="pin-key" onclick="pressKey('0')">0</button>
+            <button class="pin-key del" onclick="pressKey('del')">⌫</button>
+        </div>
+        <div class="pin-error" id="pinError"></div>
     </div>
+</div>
 
-    <div id="mainContent">
-    <div class="container">
+<!-- Main App -->
+<div id="mainContent">
+<div class="app">
 
-        <header style="text-align: center; margin-bottom: 30px;">
-            <h1 style="font-size: 28px; margin-bottom: 5px; color: #f8fafc;">🚗 PullUp Admin Dashboard</h1>
-            <p style="color: #94a3b8; font-size: 14px;">Database Management & License Verification</p>
-        </header>
-
-        <!-- Navigation Tabs -->
-        <div style="display: flex; gap: 10px; margin-bottom: 25px; border-bottom: 2px solid #334155; padding-bottom: 15px; flex-wrap: wrap;">
-            <button onclick="switchTab('licenses')" id="tabBtn-licenses" style="background: #D4500A; color: white; font-weight: 700; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; transition: background-color 0.2s;">📋 License Management</button>
-            <button onclick="switchTab('broadcast')" id="tabBtn-broadcast" style="background: #1e293b; color: white; font-weight: 700; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; transition: background-color 0.2s;">📣 Notification Center</button>
-            <button onclick="switchTab('analytics')" id="tabBtn-analytics" style="background: #1e293b; color: white; font-weight: 700; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; transition: background-color 0.2s;">📊 Campaign Analytics</button>
+    <!-- Sidebar -->
+    <nav class="sidebar">
+        <div class="sidebar-logo">Pull<span>Up</span> Admin</div>
+        <button class="nav-item active" onclick="showSection('licenses')" id="nav-licenses">
+            📋 License Queue <span class="badge" id="pendingBadge">0</span>
+        </button>
+        <button class="nav-item" onclick="showSection('rides')" id="nav-rides">
+            🚗 Ride Monitor
+        </button>
+        <button class="nav-item" onclick="showSection('users')" id="nav-users">
+            👥 Users
+        </button>
+        <button class="nav-item" onclick="showSection('reports')" id="nav-reports">
+            📊 Reports
+        </button>
+        <button class="nav-item" onclick="showSection('broadcast')" id="nav-broadcast">
+            📣 Broadcast
+        </button>
+        <button class="nav-item" onclick="showSection('audit')" id="nav-audit">
+            🗒️ Audit Logs
+        </button>
+        <button class="nav-item" onclick="showSection('database')" id="nav-database">
+            ⚙️ Database
+        </button>
+        <div class="sidebar-bottom">
+            <button class="nav-item" onclick="loadAllData()" style="color:var(--primary)">🔄 Refresh All</button>
         </div>
+    </nav>
 
-        <div id="section-licenses">
-            <div style="text-align: center; padding: 10px; background: #1e293b; margin-bottom: 20px; border-radius: 8px;">
-                <p style="color: #0ea5e9; font-weight: 600;">✓ Admin Dashboard Loaded</p>
-            </div>
+    <!-- Main Content -->
+    <main class="main">
+        <div id="alertArea"></div>
 
-        <!-- Database Management Section -->
-        <div style="background: #1e293b; padding: 25px; border-radius: 8px; margin-bottom: 30px; border-left: 4px solid #f59e0b;">
-            <h2 style="font-size: 20px; margin-bottom: 15px; color: #fbbf24;">⚙️ Database Management</h2>
-            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
-                <button onclick="seedDatabase()" style="background: #22c55e;">
-                    🌱 Seed Database with Dummy Data
-                </button>
-                <button onclick="flushDatabase()" style="background: #ef4444;">
-                    🗑️ Flush Database (Delete All)
-                </button>
+        <!-- ── LICENSE QUEUE ── -->
+        <div id="section-licenses" class="section active">
+            <div class="page-header">
+                <h1>License Queue</h1>
+                <p>Review, approve, reject, or request resubmission of driver license applications</p>
             </div>
-            <div id="seedProgress" style="display: none; background: #0f172a; padding: 15px; border-radius: 6px; margin-top: 15px; border-left: 3px solid #60a5fa;">
+            <div class="stats-grid">
+                <div class="stat-card"><div class="label">Total</div><div class="value" id="licTotal">—</div></div>
+                <div class="stat-card"><div class="label">Pending</div><div class="value" style="color:var(--warning)" id="licPending">—</div></div>
+                <div class="stat-card"><div class="label">Verified</div><div class="value" style="color:var(--success)" id="licVerified">—</div></div>
+                <div class="stat-card"><div class="label">Rejected</div><div class="value" style="color:var(--error)" id="licRejected">—</div></div>
+                <div class="stat-card"><div class="label">Resubmit</div><div class="value" style="color:var(--info)" id="licResubmit">—</div></div>
             </div>
-        </div>
-
-            <h2 style="font-size: 20px; margin-bottom: 20px; color: #e2e8f0;">📋 License Management</h2>
-            <div class="stats">
-                <div class="stat-card">
-                    <h3>Total Licenses</h3>
-                    <div class="value" id="statTotal">0</div>
-                </div>
-                <div class="stat-card">
-                    <h3>Pending Review</h3>
-                    <div class="value" id="statPending">0</div>
-                </div>
-                <div class="stat-card">
-                    <h3>Verified</h3>
-                    <div class="value" id="statVerified">0</div>
-                </div>
-                <div class="stat-card">
-                    <h3>Rejected</h3>
-                    <div class="value" id="statRejected">0</div>
-                </div>
-            </div>
-
             <div class="controls">
-                <div class="filter-group">
-                    <label>Filter by Status:</label>
-                    <select id="filterStatus" onchange="applyFilters()">
-                        <option value="">All</option>
-                        <option value="pending">Pending</option>
-                        <option value="verified">Verified</option>
-                        <option value="rejected">Rejected</option>
-                    </select>
-                </div>
-                <button onclick="refreshData()" class="secondary">🔄 Refresh</button>
+                <select id="licFilter" onchange="renderLicenses()">
+                    <option value="">All Statuses</option>
+                    <option value="pending">Pending</option>
+                    <option value="verified">Verified</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="resubmission_requested">Resubmit Requested</option>
+                </select>
+                <input class="search-input" id="licSearch" placeholder="Search by name or email…" oninput="renderLicenses()">
+                <button class="btn btn-ghost btn-sm" onclick="loadAllData()">🔄 Refresh</button>
             </div>
-
-            <div id="licensesContainer" class="licenses-grid"></div>
-
-            <div id="emptyState" class="empty-state" style="display: none;">
-                <h2>No licenses found</h2>
-                <p>There are no licenses matching your current filters</p>
-            </div>
-
-            <div id="loadingState" class="loading" style="display: none;">
-                <div class="spinner"></div>
-                <p>Loading licenses...</p>
-            </div>
-        </div><!-- /section-licenses -->
-
-        <!-- ── Broadcast Notification Center ── -->
-        <div id="section-broadcast" style="display: none; background: #1e293b; padding: 25px; border-radius: 8px; border-left: 4px solid #D4500A; margin-bottom: 30px; border: 1px solid #334155;">
-            <h2 style="font-size: 20px; margin-bottom: 20px; color: #ff7a33; border-bottom: 1px solid #334155; padding-bottom: 10px;">📣 Broadcast Campaign Center</h2>
-            <div style="display: flex; flex-direction: column; gap: 15px; max-width: 650px;">
-                <div>
-                    <label style="display: block; font-weight: 600; margin-bottom: 5px; color: #94a3b8; font-size: 13px;">CAMPAIGN TITLE</label>
-                    <input type="text" id="notifTitle" placeholder="Catchy title (e.g. Atlas Fest Announcement)..." style="width: 100%; padding: 10px; border-radius: 6px; background: #0f172a; border: 1px solid #475569; color: white; outline: none; font-size: 14px;">
-                </div>
-                <div>
-                    <label style="display: block; font-weight: 600; margin-bottom: 5px; color: #94a3b8; font-size: 13px;">CAMPAIGN MESSAGE BODY</label>
-                    <textarea id="notifBody" rows="4" placeholder="Write message preview body..." style="width: 100%; padding: 10px; border-radius: 6px; background: #0f172a; border: 1px solid #475569; color: white; outline: none; font-size: 14px; font-family: inherit; resize: vertical;"></textarea>
-                </div>
-                <div style="display: flex; gap: 15px; flex-wrap: wrap;">
-                    <div style="flex: 1; min-width: 200px;">
-                        <label style="display: block; font-weight: 600; margin-bottom: 5px; color: #94a3b8; font-size: 13px;">TARGET AUDIENCE FILTER</label>
-                        <select id="notifAudience" style="width: 100%; padding: 10px; border-radius: 6px; background: #0f172a; border: 1px solid #475569; color: white; cursor: pointer; outline: none; font-size: 14px;">
-                            <option value="all">All Users</option>
-                            <option value="drivers">Drivers Only</option>
-                            <option value="passengers">Passengers Only</option>
-                            <option value="taxi_pool">Taxi Pool Users</option>
-                        </select>
-                    </div>
-                    <div style="flex: 1; min-width: 200px;">
-                        <label style="display: block; font-weight: 600; margin-bottom: 5px; color: #94a3b8; font-size: 13px;">DELIVERY METHOD</label>
-                        <select id="notifScheduleType" onchange="toggleScheduleTimeInput()" style="width: 100%; padding: 10px; border-radius: 6px; background: #0f172a; border: 1px solid #475569; color: white; cursor: pointer; outline: none; font-size: 14px;">
-                            <option value="now">Send Immediately</option>
-                            <option value="later">Schedule for Later</option>
-                        </select>
-                    </div>
-                </div>
-                <div id="scheduleTimeContainer" style="display: none;">
-                    <label style="display: block; font-weight: 600; margin-bottom: 5px; color: #94a3b8; font-size: 13px;">SCHEDULED DATE & TIME</label>
-                    <input type="datetime-local" id="notifScheduleTime" style="width: 100%; padding: 10px; border-radius: 6px; background: #0f172a; border: 1px solid #475569; color: white; outline: none; font-size: 14px;">
-                </div>
-                <div>
-                    <label style="display: block; font-weight: 600; margin-bottom: 5px; color: #94a3b8; font-size: 13px;">RECURRING CAMPAIGN SCHEDULE</label>
-                    <select id="notifRecurrence" style="width: 100%; padding: 10px; border-radius: 6px; background: #0f172a; border: 1px solid #475569; color: white; cursor: pointer; outline: none; font-size: 14px;">
-                        <option value="none">No Recurrence (One-Shot)</option>
-                        <option value="weekly_monday">Every Monday 8:00 AM</option>
-                        <option value="weekly_friday">Every Friday 5:00 PM</option>
-                    </select>
-                </div>
-                <button onclick="sendBroadcast()" style="background: #D4500A; color: white; padding: 12px; border-radius: 8px; font-weight: bold; border: none; cursor: pointer; margin-top: 10px; width: 100%; transition: background-color 0.2s;" onmouseover="this.style.backgroundColor='#bb4307'" onmouseout="this.style.backgroundColor='#D4500A'">
-                    🚀 Submit & Dispatch Campaign
-                </button>
+            <div class="license-grid" id="licenseGrid"></div>
+            <div class="empty-state" id="licEmpty" style="display:none">
+                <span style="font-size:40px">📋</span>
+                <p>No license applications match your filter</p>
             </div>
         </div>
 
-        <!-- ── Notification Analytics ── -->
-        <div id="section-analytics" style="display: none; background: #1e293b; padding: 25px; border-radius: 8px; border-left: 4px solid #10b981; border: 1px solid #334155; margin-bottom: 30px;">
-            <h2 style="font-size: 20px; margin-bottom: 20px; color: #10b981; border-bottom: 1px solid #334155; padding-bottom: 10px;">📊 Campaign Performance & CTR</h2>
-            
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 15px; margin-bottom: 25px;">
-                <div class="stat-card" style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 15px; text-align: center;">
-                    <h3 style="color: #94a3b8; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Total Campaigns</h3>
-                    <div class="value" id="analyticTotalCampaigns" style="font-size: 28px; font-weight: bold; color: white;">0</div>
-                </div>
-                <div class="stat-card" style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 15px; text-align: center;">
-                    <h3 style="color: #94a3b8; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Total Sent</h3>
-                    <div class="value" id="analyticTotalSent" style="font-size: 28px; font-weight: bold; color: white;">0</div>
-                </div>
-                <div class="stat-card" style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 15px; text-align: center;">
-                    <h3 style="color: #94a3b8; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Avg Open Rate</h3>
-                    <div class="value" id="analyticAvgOpen" style="font-size: 28px; font-weight: bold; color: #38bdf8;">0%</div>
-                </div>
-                <div class="stat-card" style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 15px; text-align: center;">
-                    <h3 style="color: #94a3b8; font-size: 12px; text-transform: uppercase; margin-bottom: 8px;">Avg CTR</h3>
-                    <div class="value" id="analyticAvgCtr" style="font-size: 28px; font-weight: bold; color: #4ade80;">0%</div>
-                </div>
+        <!-- ── RIDE MONITOR ── -->
+        <div id="section-rides" class="section">
+            <div class="page-header"><h1>Ride Monitoring</h1><p>Live overview of all rides and their statuses</p></div>
+            <div class="stats-grid">
+                <div class="stat-card"><div class="label">Total</div><div class="value" id="rideTotal">—</div></div>
+                <div class="stat-card"><div class="label" style="color:var(--info)">Active</div><div class="value" style="color:var(--info)" id="rideActive">—</div></div>
+                <div class="stat-card"><div class="label" style="color:var(--warning)">In Progress</div><div class="value" style="color:var(--warning)" id="rideInProgress">—</div></div>
+                <div class="stat-card"><div class="label" style="color:var(--success)">Completed</div><div class="value" style="color:var(--success)" id="rideCompleted">—</div></div>
+                <div class="stat-card"><div class="label" style="color:var(--error)">Cancelled</div><div class="value" style="color:var(--error)" id="rideCancelled">—</div></div>
             </div>
-
-            <h3 style="margin-bottom: 15px; color: #e2e8f0; font-size: 16px;">Active Campaigns History</h3>
-            <div style="overflow-x: auto;">
-                <table style="width: 100%; border-collapse: collapse; background: #0f172a; border-radius: 8px; overflow: hidden; margin-bottom: 10px;">
+            <div class="controls">
+                <select id="rideFilter" onchange="renderRides()">
+                    <option value="">All</option>
+                    <option value="active">Active</option>
+                    <option value="in_progress">In Progress</option>
+                    <option value="completed">Completed</option>
+                    <option value="cancelled">Cancelled</option>
+                </select>
+                <input class="search-input" id="rideSearch" placeholder="Search driver…" oninput="renderRides()">
+            </div>
+            <div class="table-wrap">
+                <table>
                     <thead>
-                        <tr style="background: #334155; text-align: left; border-bottom: 1px solid #475569;">
-                            <th style="padding: 12px; color: white; font-size: 13px;">Campaign Details</th>
-                            <th style="padding: 12px; color: white; font-size: 13px;">Audience</th>
-                            <th style="padding: 12px; color: white; font-size: 13px;">Sent</th>
-                            <th style="padding: 12px; color: white; font-size: 13px;">Delivered</th>
-                            <th style="padding: 12px; color: white; font-size: 13px;">Opened</th>
-                            <th style="padding: 12px; color: white; font-size: 13px;">Clicked</th>
-                            <th style="padding: 12px; color: white; font-size: 13px;">CTR (%)</th>
+                        <tr>
+                            <th>Driver</th><th>Route</th><th>Departure</th><th>Seats</th><th>Status</th><th>Actions</th>
                         </tr>
                     </thead>
-                    <tbody id="analyticsTableBody" style="color: #cbd5e1; font-size: 13px;">
-                        <!-- Dynamically populated -->
-                    </tbody>
+                    <tbody id="rideTable"></tbody>
                 </table>
             </div>
         </div>
-    </div>
 
-    <!-- Detail Modal -->
-    <div id="licenseModal" class="modal">
-        <div class="modal-content">
-            <div class="modal-header">License Details</div>
-            <div class="modal-body">
-                <img id="modalImage" class="modal-image" src="" alt="License">
-                <div class="modal-details">
-                    <div>
-                        <label>Car Owner Name:</label>
-                        <span id="modalName"></span>
-                    </div>
-                    <div>
-                        <label>Email:</label>
-                        <span id="modalEmail"></span>
-                    </div>
-                    <div>
-                        <label>Role:</label>
-                        <span id="modalRole"></span>
-                    </div>
-                    <div>
-                        <label>Year:</label>
-                        <span id="modalYear"></span>
-                    </div>
-                    <div>
-                        <label>Course:</label>
-                        <span id="modalCourse"></span>
-                    </div>
-                    <div>
-                        <label>Division:</label>
-                        <span id="modalDivision"></span>
-                    </div>
-                    <div>
-                        <label>Status:</label>
-                        <span id="modalStatus"></span>
-                    </div>
-                    <div>
-                        <label>Uploaded:</label>
-                        <span id="modalUploadedAt"></span>
-                    </div>
-                </div>
+        <!-- ── USER MANAGEMENT ── -->
+        <div id="section-users" class="section">
+            <div class="page-header"><h1>User Management</h1><p>View and manage all registered users</p></div>
+            <div class="stats-grid">
+                <div class="stat-card"><div class="label">Total Users</div><div class="value" id="userTotal">—</div></div>
+                <div class="stat-card"><div class="label" style="color:var(--primary)">Drivers</div><div class="value" style="color:var(--primary)" id="userDrivers">—</div></div>
+                <div class="stat-card"><div class="label">Passengers</div><div class="value" id="userPassengers">—</div></div>
             </div>
-            <div class="modal-footer">
-                <button class="btn-close" onclick="closeModal()">Close</button>
-                <button class="btn-verify" id="btnModalVerify" onclick="verifyLicense()" style="display: none;">Verify</button>
-                <button class="btn-reject" id="btnModalReject" onclick="rejectLicense()" style="display: none;">Reject</button>
+            <div class="controls">
+                <select id="userFilter" onchange="renderUsers()">
+                    <option value="">All Roles</option>
+                    <option value="driver">Drivers</option>
+                    <option value="passenger">Passengers</option>
+                </select>
+                <input class="search-input" id="userSearch" placeholder="Search by name or email…" oninput="renderUsers()">
+            </div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Name</th><th>Email</th><th>Role</th><th>License</th><th>Joined</th><th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="userTable"></tbody>
+                </table>
             </div>
         </div>
-    </div>
 
-    </div><!-- /mainContent -->
+        <!-- ── REPORTS ── -->
+        <div id="section-reports" class="section">
+            <div class="page-header"><h1>System Reports</h1><p>Key performance indicators and analytics</p></div>
+            <div class="stats-grid">
+                <div class="stat-card"><div class="label">Total Users</div><div class="value" id="rpt-users">—</div><div class="sub">Registered accounts</div></div>
+                <div class="stat-card"><div class="label">Total Rides</div><div class="value" id="rpt-rides">—</div><div class="sub">All time</div></div>
+                <div class="stat-card"><div class="label">Total Bookings</div><div class="value" id="rpt-bookings">—</div><div class="sub">All time</div></div>
+                <div class="stat-card"><div class="label">Verified Drivers</div><div class="value" style="color:var(--success)" id="rpt-drivers">—</div></div>
+                <div class="stat-card"><div class="label">Pending Licenses</div><div class="value" style="color:var(--warning)" id="rpt-pending">—</div></div>
+                <div class="stat-card"><div class="label">Confirmed Bookings</div><div class="value" style="color:var(--info)" id="rpt-confirmed">—</div></div>
+                <div class="stat-card"><div class="label">Completion Rate</div><div class="value" style="color:var(--success)" id="rpt-completion">—</div></div>
+                <div class="stat-card"><div class="label">In Progress Now</div><div class="value" style="color:var(--warning)" id="rpt-inprogress">—</div></div>
+            </div>
+        </div>
 
-    <script src="dbManager.js"></script>
-    <script>
-        // Firebase Configuration
-        const firebaseConfig = {
-            apiKey: "AIzaSyDAH_IkC3mEa0I3K58YZ6NnnCNWH7u7v98",
-            authDomain: "pullup-production.firebaseapp.com",
-            projectId: "pullup-production",
-            storageBucket: "pullup-production.firebasestorage.app",
-            messagingSenderId: "286433202099",
-            appId: "1:286433202099:web:e2b0d38e845d50bc3005c6"
-        };
-
-        firebase.initializeApp(firebaseConfig);
-        const db = firebase.firestore();
-        const auth = firebase.auth();
-
-        let currentUser = null;
-        let allLicenses = [];
-        let currentlyViewingLicense = null;
-
-        // Initialize - Authenticate anonymously first, then load licenses
-        async function initialize() {
-            try {
-                console.log('🔐 Admin: Starting anonymous authentication...');
-                await auth.signInAnonymously();
-                console.log('✅ Admin: Authenticated as:', auth.currentUser?.uid);
-                
-                // Small delay to ensure auth state is fully propagated
-                await new Promise(resolve => setTimeout(resolve, 500));
-                
-                // Now initialize database manager after auth is complete
-                if (typeof initializeDBManager === 'function') {
-                  console.log('🚀 Admin: Initializing DB manager...');
-                  initializeDBManager();
-                } else {
-                  console.warn('⚠️ Admin: initializeDBManager not found');
-                }
-                
-                document.getElementById('mainContent').style.display = 'block';
-                loadLicenses();
-            } catch (error) {
-                showAlert('Failed to initialize admin panel: ' + error.message, 'error');
-                console.error('❌ Admin: Authentication error:', error);
-            }
-        }
-
-        // ── PIN Lock Logic ──────────────────────────────────────────────────
-        const CORRECT_PIN = '100726';
-        const SESSION_KEY = 'pullup_admin_auth';
-        let pinBuffer = '';
-        let wrongAttempts = 0;
-        let lockoutUntil = 0;
-
-        function renderDots() {
-            const dots = document.querySelectorAll('.pin-dot');
-            dots.forEach((d, i) => {
-                d.classList.toggle('filled', i < pinBuffer.length);
-                d.classList.remove('error');
-            });
-        }
-
-        function pinShakeError(msg) {
-            const dots = document.querySelectorAll('.pin-dot');
-            dots.forEach(d => { d.classList.remove('filled'); d.classList.add('error'); });
-            document.getElementById('pinError').textContent = msg;
-            pinBuffer = '';
-            setTimeout(() => {
-                dots.forEach(d => d.classList.remove('error'));
-            }, 600);
-        }
-
-        function pressKey(val) {
-            const now = Date.now();
-            if (now < lockoutUntil) {
-                const secs = Math.ceil((lockoutUntil - now) / 1000);
-                document.getElementById('pinError').textContent = `Too many attempts. Wait ${secs}s.`;
-                return;
-            }
-            if (val === 'del') {
-                pinBuffer = pinBuffer.slice(0, -1);
-                renderDots();
-                document.getElementById('pinError').textContent = '';
-                return;
-            }
-            if (pinBuffer.length >= 6) return;
-            pinBuffer += val;
-            renderDots();
-            if (pinBuffer.length === 6) {
-                setTimeout(checkPin, 120);
-            }
-        }
-
-        function checkPin() {
-            if (pinBuffer === CORRECT_PIN) {
-                sessionStorage.setItem(SESSION_KEY, '1');
-                document.getElementById('pinOverlay').classList.add('hidden');
-                initialize();
-            } else {
-                wrongAttempts++;
-                if (wrongAttempts >= 3) {
-                    lockoutUntil = Date.now() + 30000;
-                    pinShakeError('Too many attempts. Locked for 30s.');
-                    wrongAttempts = 0;
-                    startLockoutTimer();
-                } else {
-                    pinShakeError(`Incorrect PIN. ${3 - wrongAttempts} attempt${3 - wrongAttempts === 1 ? '' : 's'} left.`);
-                }
-            }
-        }
-
-        function startLockoutTimer() {
-            const el = document.getElementById('pinError');
-            const interval = setInterval(() => {
-                const remaining = Math.ceil((lockoutUntil - Date.now()) / 1000);
-                if (remaining <= 0) {
-                    clearInterval(interval);
-                    el.textContent = '';
-                } else {
-                    el.textContent = `Too many attempts. Locked for ${remaining}s.`;
-                }
-            }, 1000);
-        }
-
-        document.addEventListener('DOMContentLoaded', () => {
-            if (sessionStorage.getItem(SESSION_KEY) === '1') {
-                // Already authenticated this session
-                document.getElementById('pinOverlay').classList.add('hidden');
-                initialize();
-            }
-            // Keyboard support
-            document.addEventListener('keydown', (e) => {
-                if (document.getElementById('pinOverlay').classList.contains('hidden')) return;
-                if (e.key >= '0' && e.key <= '9') pressKey(e.key);
-                if (e.key === 'Backspace') pressKey('del');
-            });
-        });
-
-        // ── Navigation, Broadcast, and Analytics Controls ───────────────────
-        function switchTab(tabId) {
-            const sections = ['licenses', 'broadcast', 'analytics'];
-            sections.forEach(s => {
-                const el = document.getElementById(`section-${s}`);
-                if (el) el.style.display = s === tabId ? 'block' : 'none';
-                
-                const btn = document.getElementById(`tabBtn-${s}`);
-                if (btn) {
-                    btn.style.background = s === tabId ? '#D4500A' : '#1e293b';
-                }
-            });
-            if (tabId === 'analytics') {
-                loadAnalytics();
-            }
-        }
-
-        function toggleScheduleTimeInput() {
-            const type = document.getElementById('notifScheduleType').value;
-            document.getElementById('scheduleTimeContainer').style.display = type === 'later' ? 'block' : 'none';
-        }
-
-        async function loadAnalytics() {
-            try {
-                const snapshot = await db.collection('notificationAnalytics').get();
-                const tbody = document.getElementById('analyticsTableBody');
-                tbody.innerHTML = '';
-
-                let totalSent = 0;
-                let totalDelivered = 0;
-                let totalOpened = 0;
-                let totalClicked = 0;
-                let campaignCount = 0;
-
-                snapshot.forEach(doc => {
-                    const data = doc.data();
-                    campaignCount++;
-                    const sent = data.sentCount || 0;
-                    const del = data.deliveredCount || 0;
-                    const op = data.openedCount || 0;
-                    const cl = data.clickedCount || 0;
-                    
-                    totalSent += sent;
-                    totalDelivered += del;
-                    totalOpened += op;
-                    totalClicked += cl;
-
-                    const ctr = del > 0 ? ((cl / del) * 100).toFixed(1) : '0.0';
-                    const sentAtDate = data.sentAt?.toDate ? data.sentAt.toDate().toLocaleString() : new Date().toLocaleString();
-
-                    const tr = document.createElement('tr');
-                    tr.style.borderBottom = '1px solid #334155';
-                    tr.innerHTML = `
-                        <td style="padding: 12px;">
-                            <strong style="color: white; display:block;">${data.title}</strong>
-                            <span style="color: #94a3b8; font-size:11px;">${data.body}</span>
-                            <div style="color: #64748b; font-size:10px; margin-top:4px;">Dispatched: ${sentAtDate}</div>
-                        </td>
-                        <td style="padding: 12px; text-transform: uppercase; font-weight:600;">${data.audience || 'all'}</td>
-                        <td style="padding: 12px; font-weight:600;">${sent}</td>
-                        <td style="padding: 12px;">${del}</td>
-                        <td style="padding: 12px;">${op}</td>
-                        <td style="padding: 12px; color: #38bdf8; font-weight:600;">${cl}</td>
-                        <td style="padding: 12px; color: #4ade80; font-weight:700;">${ctr}%</td>
-                    `;
-                    tbody.appendChild(tr);
-                });
-
-                document.getElementById('analyticTotalCampaigns').textContent = campaignCount;
-                document.getElementById('analyticTotalSent').textContent = totalSent;
-                
-                const avgOpen = totalDelivered > 0 ? ((totalOpened / totalDelivered) * 100).toFixed(1) : '0.0';
-                const avgCtr = totalDelivered > 0 ? ((totalClicked / totalDelivered) * 100).toFixed(1) : '0.0';
-
-                document.getElementById('analyticAvgOpen').textContent = `${avgOpen}%`;
-                document.getElementById('analyticAvgCtr').textContent = `${avgCtr}%`;
-            } catch (e) {
-                console.error('Error loading analytics:', e);
-            }
-        }
-
-        async function sendBroadcast() {
-            const title = document.getElementById('notifTitle').value.trim();
-            const body = document.getElementById('notifBody').value.trim();
-            const audience = document.getElementById('notifAudience').value;
-            const scheduleType = document.getElementById('notifScheduleType').value;
-            const recurrence = document.getElementById('notifRecurrence').value;
-            
-            if (!title || !body) {
-                alert('Please enter title and body.');
-                return;
-            }
-
-            const campaignId = 'camp_' + Date.now();
-
-            if (scheduleType === 'later') {
-                const scheduleTimeStr = document.getElementById('notifScheduleTime').value;
-                if (!scheduleTimeStr) {
-                    alert('Please select a scheduled date and time.');
-                    return;
-                }
-                const scheduleTime = new Date(scheduleTimeStr);
-                if (scheduleTime <= new Date()) {
-                    alert('Scheduled time must be in the future.');
-                    return;
-                }
-
-                try {
-                    await db.collection('scheduledNotifications').doc(campaignId).set({
-                        id: campaignId,
-                        title,
-                        body,
-                        target: audience,
-                        scheduledTime: firebase.firestore.Timestamp.fromDate(scheduleTime),
-                        status: 'pending',
-                        createdAt: firebase.firestore.Timestamp.now(),
-                        campaignId,
-                        recurringPattern: recurrence
-                    });
-
-                    await db.collection('notificationAnalytics').doc(campaignId).set({
-                        campaignId,
-                        title,
-                        body,
-                        sentAt: firebase.firestore.Timestamp.fromDate(scheduleTime),
-                        audience,
-                        sentCount: 0,
-                        deliveredCount: 0,
-                        openedCount: 0,
-                        clickedCount: 0
-                    });
-
-                    alert('Campaign scheduled successfully!');
-                    document.getElementById('notifTitle').value = '';
-                    document.getElementById('notifBody').value = '';
-                    document.getElementById('notifScheduleTime').value = '';
-                } catch (e) {
-                    console.error('Failed to schedule campaign:', e);
-                    alert('Error scheduling campaign: ' + e.message);
-                }
-                return;
-            }
-
-            // Send immediately
-            try {
-                await db.collection('notificationAnalytics').doc(campaignId).set({
-                    campaignId,
-                    title,
-                    body,
-                    sentAt: firebase.firestore.Timestamp.now(),
-                    audience,
-                    sentCount: 0,
-                    deliveredCount: 0,
-                    openedCount: 0,
-                    clickedCount: 0
-                });
-
-                let userSnap;
-                if (audience === 'drivers') {
-                    userSnap = await db.collection('users').where('role', '==', 'driver').get();
-                } else if (audience === 'passengers') {
-                    userSnap = await db.collection('users').where('role', '==', 'passenger').get();
-                } else {
-                    userSnap = await db.collection('users').get();
-                }
-
-                let targetUserIds = [];
-                userSnap.forEach(uDoc => {
-                    targetUserIds.push(uDoc.id);
-                });
-
-                if (targetUserIds.length === 0) {
-                    alert('No users found in targeted audience group.');
-                    return;
-                }
-
-                alert(`Dispatching campaign to ${targetUserIds.length} users. Please wait...`);
-
-                let successCount = 0;
-                const backendUrl = 'http://localhost:3099';
-
-                for (const uId of targetUserIds) {
-                    try {
-                        const response = await fetch(`${backendUrl}/api/otp/send-notification`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                userId: uId,
-                                type: 'campaign',
-                                title,
-                                message: body,
-                                campaignId
-                            })
-                        });
-                        if (response.ok) {
-                            successCount++;
-                        }
-                    } catch (err) {
-                        console.error('Error dispatching campaign user:', uId, err);
-                    }
-                }
-
-                alert(`Campaign dispatched! Successful sends: ${successCount}/${targetUserIds.length}`);
-                document.getElementById('notifTitle').value = '';
-                document.getElementById('notifBody').value = '';
-            } catch (e) {
-                console.error('Failed to send broadcast:', e);
-                alert('Error sending broadcast: ' + e.message);
-            }
-        }
-
-        async function loadLicenses() {
-            showLoading();
-            try {
-                const snapshot = await db.collection('users')
-                    .where('licenseImageUri', '!=', null)
-                    .get();
-
-                allLicenses = [];
-                snapshot.forEach(doc => {
-                    allLicenses.push({
-                        id: doc.id,
-                        ...doc.data()
-                    });
-                });
-
-                updateStats();
-                applyFilters();
-            } catch (error) {
-                showAlert('Error loading licenses: ' + error.message, 'error');
-                hideLoading();
-            }
-        }
-
-        function updateStats() {
-            const total = allLicenses.length;
-            const pending = allLicenses.filter(l => l.licenseVerificationStatus === 'pending').length;
-            const verified = allLicenses.filter(l => l.licenseVerificationStatus === 'verified').length;
-            const rejected = allLicenses.filter(l => l.licenseVerificationStatus === 'rejected').length;
-
-            document.getElementById('statTotal').textContent = total;
-            document.getElementById('statPending').textContent = pending;
-            document.getElementById('statVerified').textContent = verified;
-            document.getElementById('statRejected').textContent = rejected;
-        }
-
-        function applyFilters() {
-            const statusFilter = document.getElementById('filterStatus').value;
-            let filtered = allLicenses;
-
-            if (statusFilter) {
-                filtered = filtered.filter(l => l.licenseVerificationStatus === statusFilter);
-            }
-
-            if (filtered.length === 0) {
-                document.getElementById('licensesContainer').style.display = 'none';
-                document.getElementById('emptyState').style.display = 'block';
-            } else {
-                document.getElementById('licensesContainer').style.display = 'grid';
-                document.getElementById('emptyState').style.display = 'none';
-                renderLicenses(filtered);
-            }
-
-            hideLoading();
-        }
-
-        function renderLicenses(licenses) {
-            const container = document.getElementById('licensesContainer');
-            container.innerHTML = licenses.map(license => `
-                <div class="license-card">
-                    <div class="license-image-container" onclick="viewLicense('${license.id}')">
-                        ${license.licenseImageUri ? 
-                            `<img src="${license.licenseImageUri}" alt="License">` :
-                            `<span class="no-image">No image</span>`
-                        }
-                    </div>
-                    <div class="license-info">
-                        <div class="driver-name">${license.fullName || 'Unknown'}</div>
-                        <div class="driver-email">${license.email}</div>
-                        <div class="status-badge status-${license.licenseVerificationStatus || 'pending'}">
-                            ${(license.licenseVerificationStatus || 'pending').toUpperCase()}
-                        </div>
-                        <div class="driver-details">
-                            <div>
-                                <label>Role:</label>
-                                <span>${license.role || '-'}</span>
-                            </div>
-                            <div>
-                                <label>Year:</label>
-                                <span>${license.year || '-'}</span>
-                            </div>
-                            <div>
-                                <label>Course:</label>
-                                <span>${license.course || '-'}</span>
-                            </div>
-                            <div>
-                                <label>Phone:</label>
-                                <span>${license.phone || 'Not provided'}</span>
-                            </div>
-                        </div>
-                        <div class="action-buttons">
-                            ${license.licenseVerificationStatus === 'pending' ? `
-                                <button class="btn-verify" onclick="quickVerify('${license.id}')">Verify</button>
-                                <button class="btn-reject" onclick="quickReject('${license.id}')">Reject</button>
-                            ` : `
-                                <button class="btn-pending" onclick="viewLicense('${license.id}')">View</button>
-                            `}
-                        </div>
-                    </div>
+        <!-- ── BROADCAST ── -->
+        <div id="section-broadcast" class="section">
+            <div class="page-header"><h1>Broadcast Center</h1><p>Send notifications to users</p></div>
+            <div class="table-wrap" style="max-width:640px; padding:24px;">
+                <div class="form-group">
+                    <label>Campaign Title</label>
+                    <input class="form-control" id="bcTitle" placeholder="e.g. Atlas Fest Announcement">
                 </div>
-            `).join('');
-        }
+                <div class="form-group">
+                    <label>Message Body</label>
+                    <textarea class="form-control" id="bcBody" rows="4" placeholder="Write your message…"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Target Audience</label>
+                    <select class="form-control" id="bcAudience">
+                        <option value="all">All Users</option>
+                        <option value="drivers">Drivers Only</option>
+                        <option value="passengers">Passengers Only</option>
+                    </select>
+                </div>
+                <button class="btn btn-primary" onclick="sendBroadcast()" style="width:100%; padding:12px; font-size:14px; border-radius:10px; margin-top:8px;">
+                    🚀 Dispatch Campaign
+                </button>
+            </div>
+        </div>
 
-        function viewLicense(licenseId) {
-            const license = allLicenses.find(l => l.id === licenseId);
-            if (!license) return;
+        <!-- ── AUDIT LOGS ── -->
+        <div id="section-audit" class="section">
+            <div class="page-header"><h1>Audit Logs</h1><p>Immutable record of all admin actions</p></div>
+            <div class="table-wrap">
+                <div id="auditList"></div>
+            </div>
+        </div>
 
-            currentlyViewingLicense = license;
-            document.getElementById('modalImage').src = license.licenseImageUri || '';
-            document.getElementById('modalName').textContent = license.fullName || 'Unknown';
-            document.getElementById('modalEmail').textContent = license.email;
-            document.getElementById('modalRole').textContent = license.role || '-';
-            document.getElementById('modalYear').textContent = license.year || '-';
-            document.getElementById('modalCourse').textContent = license.course || '-';
-            document.getElementById('modalDivision').textContent = license.division || '-';
-            document.getElementById('modalStatus').textContent = (license.licenseVerificationStatus || 'pending').toUpperCase();
-            
-            const uploadedAt = license.licenseUploadedAt ?
-                new Date(license.licenseUploadedAt).toLocaleDateString() : 'Unknown';
-            document.getElementById('modalUploadedAt').textContent = uploadedAt;
+        <!-- ── DATABASE ── -->
+        <div id="section-database" class="section">
+            <div class="page-header"><h1>Database Management</h1><p>Seed test data or flush the database</p></div>
+            <div class="table-wrap" style="padding:24px; max-width:500px;">
+                <p style="color:var(--text-secondary); font-size:14px; margin-bottom:20px;">These actions are irreversible. Use with extreme caution in production.</p>
+                <div style="display:flex; flex-direction:column; gap:12px;">
+                    <button class="btn btn-success" onclick="seedDatabase()" style="padding:14px; font-size:14px; border-radius:10px;">
+                        🌱 Seed Database with Dummy Data
+                    </button>
+                    <button class="btn btn-danger" onclick="flushDatabaseAdmin()" style="padding:14px; font-size:14px; border-radius:10px;">
+                        🗑️ Flush Rides & Bookings (Admin API)
+                    </button>
+                </div>
+                <div id="dbProgress" style="display:none; margin-top:16px; background:var(--surface); border-radius:10px; padding:14px;"></div>
+            </div>
+        </div>
 
-            const isPending = license.licenseVerificationStatus === 'pending';
-            document.getElementById('btnModalVerify').style.display = isPending ? 'block' : 'none';
-            document.getElementById('btnModalReject').style.display = isPending ? 'block' : 'none';
+    </main>
+</div>
+</div>
 
-            document.getElementById('licenseModal').classList.add('active');
-        }
+<!-- License Detail Modal -->
+<div class="modal-overlay" id="licModal">
+    <div class="modal">
+        <div class="modal-head">
+            <h3>License Details</h3>
+            <button class="modal-close" onclick="closeLicModal()">✕</button>
+        </div>
+        <div class="modal-body">
+            <img id="mLicImg" src="" alt="License" onclick="window.open(this.src,'_blank')">
+            <div class="modal-detail">
+                <div class="modal-detail-row"><label>Name:</label><span id="mLicName"></span></div>
+                <div class="modal-detail-row"><label>Email:</label><span id="mLicEmail"></span></div>
+                <div class="modal-detail-row"><label>Role:</label><span id="mLicRole"></span></div>
+                <div class="modal-detail-row"><label>Year / Course:</label><span id="mLicYear"></span></div>
+                <div class="modal-detail-row"><label>Division:</label><span id="mLicDiv"></span></div>
+                <div class="modal-detail-row"><label>Status:</label><span id="mLicStatus"></span></div>
+                <div class="modal-detail-row"><label>Uploaded:</label><span id="mLicUploaded"></span></div>
+            </div>
+            <div id="mRejectReasonBox" style="display:none">
+                <div class="rejection-reason" id="mRejectReasonText"></div>
+            </div>
+            <div id="mReasonInput" style="display:none">
+                <div class="form-group">
+                    <label id="mReasonLabel">Rejection Reason</label>
+                    <textarea class="form-control" id="mReason" rows="3" placeholder="Enter reason for rejection or resubmission request…"></textarea>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer" id="mLicFooter"></div>
+    </div>
+</div>
 
-        function closeModal() {
-            document.getElementById('licenseModal').classList.remove('active');
-            currentlyViewingLicense = null;
-        }
+<!-- Firebase (compat) -->
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+<script src="dbManager.js"></script>
 
-        async function verifyLicense() {
-            if (!currentlyViewingLicense) return;
-            await updateLicenseStatus(currentlyViewingLicense.id, 'verified');
-            closeModal();
-        }
+<script>
+// ── Config ───────────────────────────────────────────────────────────────────
+const BACKEND_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+    ? 'http://localhost:3000' : 'https://backend-eight-gamma-77.vercel.app';
 
-        async function rejectLicense() {
-            if (!currentlyViewingLicense) return;
-            await updateLicenseStatus(currentlyViewingLicense.id, 'rejected');
-            closeModal();
-        }
+const ADMIN_SECRET = (() => {
+    // Try to read from localStorage (admin can store it once)
+    return localStorage.getItem('pullup_admin_secret') || prompt('Enter Admin Secret (PULLUP_ADMIN_SECRET):') || '';
+})();
+if (ADMIN_SECRET) localStorage.setItem('pullup_admin_secret', ADMIN_SECRET);
 
-        async function quickVerify(licenseId) {
-            await updateLicenseStatus(licenseId, 'verified');
-        }
+const firebaseConfig = {
+    apiKey: "AIzaSyDAH_IkC3mEa0I3K58YZ6NnnCNWH7u7v98",
+    authDomain: "pullup-production.firebaseapp.com",
+    projectId: "pullup-production",
+    storageBucket: "pullup-production.firebasestorage.app",
+    messagingSenderId: "286433202099",
+    appId: "1:286433202099:web:e2b0d38e845d50bc3005c6"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+const auth = firebase.auth();
 
-        async function quickReject(licenseId) {
-            await updateLicenseStatus(licenseId, 'rejected');
-        }
+// ── State ────────────────────────────────────────────────────────────────────
+let allUsers = [], allRides = [], allBookings = [], allAuditLogs = [], globalStats = {};
+let currentLicUser = null;
 
-        async function updateLicenseStatus(licenseId, status) {
-            showLoading();
-            try {
-                await db.collection('users').doc(licenseId).update({
-                    licenseVerified: status === 'verified',
-                    licenseVerificationStatus: status,
-                });
-                showAlert(`License ${status} successfully!`, 'success');
-                loadLicenses();
-            } catch (error) {
-                showAlert('Error updating license: ' + error.message, 'error');
-                hideLoading();
-            }
-        }
+// ── PIN Lock ─────────────────────────────────────────────────────────────────
+const CORRECT_PIN = '100726';
+const SESSION_KEY = 'pullup_admin_auth_v2';
+let pinBuffer = '', wrongAttempts = 0, lockoutUntil = 0;
 
-        function refreshData() {
-            loadLicenses();
-        }
+function renderDots() {
+    document.querySelectorAll('.pin-dot').forEach((d,i) => {
+        d.classList.toggle('filled', i < pinBuffer.length);
+        d.classList.remove('error');
+    });
+}
+function pinError(msg) {
+    document.querySelectorAll('.pin-dot').forEach(d => { d.classList.remove('filled'); d.classList.add('error'); });
+    document.getElementById('pinError').textContent = msg;
+    pinBuffer = '';
+    setTimeout(() => document.querySelectorAll('.pin-dot').forEach(d => d.classList.remove('error')), 600);
+}
+function pressKey(val) {
+    const now = Date.now();
+    if (now < lockoutUntil) { document.getElementById('pinError').textContent = `Locked. Wait ${Math.ceil((lockoutUntil-now)/1000)}s.`; return; }
+    if (val === 'del') { pinBuffer = pinBuffer.slice(0,-1); renderDots(); document.getElementById('pinError').textContent=''; return; }
+    if (pinBuffer.length >= 6) return;
+    pinBuffer += val; renderDots();
+    if (pinBuffer.length === 6) setTimeout(checkPin, 120);
+}
+function checkPin() {
+    if (pinBuffer === CORRECT_PIN) {
+        sessionStorage.setItem(SESSION_KEY, '1');
+        document.getElementById('pinOverlay').classList.add('hidden');
+        initialize();
+    } else {
+        wrongAttempts++;
+        if (wrongAttempts >= 3) { lockoutUntil = Date.now()+30000; pinError('Too many attempts. Locked 30s.'); wrongAttempts=0; } 
+        else { pinError(`Wrong PIN. ${3-wrongAttempts} attempt(s) left.`); }
+    }
+}
+document.addEventListener('DOMContentLoaded', () => {
+    if (sessionStorage.getItem(SESSION_KEY) === '1') { document.getElementById('pinOverlay').classList.add('hidden'); initialize(); }
+    document.addEventListener('keydown', e => {
+        if (document.getElementById('pinOverlay').classList.contains('hidden')) return;
+        if (e.key >= '0' && e.key <= '9') pressKey(e.key);
+        if (e.key === 'Backspace') pressKey('del');
+    });
+});
 
-        function showLoading() {
-            document.getElementById('loadingState').style.display = 'block';
-        }
+// ── Initialize ────────────────────────────────────────────────────────────────
+async function initialize() {
+    document.getElementById('mainContent').style.display = 'block';
+    await auth.signInAnonymously().catch(()=>{});
+    if (typeof initializeDBManager === 'function') initializeDBManager();
+    await loadAllData();
+}
 
-        function hideLoading() {
-            document.getElementById('loadingState').style.display = 'none';
-        }
-
-        function showAlert(message, type) {
-            const container = document.querySelector('.controls');
-            const alert = document.createElement('div');
-            alert.className = `alert alert-${type}`;
-            alert.textContent = message;
-            container.parentNode.insertBefore(alert, container);
-
-            setTimeout(() => alert.remove(), 5000);
-        }
-
-        // Close modal when clicking outside
-        document.getElementById('licenseModal').addEventListener('click', (e) => {
-            if (e.target.id === 'licenseModal') closeModal();
+// ── Load All Data via Backend API ─────────────────────────────────────────────
+async function loadAllData() {
+    try {
+        showAlert('⏳ Loading data…', 'info');
+        const resp = await fetch(`${BACKEND_URL}/api/otp/admin/data`, {
+            headers: { 'x-admin-secret': ADMIN_SECRET }
         });
-    </script>
+        if (!resp.ok) throw new Error(`HTTP ${resp.status} — check PULLUP_ADMIN_SECRET`);
+        const json = await resp.json();
+        allUsers = json.users || [];
+        allRides = json.rides || [];
+        allBookings = json.bookings || [];
+        allAuditLogs = json.auditLogs || [];
+        globalStats = json.stats || {};
+        clearAlerts();
+        updateAllViews();
+        showAlert('✅ Data loaded', 'success', 2000);
+    } catch(e) {
+        showAlert(`❌ ${e.message}`, 'error');
+    }
+}
+
+function updateAllViews() {
+    updateLicenseStats();
+    renderLicenses();
+    updateRideStats();
+    renderRides();
+    updateUserStats();
+    renderUsers();
+    updateReports();
+    renderAuditLogs();
+    // Update sidebar pending badge
+    const pending = allUsers.filter(u => u.licenseVerificationStatus === 'pending').length;
+    document.getElementById('pendingBadge').textContent = pending;
+}
+
+// ── Section Navigation ────────────────────────────────────────────────────────
+function showSection(id) {
+    document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    document.getElementById(`section-${id}`).classList.add('active');
+    document.getElementById(`nav-${id}`)?.classList.add('active');
+}
+
+// ── Alert ─────────────────────────────────────────────────────────────────────
+function showAlert(msg, type='info', autoClose=0) {
+    clearAlerts();
+    const el = document.createElement('div');
+    el.className = `alert alert-${type}`;
+    el.innerHTML = msg;
+    document.getElementById('alertArea').appendChild(el);
+    if (autoClose) setTimeout(clearAlerts, autoClose);
+}
+function clearAlerts() { document.getElementById('alertArea').innerHTML=''; }
+
+// ── Licenses ──────────────────────────────────────────────────────────────────
+function updateLicenseStats() {
+    const licensed = allUsers.filter(u => u.licenseImageUri);
+    document.getElementById('licTotal').textContent = licensed.length;
+    document.getElementById('licPending').textContent = licensed.filter(u => u.licenseVerificationStatus === 'pending').length;
+    document.getElementById('licVerified').textContent = licensed.filter(u => u.licenseVerificationStatus === 'verified').length;
+    document.getElementById('licRejected').textContent = licensed.filter(u => u.licenseVerificationStatus === 'rejected').length;
+    document.getElementById('licResubmit').textContent = licensed.filter(u => u.licenseVerificationStatus === 'resubmission_requested').length;
+}
+
+function renderLicenses() {
+    const status = document.getElementById('licFilter').value;
+    const q = document.getElementById('licSearch').value.toLowerCase();
+    let list = allUsers.filter(u => u.licenseImageUri);
+    if (status) list = list.filter(u => u.licenseVerificationStatus === status);
+    if (q) list = list.filter(u => (u.fullName||'').toLowerCase().includes(q) || (u.email||'').toLowerCase().includes(q));
+
+    const grid = document.getElementById('licenseGrid');
+    const empty = document.getElementById('licEmpty');
+    if (!list.length) { grid.innerHTML=''; empty.style.display='block'; return; }
+    empty.style.display='none';
+
+    grid.innerHTML = list.map(u => {
+        const st = u.licenseVerificationStatus || 'pending';
+        const badgeCls = st === 'verified' ? 'badge-verified' : st === 'rejected' ? 'badge-rejected' : st === 'resubmission_requested' ? 'badge-resubmit' : 'badge-pending';
+        const badgeText = st === 'resubmission_requested' ? 'Resubmit' : st.charAt(0).toUpperCase()+st.slice(1);
+        const rejectionReason = u.licenseRejectionReason ? `<div class="rejection-reason">❌ Reason: ${u.licenseRejectionReason}</div>` : '';
+        let actions = '';
+        if (st === 'pending' || st === 'resubmission_requested') {
+            actions = `<button class="btn btn-success btn-sm" onclick="adminAction('APPROVE_LICENSE','${u.id}')">✅ Approve</button>
+                       <button class="btn btn-danger btn-sm" onclick="openRejectModal('${u.id}','reject')">❌ Reject</button>
+                       <button class="btn btn-warning btn-sm" onclick="openRejectModal('${u.id}','resubmit')">📋 Resubmit</button>`;
+        } else if (st === 'rejected') {
+            actions = `<button class="btn btn-success btn-sm" onclick="adminAction('APPROVE_LICENSE','${u.id}')">✅ Approve</button>
+                       <button class="btn btn-warning btn-sm" onclick="openRejectModal('${u.id}','resubmit')">📋 Request Resubmit</button>`;
+        } else {
+            actions = `<button class="btn btn-danger btn-sm" onclick="openRejectModal('${u.id}','reject')">❌ Revoke</button>`;
+        }
+        return `<div class="license-card">
+            <div class="license-card-img" onclick="openLicModal('${u.id}')">
+                ${u.licenseImageUri ? `<img src="${u.licenseImageUri}" alt="License">` : '<span style="color:var(--text-muted);font-size:13px">No image</span>'}
+            </div>
+            <div class="license-card-body">
+                <div class="license-card-name">${u.fullName||'Unknown'}</div>
+                <div class="license-card-email">${u.email||''}</div>
+                <span class="badge ${badgeCls}">${badgeText}</span>
+                <div class="license-card-meta" style="margin-top:8px">${u.year||''}  ${u.course||''}  ${u.division||''}</div>
+                ${rejectionReason}
+                <div class="action-row">${actions}</div>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function openLicModal(userId) {
+    currentLicUser = allUsers.find(u => u.id === userId);
+    if (!currentLicUser) return;
+    const u = currentLicUser;
+    const st = u.licenseVerificationStatus || 'pending';
+    document.getElementById('mLicImg').src = u.licenseImageUri || '';
+    document.getElementById('mLicName').textContent = u.fullName || '—';
+    document.getElementById('mLicEmail').textContent = u.email || '—';
+    document.getElementById('mLicRole').textContent = u.role || '—';
+    document.getElementById('mLicYear').textContent = `${u.year||'—'} / ${u.course||'—'}`;
+    document.getElementById('mLicDiv').textContent = u.division || '—';
+    document.getElementById('mLicStatus').textContent = st.toUpperCase().replace('_',' ');
+    document.getElementById('mLicUploaded').textContent = u.licenseUploadedAt ? new Date(u.licenseUploadedAt).toLocaleDateString() : '—';
+    const rejectBox = document.getElementById('mRejectReasonBox');
+    if (u.licenseRejectionReason) { rejectBox.style.display='block'; document.getElementById('mRejectReasonText').textContent = `Admin Note: ${u.licenseRejectionReason}`; }
+    else { rejectBox.style.display='none'; }
+    document.getElementById('mReasonInput').style.display='none';
+    document.getElementById('mReason').value='';
+
+    const footer = document.getElementById('mLicFooter');
+    let btns = `<button class="btn btn-ghost" onclick="closeLicModal()">Close</button>`;
+    if (st !== 'verified') btns += `<button class="btn btn-success" onclick="adminAction('APPROVE_LICENSE','${u.id}',null,true)">✅ Approve</button>`;
+    btns += `<button class="btn btn-danger" onclick="openRejectModal('${u.id}','reject',true)">❌ Reject</button>`;
+    btns += `<button class="btn btn-warning" onclick="openRejectModal('${u.id}','resubmit',true)">📋 Resubmit</button>`;
+    footer.innerHTML = btns;
+    document.getElementById('licModal').classList.add('open');
+}
+
+function closeLicModal() {
+    document.getElementById('licModal').classList.remove('open');
+    currentLicUser = null;
+}
+
+function openRejectModal(userId, type, fromModal=false) {
+    currentLicUser = allUsers.find(u => u.id === userId);
+    if (!currentLicUser) return;
+    if (!fromModal) openLicModal(userId);
+
+    const reasonBox = document.getElementById('mReasonInput');
+    const reasonLabel = document.getElementById('mReasonLabel');
+    reasonBox.style.display = 'block';
+    reasonLabel.textContent = type === 'reject' ? 'Rejection Reason' : 'Resubmission Request Message';
+    document.getElementById('mReason').placeholder = type === 'reject'
+        ? 'e.g. License image is blurry or expired'
+        : 'e.g. Please re-upload with a clear, front-lit photo';
+
+    const footer = document.getElementById('mLicFooter');
+    footer.innerHTML = `
+        <button class="btn btn-ghost" onclick="closeLicModal()">Cancel</button>
+        <button class="btn ${type==='reject'?'btn-danger':'btn-warning'}" onclick="confirmRejectOrResubmit('${userId}','${type}')">
+            ${type==='reject' ? '❌ Confirm Rejection' : '📋 Send Resubmission Request'}
+        </button>`;
+    document.getElementById('licModal').classList.add('open');
+}
+
+async function confirmRejectOrResubmit(userId, type) {
+    const reason = document.getElementById('mReason').value.trim();
+    const action = type === 'reject' ? 'REJECT_LICENSE' : 'REQUEST_RESUBMISSION';
+    closeLicModal();
+    await adminAction(action, userId, reason);
+}
+
+// ── Rides ──────────────────────────────────────────────────────────────────────
+function updateRideStats() {
+    document.getElementById('rideTotal').textContent = allRides.length;
+    document.getElementById('rideActive').textContent = allRides.filter(r => r.status==='active').length;
+    document.getElementById('rideInProgress').textContent = allRides.filter(r => r.status==='in_progress').length;
+    document.getElementById('rideCompleted').textContent = allRides.filter(r => r.status==='completed').length;
+    document.getElementById('rideCancelled').textContent = allRides.filter(r => r.status==='cancelled').length;
+}
+
+function renderRides() {
+    const st = document.getElementById('rideFilter').value;
+    const q = document.getElementById('rideSearch').value.toLowerCase();
+    let list = allRides;
+    if (st) list = list.filter(r => r.status===st);
+    if (q) list = list.filter(r => (r.driverName||'').toLowerCase().includes(q));
+
+    const stMap = { active:'badge-active', in_progress:'badge-in-progress', completed:'badge-completed', cancelled:'badge-cancelled' };
+    document.getElementById('rideTable').innerHTML = list.slice(0,100).map(r => {
+        const dep = r.departureTime ? new Date(r.departureTime).toLocaleString('en-IN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+        const pickup = r.pickupLocation?.address?.split(',')[0]||'—';
+        const drop = r.dropLocation?.address?.split(',')[0]||'—';
+        const st = r.status||'unknown';
+        const canCancel = st==='active'||st==='in_progress';
+        return `<tr>
+            <td>${r.driverName||'—'}</td>
+            <td><span style="color:var(--text-secondary)">${pickup}</span> → ${drop}</td>
+            <td>${dep}</td>
+            <td>${r.availableSeats??'—'}/${r.totalSeats??'—'}</td>
+            <td><span class="badge ${stMap[st]||''}">${st.replace('_',' ').toUpperCase()}</span></td>
+            <td>${canCancel ? `<button class="btn btn-danger btn-sm" onclick="adminAction('CANCEL_RIDE','${r.id}','Admin override')">Cancel</button>` : '—'}</td>
+        </tr>`;
+    }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:24px">No rides found</td></tr>';
+}
+
+// ── Users ──────────────────────────────────────────────────────────────────────
+function updateUserStats() {
+    document.getElementById('userTotal').textContent = allUsers.length;
+    document.getElementById('userDrivers').textContent = allUsers.filter(u=>u.role==='driver').length;
+    document.getElementById('userPassengers').textContent = allUsers.filter(u=>u.role==='passenger').length;
+}
+
+function renderUsers() {
+    const role = document.getElementById('userFilter').value;
+    const q = document.getElementById('userSearch').value.toLowerCase();
+    let list = allUsers;
+    if (role) list = list.filter(u => u.role===role);
+    if (q) list = list.filter(u => (u.fullName||'').toLowerCase().includes(q)||(u.email||'').toLowerCase().includes(q));
+
+    document.getElementById('userTable').innerHTML = list.slice(0,200).map(u => {
+        const joined = u.createdAt ? new Date(u.createdAt).toLocaleDateString('en-IN',{month:'short',day:'numeric',year:'numeric'}) : '—';
+        const licSt = u.licenseVerificationStatus;
+        const licBadge = licSt ? `<span class="badge ${licSt==='verified'?'badge-verified':licSt==='rejected'?'badge-rejected':'badge-pending'}">${licSt}</span>` : '—';
+        const otherRole = u.role==='driver'?'passenger':'driver';
+        return `<tr>
+            <td>${u.fullName||'—'}</td>
+            <td style="color:var(--text-secondary);font-size:12px">${u.email||'—'}</td>
+            <td><span class="badge ${u.role==='driver'?'badge-driver':'badge-passenger'}">${u.role||'—'}</span></td>
+            <td>${licBadge}</td>
+            <td style="font-size:12px;color:var(--text-muted)">${joined}</td>
+            <td>
+                <button class="btn btn-ghost btn-sm" onclick="adminAction('CHANGE_USER_ROLE','${u.id}',null,false,{role:'${otherRole}'})">
+                    Switch to ${otherRole}
+                </button>
+            </td>
+        </tr>`;
+    }).join('') || '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:24px">No users found</td></tr>';
+}
+
+// ── Reports ───────────────────────────────────────────────────────────────────
+function updateReports() {
+    const s = globalStats;
+    document.getElementById('rpt-users').textContent = s.totalUsers??'—';
+    document.getElementById('rpt-rides').textContent = s.totalRides??'—';
+    document.getElementById('rpt-bookings').textContent = s.totalBookings??'—';
+    document.getElementById('rpt-drivers').textContent = s.verifiedDrivers??'—';
+    document.getElementById('rpt-pending').textContent = s.pendingLicenses??'—';
+    document.getElementById('rpt-confirmed').textContent = s.confirmedBookings??'—';
+    const comp = s.totalRides > 0 ? ((s.completedRides||0)/s.totalRides*100).toFixed(1)+'%' : '—';
+    document.getElementById('rpt-completion').textContent = comp;
+    document.getElementById('rpt-inprogress').textContent = s.inProgressRides??'—';
+}
+
+// ── Audit Logs ────────────────────────────────────────────────────────────────
+function renderAuditLogs() {
+    const list = document.getElementById('auditList');
+    if (!allAuditLogs.length) { list.innerHTML='<div class="empty-state"><span style="font-size:40px">🗒️</span><p>No audit logs yet</p></div>'; return; }
+    list.innerHTML = allAuditLogs.map(log => {
+        const ts = log.createdAt ? new Date(log.createdAt).toLocaleString('en-IN') : '—';
+        return `<div class="audit-item">
+            <div class="audit-action">${log.action||'ACTION'}</div>
+            <div class="audit-desc">${log.description||'—'}</div>
+            ${log.adminNote ? `<div class="audit-note">Note: ${log.adminNote}</div>` : ''}
+            <div class="audit-time">${ts}</div>
+        </div>`;
+    }).join('');
+}
+
+// ── Admin Action (calls backend) ─────────────────────────────────────────────
+async function adminAction(action, targetId, reason=null, closeModal=false, extraData=null) {
+    if (closeModal) closeLicModal();
+    showAlert(`⏳ Executing ${action}…`, 'info');
+    try {
+        const body = { action, targetId };
+        if (reason) body.reason = reason;
+        if (extraData) body.data = extraData;
+        const resp = await fetch(`${BACKEND_URL}/api/otp/admin-action`, {
+            method: 'POST',
+            headers: { 'Content-Type':'application/json', 'x-admin-secret': ADMIN_SECRET },
+            body: JSON.stringify(body)
+        });
+        const json = await resp.json();
+        if (!json.success) throw new Error(json.message||'Action failed');
+        showAlert(`✅ ${json.message}`, 'success', 3000);
+        await loadAllData();
+    } catch(e) {
+        showAlert(`❌ ${e.message}`, 'error');
+    }
+}
+
+// ── Broadcast ─────────────────────────────────────────────────────────────────
+async function sendBroadcast() {
+    const title = document.getElementById('bcTitle').value.trim();
+    const body = document.getElementById('bcBody').value.trim();
+    const audience = document.getElementById('bcAudience').value;
+    if (!title||!body) { showAlert('❌ Enter title and message','error'); return; }
+
+    let targets = allUsers;
+    if (audience==='drivers') targets = allUsers.filter(u=>u.role==='driver');
+    else if (audience==='passengers') targets = allUsers.filter(u=>u.role==='passenger');
+
+    showAlert(`⏳ Dispatching to ${targets.length} users…`, 'info');
+    let success = 0;
+    for (const u of targets) {
+        try {
+            const r = await fetch(`${BACKEND_URL}/api/otp/send-notification`, {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({ userId:u.id, type:'campaign', title, message:body })
+            });
+            if (r.ok) success++;
+        } catch(e){}
+    }
+    document.getElementById('bcTitle').value=''; document.getElementById('bcBody').value='';
+    showAlert(`✅ Campaign dispatched: ${success}/${targets.length} successful`, 'success', 5000);
+}
+
+// ── DB Flush via Admin API ────────────────────────────────────────────────────
+async function flushDatabaseAdmin() {
+    if (!confirm('⚠️ This will delete all rides and bookings via the admin API. Are you sure?')) return;
+    await adminAction('FLUSH_DB', null, null, false, null);
+}
+
+// ── Seed Database (uses Firebase client directly for seeding test data) ───────
+// delegated to dbManager.js window.seedDatabase
+</script>
+
 </body>
 </html>

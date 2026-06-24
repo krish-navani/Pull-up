@@ -1,5 +1,7 @@
 import { ThemeProvider } from '@react-navigation/native';
 import * as Location from 'expo-location';
+import * as TaskManager from 'expo-task-manager';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect } from 'react';
@@ -11,6 +13,18 @@ import { AppProvider, useAppContext } from '@/context/AppContext';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { WARM_CORE, WarmNavigationTheme } from '@/constants/theme';
 import SplashScreen from '@/components/SplashScreen';
+import {
+  BACKGROUND_LOCATION_TASK,
+  BG_TASK_RIDE_ID_KEY,
+  BG_LOCATION_CONFIG,
+} from '@/utils/backgroundLocationTask';
+
+let Notifications: any = null;
+try {
+  Notifications = require('expo-notifications');
+} catch (e) {
+  console.warn('[PUSH] expo-notifications failed to load in _layout:', e);
+}
 
 // Global Error Boundary to prevent app crashes in production
 class GlobalErrorBoundary extends React.Component<
@@ -61,6 +75,149 @@ function RootLayoutContent() {
   const segments = useSegments();
   const router = useRouter();
 
+  // Listen for push notification click responses for deep-linking
+  useEffect(() => {
+    if (!Notifications) return;
+
+    const handleNotificationRouting = (data: any) => {
+      try {
+        const { targetScreen, targetId, rideId, rideType, type } = data;
+        const resolvedRideId = rideId || targetId;
+        
+        console.log('[PUSH DEEP LINK] Handling notification route. Screen:', targetScreen, 'Id:', resolvedRideId, 'Type:', type);
+
+        // Resolve screen based on type fallback if targetScreen is missing
+        let resolvedScreen = targetScreen;
+        if (!resolvedScreen && type) {
+          if (['chat_message', 'message', 'sos'].includes(type)) {
+            resolvedScreen = 'group-chat';
+          } else if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'payment_confirmed'].includes(type)) {
+            resolvedScreen = 'ride-details';
+          } else if (['pool_request', 'pool_accepted', 'pool_rejected'].includes(type)) {
+            resolvedScreen = 'taxi-pool-details';
+          } else if (['withdrawal_requested', 'withdrawal_approved'].includes(type)) {
+            resolvedScreen = 'wallet';
+          } else if (type === 'marketing') {
+            resolvedScreen = 'notifications';
+          }
+        }
+
+        // Final fallback if screen still unresolved
+        if (!resolvedScreen && resolvedRideId) {
+          resolvedScreen = rideType === 'taxipool' ? 'taxi-pool-details' : 'ride-details';
+        }
+
+        if (resolvedScreen === 'group-chat') {
+          router.push({
+            pathname: '/group-chat',
+            params: { rideId: resolvedRideId, rideType: rideType || 'carpool' }
+          } as any);
+        } else if (resolvedScreen === 'ride-details') {
+          router.push({
+            pathname: '/ride-details',
+            params: { rideId: resolvedRideId }
+          } as any);
+        } else if (resolvedScreen === 'taxi-pool-details') {
+          router.push({
+            pathname: '/taxi-pool-details',
+            params: { poolId: resolvedRideId }
+          } as any);
+        } else if (resolvedScreen === 'wallet') {
+          router.push('/wallet' as any);
+        } else if (resolvedScreen === 'notifications') {
+          router.push('/notifications' as any);
+        }
+      } catch (err) {
+        console.error('[PUSH DEEP LINK] Error in handleNotificationRouting:', err);
+      }
+    };
+
+    // Check if the app was launched by tapping a notification (cold boot / killed app)
+    const checkInitialNotification = async () => {
+      try {
+        const response = await Notifications.getLastNotificationResponseAsync();
+        if (response) {
+          const data = response?.notification?.request?.content?.data;
+          if (data) {
+            console.log('[PUSH DEEP LINK] Cold boot notification tapped with data:', data);
+            
+            const notificationId = response?.notification?.request?.identifier || data?.notificationId || 'unknown';
+            console.log(`[NOTIFICATION OPENED]
+notificationId: ${notificationId}`);
+
+            handleNotificationRouting(data);
+          }
+        }
+      } catch (err) {
+        console.error('[PUSH DEEP LINK] Error checking initial notification:', err);
+      }
+    };
+    checkInitialNotification();
+
+    // Listener for notification taps while the app is in foreground or background (running)
+    const subscription = Notifications.addNotificationResponseReceivedListener((response: any) => {
+      const data = response?.notification?.request?.content?.data;
+      if (!data) return;
+
+      console.log('[PUSH DEEP LINK] Warm/foreground notification tapped with data:', data);
+
+      const notificationId = response?.notification?.request?.identifier || data?.notificationId || 'unknown';
+      console.log(`[NOTIFICATION OPENED]
+notificationId: ${notificationId}`);
+
+      handleNotificationRouting(data);
+    });
+
+    // Listener for foreground notifications
+    const foregroundSubscription = Notifications.addNotificationReceivedListener((notification: any) => {
+      try {
+        const date = notification?.date;
+        const sentTime = date ? new Date(date) : new Date();
+        const now = new Date();
+        
+        // Stale check: discard if older than 2 minutes (120 seconds)
+        if (now.getTime() - sentTime.getTime() > 120 * 1000) {
+          console.log('[PUSH] Foreground notification discarded due to age (stale > 2 minutes)');
+          return;
+        }
+
+        console.log('[PUSH] Received foreground notification:', notification);
+
+        const notificationId = notification?.request?.identifier || notification?.request?.content?.data?.notificationId || 'unknown';
+        console.log(`[NOTIFICATION DELIVERED]
+notificationId: ${notificationId}`);
+        
+        const title = notification?.request?.content?.title;
+        const body = notification?.request?.content?.body;
+        const data = notification?.request?.content?.data;
+
+        // Show banner using Toast
+        const Toast = require('react-native-toast-message').default;
+        if (Toast) {
+          Toast.show({
+            type: 'info',
+            text1: title || 'New Notification',
+            text2: body || '',
+            onPress: () => {
+              if (data) {
+                handleNotificationRouting(data);
+              }
+            }
+          });
+        }
+      } catch (err) {
+        console.error('[PUSH] Error receiving foreground notification:', err);
+      }
+    });
+
+    return () => {
+      subscription.remove();
+      if (foregroundSubscription && typeof foregroundSubscription.remove === 'function') {
+        foregroundSubscription.remove();
+      }
+    };
+  }, [router]);
+
   // Request location permission on app launch
   useEffect(() => {
     const requestLocationPermission = async () => {
@@ -74,6 +231,60 @@ function RootLayoutContent() {
 
     requestLocationPermission();
   }, []);
+
+  // ─── Fail-safe background tracking recovery ──────────────────────────────────
+  // Scenario: driver had an active ride, phone restarted / app was killed by Android.
+  // On next app open this checks AsyncStorage for a saved rideId and restarts the
+  // background task if it is no longer running — the driver never has to do anything.
+  useEffect(() => {
+    if (authInitializing) return; // wait until auth is settled
+    if (!auth.isSignedIn) return; // only relevant for signed-in drivers
+
+    const recoverTracking = async () => {
+      try {
+        const savedRideId = await AsyncStorage.getItem(BG_TASK_RIDE_ID_KEY);
+        if (!savedRideId) return; // no active ride was stored — nothing to recover
+
+        const isAlreadyRunning = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(() => false);
+        if (isAlreadyRunning) {
+          console.log('[RECOVERY] Background task already running for ride:', savedRideId);
+          return;
+        }
+
+        console.log('[RECOVERY] ⚠️ Detected orphaned ride tracking for:', savedRideId, '— attempting recovery');
+
+        // We need background permission to restart the task
+        const { status: fgStatus } = await Location.getForegroundPermissionsAsync();
+        const { status: bgStatus } = await Location.getBackgroundPermissionsAsync();
+
+        if (fgStatus !== 'granted' || bgStatus !== 'granted') {
+          console.warn('[RECOVERY] Cannot recover — location permissions not granted');
+          // Clean up stale rideId so we don't attempt recovery again
+          await AsyncStorage.removeItem(BG_TASK_RIDE_ID_KEY);
+          return;
+        }
+
+        // Stop any half-registered stale task first
+        const taskExists = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK).catch(() => false);
+        if (taskExists) {
+          await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK).catch(() => {});
+        }
+
+        await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
+          accuracy: Location.Accuracy.High,
+          ...BG_LOCATION_CONFIG,
+        });
+
+        console.log('[RECOVERY] ✅ Background tracking resumed for ride:', savedRideId);
+      } catch (err) {
+        console.error('[RECOVERY] Failed to recover background tracking:', err);
+      }
+    };
+
+    // Small delay so the app finishes rendering before attempting recovery
+    const t = setTimeout(recoverTracking, 2000);
+    return () => clearTimeout(t);
+  }, [authInitializing, auth.isSignedIn]);
 
   // Handle navigation based on auth state
   useEffect(() => {
@@ -159,6 +370,10 @@ function RootLayoutContent() {
           <Stack.Screen name="auth" options={{ headerShown: false }} />
           <Stack.Screen name="index" options={{ headerShown: false }} />
           <Stack.Screen name="ride-details" options={{
+            headerShown: false,
+            presentation: 'card',
+          }} />
+          <Stack.Screen name="navigation" options={{
             headerShown: false,
             presentation: 'card',
           }} />

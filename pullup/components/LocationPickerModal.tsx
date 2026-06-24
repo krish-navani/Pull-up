@@ -2,8 +2,11 @@ import { Location as LocationType } from '@/types';
 import { calculateDistance, getCurrentLocation, getLocationSuggestionsWithCoords, getReverseGeocodeAddress } from '@/utils/locationUtils';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { WARM_CORE } from '@/constants/theme';
 import {
     ActivityIndicator,
+    Alert,
     FlatList,
     KeyboardAvoidingView,
     Modal,
@@ -57,6 +60,8 @@ export default function LocationPickerModal({
   const [mapProvider, setMapProvider] = useState<'google' | 'default'>('google');
   const [mapInitialized, setMapInitialized] = useState(false);
 
+  const [recentSearches, setRecentSearches] = useState<LocationType[]>([]);
+
   useEffect(() => {
     setMarkerLocation(
       initialLocation || {
@@ -68,6 +73,26 @@ export default function LocationPickerModal({
     );
     setAddress(initialLocation?.address || '');
   }, [initialLocation, visible]);
+
+  // Load recent searches when modal is visible
+  useEffect(() => {
+    if (visible) {
+      const loadRecentSearches = async () => {
+        try {
+          const stored = await AsyncStorage.getItem('pullup_recent_searches');
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) {
+              setRecentSearches(parsed);
+            }
+          }
+        } catch (error) {
+          console.warn('[LOCATION PICKER] Failed to load recent searches:', error);
+        }
+      };
+      loadRecentSearches();
+    }
+  }, [visible]);
 
   // Get current location on mount
   useEffect(() => {
@@ -214,7 +239,6 @@ export default function LocationPickerModal({
     setSearchQuery(text);
 
     if (!text.trim()) {
-      setShowSuggestions(false);
       setSuggestions([]);
       return;
     }
@@ -226,7 +250,6 @@ export default function LocationPickerModal({
 
     // Require minimum 2 characters for real-world search
     if (text.trim().length < 2) {
-      setShowSuggestions(false);
       setSuggestions([]);
       return;
     }
@@ -245,18 +268,15 @@ export default function LocationPickerModal({
         if (!results || !Array.isArray(results)) {
           console.warn('[LOCATION PICKER] Invalid results from getLocationSuggestionsWithCoords');
           setSuggestions([]);
-          setShowSuggestions(false);
           setIsSearching(false);
           return;
         }
         
         setSuggestions(results);
-        setShowSuggestions(results.length > 0);
       } catch (error) {
         if (currentSearchId !== searchIdRef.current) return;
         console.error('[LOCATION PICKER] Error searching locations:', error);
         setSuggestions([]);
-        setShowSuggestions(false);
       } finally {
         if (currentSearchId === searchIdRef.current) {
           setIsSearching(false);
@@ -265,9 +285,75 @@ export default function LocationPickerModal({
     }, 300);
   };
 
-  const handleSelectSuggestion = (suggestion: any) => {
+  const handleSelectSuggestion = async (suggestion: any) => {
     try {
-      if (!suggestion || !suggestion.latitude || !suggestion.longitude) {
+      if (!suggestion) return;
+
+      if (suggestion.type === 'current_location') {
+        setShowSuggestions(false);
+        setIsSearching(true);
+        const location = await getCurrentLocation();
+        setIsSearching(false);
+        if (location && location.latitude && location.longitude) {
+          setMarkerLocation(location);
+          setAddress(location.address || '');
+          setSearchQuery(location.address || '');
+          programmaticMoveRef.current = true;
+          if (mapRef.current) {
+            try {
+              mapRef.current.animateToRegion(
+                {
+                  latitude: location.latitude,
+                  longitude: location.longitude,
+                  latitudeDelta: 0.02,
+                  longitudeDelta: 0.02,
+                },
+                500
+              );
+            } catch (mapError) {
+              console.warn('[LOCATION PICKER] Map animation error:', mapError);
+            }
+          }
+        } else {
+          Alert.alert('Location Error', 'Could not fetch your current location. Please make sure location services are enabled.');
+        }
+        return;
+        setShowSuggestions(false);
+        return;
+      }
+
+      if (suggestion.type === 'recent_search') {
+        setShowSuggestions(false);
+        const finalLoc = {
+          latitude: suggestion.latitude,
+          longitude: suggestion.longitude,
+          address: suggestion.address,
+          city: suggestion.city || 'Mumbai',
+          placeId: suggestion.placeId,
+        };
+        setMarkerLocation(finalLoc);
+        setAddress(suggestion.address);
+        setSearchQuery(suggestion.address);
+        programmaticMoveRef.current = true;
+        if (mapRef.current) {
+          try {
+            mapRef.current.animateToRegion(
+              {
+                latitude: suggestion.latitude,
+                longitude: suggestion.longitude,
+                latitudeDelta: 0.02,
+                longitudeDelta: 0.02,
+              },
+              500
+            );
+          } catch (mapError) {
+            console.warn('[LOCATION PICKER] Map animation error:', mapError);
+          }
+        }
+        return;
+      }
+
+      if (!suggestion.latitude || !suggestion.longitude) {
         console.warn('[LOCATION PICKER] Invalid suggestion:', suggestion);
         return;
       }
@@ -282,6 +368,7 @@ export default function LocationPickerModal({
         longitude: suggestion.longitude,
         address: displayName,
         city: 'Mumbai',
+        placeId: suggestion.placeId,
       });
       setAddress(displayName);
       setSearchQuery(displayName);
@@ -338,11 +425,33 @@ export default function LocationPickerModal({
     }
   };
 
-  const handleConfirm = () => {
-    onConfirm({
+  const handleConfirm = async () => {
+    const finalLocation = {
       ...markerLocation,
       address: address || markerLocation.address,
-    });
+    };
+
+    try {
+      const stored = await AsyncStorage.getItem('pullup_recent_searches');
+      let currentList = stored ? JSON.parse(stored) : [];
+      if (!Array.isArray(currentList)) {
+        currentList = [];
+      }
+      currentList = currentList.filter((item: any) => {
+        const matchesAddress = item.address === finalLocation.address;
+        const matchesCoords = Math.abs(item.latitude - finalLocation.latitude) < 0.0001 && 
+                              Math.abs(item.longitude - finalLocation.longitude) < 0.0001;
+        const matchesPlaceId = item.placeId && finalLocation.placeId && item.placeId === finalLocation.placeId;
+        return !matchesAddress && !matchesCoords && !matchesPlaceId;
+      });
+      currentList.unshift(finalLocation);
+      const limitedList = currentList.slice(0, 5);
+      await AsyncStorage.setItem('pullup_recent_searches', JSON.stringify(limitedList));
+    } catch (error) {
+      console.warn('[LOCATION PICKER] Failed to save recent search:', error);
+    }
+
+    onConfirm(finalLocation);
   };
 
   const darkMapStyle = [
@@ -430,7 +539,7 @@ export default function LocationPickerModal({
                 placeholderTextColor="#6B7280"
                 value={searchQuery}
                 onChangeText={handleSearchChange}
-                onFocus={() => searchQuery.trim().length >= 2 && setShowSuggestions(true)}
+                onFocus={() => setShowSuggestions(true)}
               />
               {searchQuery && (
                 <TouchableOpacity
@@ -508,41 +617,81 @@ export default function LocationPickerModal({
           </TouchableOpacity>
 
           {/* Suggestions List Overlay */}
-          {showSuggestions && suggestions.length > 0 && (
-            <View style={styles.suggestionsSection}>
-              <FlatList
-                data={suggestions}
-                scrollEnabled={true}
-                keyExtractor={(item, index) => `${item.name}-${index}`}
-                keyboardShouldPersistTaps="handled"
-                renderItem={({ item }) => (
-                  <Pressable
-                    style={({ pressed }) => [
-                      styles.suggestionItem,
-                      pressed && styles.suggestionItemPressed,
-                    ]}
-                    onPress={() => handleSelectSuggestion(item)}
-                  >
-                    <View style={styles.suggestionIconContainer}>
-                      <MaterialCommunityIcons name="map-marker" size={20} color="#FFFFFF" />
-                    </View>
-                    <View style={styles.suggestionContent}>
-                      <Text style={styles.suggestionName} numberOfLines={1}>
-                        {item.mainText || item.displayName}
-                      </Text>
-                      {item.secondaryText ? (
-                        <View style={styles.suggestionMeta}>
-                          <Text style={styles.suggestionCategory}>{item.secondaryText}</Text>
-                        </View>
-                      ) : null}
-                    </View>
-                    <MaterialCommunityIcons name="chevron-right" size={20} color="#6B7280" />
-                  </Pressable>
-                )}
-                scrollIndicatorInsets={{ right: 1 }}
-              />
-            </View>
-          )}
+          {showSuggestions && (() => {
+            const suggestionsData = searchQuery.trim() === ''
+              ? [
+                  { type: 'current_location', displayName: 'Use Current Location', secondaryText: 'Tap to use your current location' },
+                  ...recentSearches.map(item => ({
+                    type: 'recent_search',
+                    displayName: item.address.split(',')[0],
+                    secondaryText: item.address,
+                    latitude: item.latitude,
+                    longitude: item.longitude,
+                    address: item.address,
+                    city: item.city || 'Mumbai',
+                    placeId: item.placeId,
+                  }))
+                ]
+              : [
+                  { type: 'current_location', displayName: 'Use Current Location', secondaryText: 'Tap to use your current location' },
+                  ...suggestions
+                ];
+
+            return (
+              <View style={styles.suggestionsSection}>
+                <FlatList
+                  data={suggestionsData}
+                  scrollEnabled={true}
+                  keyExtractor={(item, index) => item.type === 'current_location' ? 'current_location' : `${item.name || item.displayName || ''}-${index}`}
+                  keyboardShouldPersistTaps="handled"
+                  renderItem={({ item }) => (
+                    <Pressable
+                      style={({ pressed }) => [
+                        styles.suggestionItem,
+                        pressed && styles.suggestionItemPressed,
+                        item.type === 'current_location' && { borderBottomWidth: 1, borderBottomColor: '#2A2A2A', backgroundColor: 'rgba(212, 80, 10, 0.08)' },
+                        item.type === 'recent_search' && { borderBottomWidth: 0.5, borderBottomColor: '#2A2A2A' }
+                      ]}
+                      onPress={() => handleSelectSuggestion(item)}
+                    >
+                      <View style={[
+                        styles.suggestionIconContainer, 
+                        item.type === 'current_location' && { backgroundColor: WARM_CORE.primary },
+                        item.type === 'recent_search' && { backgroundColor: WARM_CORE.textSecondary }
+                      ]}>
+                        <MaterialCommunityIcons 
+                          name={
+                            item.type === 'current_location' 
+                              ? 'crosshairs-gps' 
+                              : item.type === 'recent_search' 
+                                ? 'history' 
+                                : 'map-marker'
+                          } 
+                          size={20} 
+                          color="#FFFFFF" 
+                        />
+                      </View>
+                      <View style={styles.suggestionContent}>
+                        <Text style={[
+                          styles.suggestionName, 
+                          item.type === 'current_location' && { color: WARM_CORE.primary, fontWeight: '700' }
+                        ]} numberOfLines={1}>
+                          {item.displayName || item.mainText}
+                        </Text>
+                        {item.secondaryText ? (
+                          <View style={styles.suggestionMeta}>
+                            <Text style={styles.suggestionCategory}>{item.secondaryText}</Text>
+                          </View>
+                        ) : null}
+                      </View>
+                      <MaterialCommunityIcons name="chevron-right" size={20} color="#6B7280" />
+                    </Pressable>
+                  )}
+                  scrollIndicatorInsets={{ right: 1 }}
+                />
+              </View>
+            );
+          })()}
 
           {/* Loading state while searching Overlay */}
           {isSearching && searchQuery.length >= 2 && (
@@ -607,12 +756,12 @@ export default function LocationPickerModal({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0F0F0F',
+    backgroundColor: WARM_CORE.background,
   },
   headerSection: {
-    backgroundColor: '#0F0F0F',
+    backgroundColor: WARM_CORE.background,
     borderBottomWidth: 1,
-    borderBottomColor: '#1F2937',
+    borderBottomColor: WARM_CORE.border,
     paddingBottom: 12,
   },
   topBar: {
@@ -629,7 +778,7 @@ const styles = StyleSheet.create({
   headerTitle: {
     fontSize: 17,
     fontWeight: '700',
-    color: '#FFFFFF',
+    color: WARM_CORE.text,
     letterSpacing: -0.3,
   },
   searchSection: {
@@ -639,19 +788,19 @@ const styles = StyleSheet.create({
   searchBody: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1F2937',
+    backgroundColor: WARM_CORE.card,
     borderRadius: 12,
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderWidth: 1,
-    borderColor: '#374151',
+    borderColor: WARM_CORE.border,
   },
   searchInput: {
     flex: 1,
     marginHorizontal: 10,
     fontSize: 15,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: WARM_CORE.text,
     paddingVertical: 0,
   },
   clearBtn: {
@@ -663,12 +812,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#1F2937',
+    borderBottomColor: WARM_CORE.border,
   },
   quickAction: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#1F2937',
+    backgroundColor: WARM_CORE.card,
     borderRadius: 10,
     paddingHorizontal: 14,
     paddingVertical: 12,
@@ -677,7 +826,7 @@ const styles = StyleSheet.create({
     width: 36,
     height: 36,
     borderRadius: 8,
-    backgroundColor: '#2D3748',
+    backgroundColor: 'rgba(212, 80, 10, 0.1)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -685,12 +834,12 @@ const styles = StyleSheet.create({
   quickActionText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#E5E7EB',
+    color: WARM_CORE.text,
   },
 
   /* Suggestions */
   suggestionsSection: {
-    backgroundColor: '#0F0F0F',
+    backgroundColor: WARM_CORE.card,
     maxHeight: 281,
     position: 'absolute',
     top: 0,
@@ -701,7 +850,7 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
+    shadowOpacity: 0.1,
     shadowRadius: 8,
     elevation: 8,
   },
@@ -711,16 +860,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 13,
     borderBottomWidth: 0.5,
-    borderBottomColor: '#1F2937',
+    borderBottomColor: WARM_CORE.border,
   },
   suggestionItemPressed: {
-    backgroundColor: 'rgba(31, 41, 55, 0.4)',
+    backgroundColor: 'rgba(212, 80, 10, 0.05)',
   },
   suggestionIconContainer: {
     width: 40,
     height: 40,
     borderRadius: 10,
-    backgroundColor: '#2D3748',
+    backgroundColor: 'rgba(212, 80, 10, 0.1)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -731,7 +880,7 @@ const styles = StyleSheet.create({
   suggestionName: {
     fontSize: 15,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: WARM_CORE.text,
     marginBottom: 4,
   },
   suggestionMeta: {
@@ -741,19 +890,19 @@ const styles = StyleSheet.create({
   suggestionCategory: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#9CA3AF',
+    color: WARM_CORE.textSecondary,
   },
   metaDot: {
     width: 3,
     height: 3,
     borderRadius: 1.5,
-    backgroundColor: '#6B7280',
+    backgroundColor: WARM_CORE.border,
     marginHorizontal: 6,
   },
   suggestionDistance: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#6B7280',
+    color: WARM_CORE.textSecondary,
   },
 
   /* Empty State */
@@ -763,7 +912,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: '#0F0F0F',
+    backgroundColor: WARM_CORE.background,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 24,
@@ -773,12 +922,12 @@ const styles = StyleSheet.create({
     marginTop: 16,
     fontSize: 16,
     fontWeight: '600',
-    color: '#E5E7EB',
+    color: WARM_CORE.text,
   },
   emptyStateSubtext: {
     marginTop: 6,
     fontSize: 14,
-    color: '#9CA3AF',
+    color: WARM_CORE.textSecondary,
   },
 
   /* Loading Container */
@@ -786,7 +935,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#1F2937',
+    backgroundColor: WARM_CORE.card,
     position: 'absolute',
     top: 12,
     left: 14,
@@ -795,14 +944,14 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#374151',
+    borderColor: WARM_CORE.border,
     zIndex: 10,
   },
   loadingText: {
     marginLeft: 12,
     fontSize: 14,
     fontWeight: '500',
-    color: '#9CA3AF',
+    color: WARM_CORE.textSecondary,
   },
 
   /* Map */
@@ -836,7 +985,7 @@ const styles = StyleSheet.create({
     width: 50,
     height: 50,
     borderRadius: 25,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: WARM_CORE.white,
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#000000',
@@ -848,28 +997,28 @@ const styles = StyleSheet.create({
 
   /* Bottom Section */
   bottomSection: {
-    backgroundColor: '#0F0F0F',
+    backgroundColor: WARM_CORE.background,
     borderTopWidth: 1,
-    borderTopColor: '#1F2937',
+    borderTopColor: WARM_CORE.border,
     paddingHorizontal: 14,
     paddingVertical: 12,
   },
   addressDisplay: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    backgroundColor: '#1F2937',
+    backgroundColor: WARM_CORE.card,
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 12,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#374151',
+    borderColor: WARM_CORE.border,
   },
   addressIcon: {
     width: 36,
     height: 36,
     borderRadius: 8,
-    backgroundColor: '#2D3748',
+    backgroundColor: 'rgba(212, 80, 10, 0.1)',
     justifyContent: 'center',
     alignItems: 'center',
     marginRight: 12,
@@ -881,7 +1030,7 @@ const styles = StyleSheet.create({
   addressTitle: {
     fontSize: 11,
     fontWeight: '700',
-    color: '#9CA3AF',
+    color: WARM_CORE.textSecondary,
     letterSpacing: 0.5,
     textTransform: 'uppercase',
     marginBottom: 4,
@@ -889,7 +1038,7 @@ const styles = StyleSheet.create({
   addressValue: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#FFFFFF',
+    color: WARM_CORE.text,
     maxHeight: 60,
     paddingVertical: 0,
   },
@@ -906,21 +1055,21 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   cancelBtn: {
-    backgroundColor: '#1F2937',
+    backgroundColor: WARM_CORE.card,
     borderWidth: 1.5,
-    borderColor: '#374151',
+    borderColor: WARM_CORE.border,
   },
   confirmBtn: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: WARM_CORE.primary,
   },
   cancelBtnText: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#E5E7EB',
+    color: WARM_CORE.textSecondary,
   },
   confirmBtnText: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#0F0F0F',
+    color: WARM_CORE.white,
   },
 });

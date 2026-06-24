@@ -62,6 +62,51 @@ export const uploadImageToCloudinary = async (
   }
 };
 
+export const uploadImageToCloudinaryWithPublicId = async (
+  imageUri: string,
+  folder: string = 'driver_licenses'
+): Promise<{ secure_url: string; public_id: string }> => {
+  try {
+    console.log('[CLOUDINARY] Starting upload with public ID for:', imageUri);
+    const base64 = await readAsStringAsync(imageUri, {
+      encoding: 'base64',
+    });
+
+    const formData = new FormData();
+    formData.append('file', `data:image/jpeg;base64,${base64}`);
+    formData.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+    formData.append('folder', folder);
+    formData.append('resource_type', 'auto');
+
+    const response = await fetch(
+      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`,
+      {
+        method: 'POST',
+        body: formData,
+      }
+    );
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(
+        errorData.error?.message || `Upload failed with status ${response.status}`
+      );
+    }
+
+    const data = await response.json();
+    return {
+      secure_url: data.secure_url,
+      public_id: data.public_id,
+    };
+  } catch (error: any) {
+    console.error('[CLOUDINARY] Upload error:', error);
+    throw {
+      code: 'CLOUDINARY_UPLOAD_ERROR',
+      message: error.message || 'Failed to upload image',
+    };
+  }
+};
+
 /**
  * Delete image from Cloudinary
  * @param publicId - The public ID of the image in Cloudinary

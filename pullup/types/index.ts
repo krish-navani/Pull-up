@@ -24,13 +24,15 @@ export interface User {
   createdAt?: string;
   updatedAt?: string;
   expoPushToken?: string | null;
+  devicePlatform?: 'ios' | 'android' | null;
   notificationPreferences?: NotificationPreferences;
   mutedChats?: {
     [chatId: string]: string; // ISO string for mute expiration
   };
   // Driver-specific fields
   licenseImageUri?: string;
-  licenseVerificationStatus?: 'pending' | 'verified' | 'rejected';
+  licenseVerificationStatus?: 'pending' | 'verified' | 'rejected' | 'resubmission_requested';
+  licenseRejectionReason?: string;
   licenseUploadedAt?: string;
   licenseConfirmed?: boolean;
 }
@@ -50,6 +52,7 @@ export interface Location {
   longitude: number;
   address: string;
   city: string;
+  placeId?: string;
 }
 
 export interface Ride {
@@ -75,6 +78,7 @@ export interface Ride {
     longitude: number;
     updatedAt: string;
   };
+  detourRadiusMeters?: number;
 }
 
 /**
@@ -171,6 +175,7 @@ export interface DriverStats {
   passengersServed: number;
   averageRating: number;
   acceptanceRate: number;
+  responseRate: number;
 }
 
 export interface PassengerStats {
@@ -180,6 +185,8 @@ export interface PassengerStats {
   totalSavings: number;
   averageRating: number;
   cancelledRides: number;
+  acceptanceRate: number;
+  responseRate: number;
 }
 
 export interface UpcomingRide {
@@ -208,7 +215,7 @@ export interface AppContextType {
   // Rides
   rides: Ride[];
   userRides: Ride[];
-  createRide: (rideData: Omit<Ride, 'id' | 'createdAt' | 'driverId' | 'driverName' | 'bookedSeats' | 'status'>) => void;
+  createRide: (rideData: Omit<Ride, 'id' | 'createdAt' | 'driverId' | 'driverName' | 'bookedSeats' | 'status'>) => Promise<void>;
   cancelRide: (rideId: string) => void;
   startRide: (rideId: string) => Promise<void>;
   startRideLocal: (rideId: string) => void;
@@ -246,4 +253,5 @@ export interface AppContextType {
   getRideHistory: (userId: string, role: 'driver' | 'passenger', limit?: number) => Promise<any[]>;
   getVehicleInfo: (driverId: string) => Promise<any>;
   updateProfileData: (userId: string, updates: Partial<User>) => Promise<User>;
+  unreadChatsCount?: number;
 }

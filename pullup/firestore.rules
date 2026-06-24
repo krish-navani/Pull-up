@@ -138,22 +138,29 @@ service cloud.firestore {
 
     // ─── Ride Group Chats ──────────────────────────────────────────────────
     match /rideChats/{rideId} {
-      allow read:   if canAccessChat(rideId);
+      allow read:   if canAccessChat(rideId) 
+                    || (isSignedIn() && (resource == null 
+                        || getPersistentUserId() in resource.data.participants
+                        || request.auth.uid in resource.data.participants));
       allow create: if isSignedIn() && (isCarpoolDriver(rideId) || isTaxiCreator(rideId));
       allow update: if isSignedIn() && (
         isCarpoolDriver(rideId) || 
         isTaxiCreator(rideId) || 
         (
           canAccessChat(rideId) &&
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessage', 'lastMessageTime', 'lastMessageSenderId', 'lastMessageSenderName', 'updatedAt'])
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessage', 'lastMessageTime', 'lastMessageSenderId', 'lastMessageSenderName', 'updatedAt', 'typing'])
         )
       );
       allow delete: if false;
 
       match /messages/{messageId} {
-        allow read: if canAccessChat(rideId);
-        allow create: if canAccessChat(rideId) && isChatWritable(rideId);
-        allow update, delete: if false;
+        allow read: if canAccessChat(rideId) || (isSignedIn() && exists(/databases/$(database)/documents/rideChats/$(rideId)) && getPersistentUserId() in get(/databases/$(database)/documents/rideChats/$(rideId)).data.participants);
+        allow create: if (canAccessChat(rideId) || (isSignedIn() && exists(/databases/$(database)/documents/rideChats/$(rideId)) && getPersistentUserId() in get(/databases/$(database)/documents/rideChats/$(rideId)).data.participants)) && isChatWritable(rideId);
+        allow update: if (canAccessChat(rideId) || (isSignedIn() && exists(/databases/$(database)/documents/rideChats/$(rideId)) && getPersistentUserId() in get(/databases/$(database)/documents/rideChats/$(rideId)).data.participants)) && (
+          (resource.data.senderId == getPersistentUserId()) ||
+          (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['readBy']))
+        );
+        allow delete: if false;
       }
     }
 

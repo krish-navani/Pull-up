@@ -414,7 +414,11 @@ router.post('/send-otp', rateLimiter, async (req: Request, res: Response) => {
     // Generate and save OTP
     const otpResult = await sendOTP(fullEmail);
     const otpGeneratedTime = Date.now();
-    console.log(`[OTP GENERATED] [${new Date(otpGeneratedTime).toISOString()}] Code: ${otpResult.otp} (took ${otpGeneratedTime - requestReceivedTime}ms)`);
+    if (config.nodeEnv !== 'production') {
+      console.log(`[OTP GENERATED] [${new Date(otpGeneratedTime).toISOString()}] Code: ${otpResult.otp} (took ${otpGeneratedTime - requestReceivedTime}ms)`);
+    } else {
+      console.log(`[OTP GENERATED] [${new Date(otpGeneratedTime).toISOString()}] OTP issued (took ${otpGeneratedTime - requestReceivedTime}ms)`);
+    }
 
     // Send OTP via email (acting as SMS/delivery provider)
     try {
@@ -1127,23 +1131,44 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
         });
       }
 
-      const notificationRef = db.collection('users').doc(bookingData.driverId).collection('notifications').doc();
-      transaction.set(notificationRef, {
-        userId: bookingData.driverId,
-        type: 'booking_accepted',
-        title: 'New Ride Booking Confirmed',
-        message: `${bookingData.passengerName} paid ₹${bookingData.totalPrice} and booked ${bookingData.seatsBooked} seat(s).`,
-        rideId: bookingData.rideId,
-        bookingId,
-        read: false,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      });
-
-      return { bookingId, rideId: bookingData.rideId, alreadyProcessed: false, passengerId: bookingData.passengerId, totalPrice: bookingData.totalPrice };
+      return { 
+        bookingId, 
+        rideId: bookingData.rideId, 
+        alreadyProcessed: false, 
+        passengerId: bookingData.passengerId, 
+        passengerName: bookingData.passengerName,
+        driverId: bookingData.driverId,
+        seatsBooked: bookingData.seatsBooked,
+        totalPrice: bookingData.totalPrice 
+      };
     });
 
     if (!result.alreadyProcessed) {
       await logAuditEvent(result.passengerId, 'booking_payment_verified', result.totalPrice, { bookingId, rideId: result.rideId, paymentId: razorpay_payment_id });
+
+      // Send payment success notification to passenger
+      await triggerNotification(
+        result.passengerId,
+        'payment_confirmed',
+        'Payment Success 💰',
+        `Your payment of INR ${result.totalPrice} was successful and booking is confirmed.`,
+        result.rideId,
+        bookingId,
+        'ride-details',
+        result.rideId
+      ).catch(e => console.error('[PAYMENT_NOTIF] Passenger notification error:', e));
+
+      // Send booking confirmed notification to driver
+      await triggerNotification(
+        result.driverId,
+        'booking_accepted',
+        'New Ride Booking Confirmed',
+        `${result.passengerName} paid ₹${result.totalPrice} and booked ${result.seatsBooked} seat(s).`,
+        result.rideId,
+        bookingId,
+        'ride-details',
+        result.rideId
+      ).catch(e => console.error('[PAYMENT_NOTIF] Driver notification error:', e));
       
       // Check if ride is now full and dispatch capacity reached notifications
       try {
@@ -1349,12 +1374,14 @@ router.post('/complete-ride', async (req: Request, res: Response) => {
       let totalGrossEarnings = 0;
       let totalDriverPayout = 0;
       let totalCommissions = 0;
+      const passengerIds: string[] = [];
 
       const creditingActions: Array<{ bookingId: string, gross: number, payout: number, commission: number }> = [];
 
       for (const doc of bookingsQuery.docs) {
         const bData = doc.data();
         if (bData.paymentStatus === 'paid') {
+          passengerIds.push(bData.passengerId);
           const gross = bData.totalPrice || 0;
           const commission = parseFloat(((gross * config.commissionPercentage) / 100).toFixed(2));
           const payout = parseFloat((gross - commission).toFixed(2));
@@ -1437,11 +1464,44 @@ router.post('/complete-ride', async (req: Request, res: Response) => {
         }
       }
 
-      return { alreadyProcessed: false, driverId, totalDriverPayout, rideId };
+      return { alreadyProcessed: false, driverId, totalDriverPayout, rideId, passengerIds };
     });
 
-    if (!result.alreadyProcessed && result.totalDriverPayout !== undefined && result.totalDriverPayout > 0 && result.driverId && result.rideId) {
-      await logAuditEvent(result.driverId, 'ride_completed_earnings', result.totalDriverPayout, { rideId: result.rideId });
+    if (!result.alreadyProcessed) {
+      const payout = result.totalDriverPayout ?? 0;
+      if (payout > 0 && result.driverId && result.rideId) {
+        await logAuditEvent(result.driverId, 'ride_completed_earnings', payout, { rideId: result.rideId });
+      }
+
+      // Notify the driver
+      await triggerNotification(
+        result.driverId,
+        'ride_completed',
+        'Ride Completed! 🏁',
+        payout > 0 
+          ? `Earnings of ₹${payout} will credit in 24h.`
+          : 'Your ride has been marked as completed.',
+        result.rideId,
+        null,
+        'ride-details',
+        result.rideId
+      ).catch(e => console.error('[COMPLETE_RIDE_NOTIF] Driver notification error:', e));
+
+      // Notify confirmed passengers
+      if (result.passengerIds && result.passengerIds.length > 0) {
+        for (const passengerId of result.passengerIds) {
+          await triggerNotification(
+            passengerId,
+            'ride_completed',
+            'Ride Completed! 🏁',
+            'Your ride has been completed. Thanks for riding with PullUp!',
+            result.rideId,
+            null,
+            'ride-details',
+            result.rideId
+          ).catch(e => console.error('[COMPLETE_RIDE_NOTIF] Passenger notification error:', e));
+        }
+      }
     }
 
     res.json({ success: true, message: 'Ride completed successfully and driver wallet credited' });
@@ -1728,6 +1788,18 @@ router.post('/request-withdrawal', async (req: Request, res: Response) => {
 
     await logAuditEvent(userId, 'withdrawal_requested', numAmount, { withdrawalId: result.withdrawalId });
 
+    // Send "withdrawal_requested" notification to driver
+    await triggerNotification(
+      userId,
+      'withdrawal_requested',
+      'Withdrawal Requested 💸',
+      `Your request to withdraw INR ${numAmount} is pending approval.`,
+      null,
+      result.withdrawalId,
+      'wallet',
+      null
+    ).catch(e => console.error('[WITHDRAWAL_REQUEST_NOTIF] Notification failed:', e));
+
     res.json({ success: true, message: 'Withdrawal request submitted successfully', withdrawalId: result.withdrawalId });
 
   } catch (error: any) {
@@ -1755,6 +1827,102 @@ router.post('/request-withdrawal', async (req: Request, res: Response) => {
     }
 
     res.status(status).json({ success: false, code, message });
+  }
+});
+
+router.post('/approve-withdrawal', async (req: Request, res: Response) => {
+  const { withdrawalId } = req.body;
+
+  if (!withdrawalId) {
+    return res.status(400).json({ success: false, message: 'Withdrawal ID is required' });
+  }
+
+  try {
+    const db = getDb();
+    
+    // 1. Fetch withdrawal request
+    const wRef = db.collection('withdrawals').doc(withdrawalId);
+    const wDoc = await wRef.get();
+    
+    if (!wDoc.exists) {
+      return res.status(404).json({ success: false, code: 'NOT_FOUND', message: 'Withdrawal request not found' });
+    }
+
+    const wData = wDoc.data()!;
+    if (wData.status === 'completed') {
+      return res.status(400).json({ success: false, code: 'ALREADY_COMPLETED', message: 'Withdrawal request is already completed' });
+    }
+
+    const userId = wData.userId;
+    const amount = wData.amount;
+
+    await db.runTransaction(async (transaction) => {
+      const walletRef = db.collection('wallets').doc(userId);
+      const walletDoc = await transaction.get(walletRef);
+      const statsRef = db.collection('system').doc('stats');
+      const statsDoc = await transaction.get(statsRef);
+
+      // 2. Update withdrawal status
+      transaction.update(wRef, {
+        status: 'completed',
+        completedAt: admin.firestore.Timestamp.now()
+      });
+
+      // 3. Update wallet balances
+      if (walletDoc.exists) {
+        const walletData = walletDoc.data()!;
+        transaction.update(walletRef, {
+          lockedBalance: parseFloat(Math.max(0, (walletData.lockedBalance || 0) - amount).toFixed(2)),
+          lifetimeWithdrawals: parseFloat(((walletData.lifetimeWithdrawals || 0) + amount).toFixed(2)),
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      }
+
+      // 4. Update system stats
+      if (statsDoc.exists) {
+        const statsData = statsDoc.data()!;
+        transaction.update(statsRef, {
+          pendingWithdrawalsCount: Math.max(0, (statsData.pendingWithdrawalsCount || 0) - 1),
+          pendingWithdrawalsAmount: parseFloat(Math.max(0, (statsData.pendingWithdrawalsAmount || 0) - amount).toFixed(2)),
+          totalWithdrawalsCount: (statsData.totalWithdrawalsCount || 0) + 1,
+          totalWithdrawalsAmount: parseFloat(((statsData.totalWithdrawalsAmount || 0) + amount).toFixed(2)),
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      }
+
+      // 5. Update wallet transaction status to cleared
+      const txQuery = await db.collection('walletTransactions')
+        .where('referenceId', '==', withdrawalId)
+        .where('type', '==', 'withdrawal')
+        .get();
+      
+      txQuery.forEach(doc => {
+        transaction.update(doc.ref, {
+          status: 'cleared',
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      });
+    });
+
+    await logAuditEvent(userId, 'withdrawal_approved', amount, { withdrawalId });
+
+    // Send "withdrawal_approved" notification to driver
+    await triggerNotification(
+      userId,
+      'withdrawal_approved',
+      'Withdrawal Approved! 💰',
+      `Your withdrawal of INR ${amount} has been processed.`,
+      null,
+      withdrawalId,
+      'wallet',
+      null
+    ).catch(e => console.error('[WITHDRAWAL_APPROVED_NOTIF] Notification failed:', e));
+
+    res.json({ success: true, message: 'Withdrawal approved successfully' });
+
+  } catch (error: any) {
+    console.error('[API] /approve-withdrawal error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Failed to approve withdrawal' });
   }
 });
 
@@ -1788,6 +1956,33 @@ export async function triggerNotification(
     const expoPushToken = userData.expoPushToken;
     const mutedChats = userData.mutedChats || {};
 
+    // Backend Deduplication check (last 5 minutes)
+    const fiveMinutesAgoMs = Date.now() - 5 * 60 * 1000;
+    try {
+      const recentNotifsSnap = await db.collection('users').doc(userId).collection('notifications')
+        .orderBy('createdAt', 'desc')
+        .limit(5)
+        .get();
+      
+      let isDuplicate = false;
+      recentNotifsSnap.forEach(docSnap => {
+        const data = docSnap.data();
+        const createdTime = data.createdAt 
+          ? (data.createdAt.toDate ? data.createdAt.toDate().getTime() : (typeof data.createdAt === 'string' ? new Date(data.createdAt).getTime() : 0)) 
+          : 0;
+        if (data.type === type && data.rideId === (rideId || null) && createdTime >= fiveMinutesAgoMs) {
+          isDuplicate = true;
+        }
+      });
+
+      if (isDuplicate) {
+        console.log(`[DEDUPLICATION] Suppressed duplicate notification of type ${type} for user ${userId} within 5 minutes.`);
+        return false;
+      }
+    } catch (e: any) {
+      console.warn('[DEDUPLICATION] Check failed (could be missing index or empty collection), proceeding:', e.message);
+    }
+
     // 2. Map notification type to preference channel
     let isAllowed = true;
     if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'booking_expired'].includes(type)) {
@@ -1810,9 +2005,13 @@ export async function triggerNotification(
     }
 
     // 3. Write in-app notification subcollection
+    const timestampSecs = Math.floor(Date.now() / 1000);
+    const notificationId = `${rideId || 'general'}_${userId}_${type}_${timestampSecs}`;
+    
     const notifRef = db.collection('users').doc(userId).collection('notifications').doc();
     const notifPayload = {
       id: notifRef.id,
+      notificationId,
       userId,
       type,
       title,
@@ -1826,16 +2025,29 @@ export async function triggerNotification(
       campaignId: campaignId || null
     };
     await notifRef.set(notifPayload);
+    console.log(`[NOTIFICATION DELIVERED]\nnotificationId: ${notifRef.id}\nuserId: ${userId}\ntype: ${type}`);
 
     // 4. Send Expo Push if allowed and token exists
     let pushSent = false;
     if (isAllowed && expoPushToken) {
       try {
+        // Calculate unread count for badge syncing
+        let unreadCount = 1;
+        try {
+          const unreadSnap = await db.collection('users').doc(userId).collection('notifications')
+            .where('read', '==', false)
+            .get();
+          unreadCount = unreadSnap.size; // includes the one we just added since it was setDoc'd
+        } catch (e) {
+          console.warn('[BADGE] Failed to fetch unread count, defaulting to 1:', e);
+        }
+
         const pushPayload = {
           to: expoPushToken,
           sound: 'default',
           title,
           body: message,
+          badge: unreadCount,
           data: {
             type,
             rideId: rideId || '',
@@ -1878,6 +2090,57 @@ export async function triggerNotification(
     return false;
   }
 }
+
+// ─── Background Location Update (called by TaskManager background task) ───────
+// Authenticated via PULLUP_BG_SECRET header to prevent spoofed location writes.
+router.post('/update-location', async (req: Request, res: Response) => {
+  // Auth check
+  const secret = req.headers['x-pullup-bg-secret'];
+  const expectedSecret = process.env.PULLUP_BG_SECRET;
+  if (!expectedSecret || secret !== expectedSecret) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+
+  const { rideId, latitude, longitude, heading, speed, accuracy } = req.body;
+
+  if (!rideId || latitude === undefined || longitude === undefined) {
+    return res.status(400).json({ success: false, message: 'Missing required fields: rideId, latitude, longitude' });
+  }
+
+  try {
+    const db = getDb();
+    const rideRef = db.collection('rides').doc(rideId);
+    const rideSnap = await rideRef.get();
+
+    if (!rideSnap.exists) {
+      return res.status(404).json({ success: false, message: 'Ride not found' });
+    }
+
+    const rideData = rideSnap.data() || {};
+    if (rideData.status !== 'in_progress' && rideData.status !== 'active') {
+      return res.status(409).json({ success: false, message: `Ride status is ${rideData.status}, not trackable` });
+    }
+
+    const now = new Date().toISOString();
+    await rideRef.update({
+      currentLocation: { latitude, longitude, updatedAt: now },
+      liveLocation: {
+        latitude,
+        longitude,
+        heading: heading ?? 0,
+        speed: speed ?? 0,
+        accuracy: accuracy ?? null,
+        updatedAt: now,
+      },
+    });
+
+    console.log(`[BG LOCATION] Updated ride ${rideId}: ${latitude.toFixed(5)},${longitude.toFixed(5)} speed=${speed?.toFixed(1)}m/s`);
+    return res.json({ success: true });
+  } catch (error: any) {
+    console.error('[BG LOCATION] Error updating location:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
 
 // REST route to send unified notification
 router.post('/send-notification', async (req: Request, res: Response) => {
@@ -1932,6 +2195,7 @@ router.post('/analytics/track', async (req: Request, res: Response) => {
     const updateData: Record<string, any> = {};
     if (action === 'opened') {
       updateData.openedCount = admin.firestore.FieldValue.increment(1);
+      console.log(`[NOTIFICATION OPENED]\nnotificationId: ${campaignId}`);
     } else if (action === 'clicked') {
       updateData.clickedCount = admin.firestore.FieldValue.increment(1);
     }
@@ -2527,6 +2791,197 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('[REMINDER SWEEP] Sweep execution error:', error);
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ─── Admin Secret Middleware helper ───────────────────────────────────────────
+function isAdminAuthorized(req: Request): boolean {
+  const secret = req.headers['x-admin-secret'];
+  const expected = process.env.PULLUP_ADMIN_SECRET;
+  return !!expected && secret === expected;
+}
+
+async function writeAuditLog(db: any, action: string, description: string, adminNote?: string) {
+  try {
+    await db.collection('auditLogs').add({
+      action,
+      description,
+      adminNote: adminNote || null,
+      timestamp: admin.firestore.Timestamp.now(),
+      createdAt: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error('[AUDIT LOG] Failed to write audit log:', e);
+  }
+}
+
+// ─── GET /admin/data — Returns all users, rides, bookings, audit logs ─────────
+router.get('/admin/data', async (req: Request, res: Response) => {
+  if (!isAdminAuthorized(req)) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+
+  try {
+    const db = getDb();
+
+    const [usersSnap, ridesSnap, bookingsSnap, auditLogsSnap] = await Promise.all([
+      db.collection('users').get(),
+      db.collection('rides').orderBy('createdAt', 'desc').limit(200).get(),
+      db.collection('bookings').orderBy('bookedAt', 'desc').limit(500).get(),
+      db.collection('auditLogs').orderBy('timestamp', 'desc').limit(100).get(),
+    ]);
+
+    const users = usersSnap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+    const rides = ridesSnap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+    const bookings = bookingsSnap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+    const auditLogs = auditLogsSnap.docs.map((d: any) => ({ id: d.id, ...d.data() }));
+
+    // Aggregate stats
+    const stats = {
+      totalUsers: users.length,
+      totalDrivers: users.filter((u: any) => u.role === 'driver').length,
+      totalPassengers: users.filter((u: any) => u.role === 'passenger').length,
+      pendingLicenses: users.filter((u: any) => u.licenseVerificationStatus === 'pending').length,
+      verifiedDrivers: users.filter((u: any) => u.licenseVerified === true).length,
+      rejectedLicenses: users.filter((u: any) => u.licenseVerificationStatus === 'rejected').length,
+      totalRides: rides.length,
+      activeRides: rides.filter((r: any) => r.status === 'active').length,
+      inProgressRides: rides.filter((r: any) => r.status === 'in_progress').length,
+      completedRides: rides.filter((r: any) => r.status === 'completed').length,
+      cancelledRides: rides.filter((r: any) => r.status === 'cancelled').length,
+      totalBookings: bookings.length,
+      confirmedBookings: bookings.filter((b: any) => b.status === 'confirmed').length,
+      pendingBookings: bookings.filter((b: any) => b.status === 'pending').length,
+    };
+
+    return res.json({ success: true, users, rides, bookings, auditLogs, stats });
+  } catch (error: any) {
+    console.error('[ADMIN DATA] Error:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ─── POST /admin-action — Handle all admin mutations ─────────────────────────
+router.post('/admin-action', async (req: Request, res: Response) => {
+  if (!isAdminAuthorized(req)) {
+    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  }
+
+  const { action, targetId, reason, data } = req.body;
+
+  if (!action) {
+    return res.status(400).json({ success: false, message: 'Missing action' });
+  }
+
+  const db = getDb();
+
+  try {
+    switch (action) {
+
+      case 'APPROVE_LICENSE': {
+        if (!targetId) return res.status(400).json({ success: false, message: 'Missing targetId (userId)' });
+        await db.collection('users').doc(targetId).update({
+          licenseVerified: true,
+          licenseVerificationStatus: 'verified',
+          licenseRejectionReason: admin.firestore.FieldValue.delete(),
+          licenseVerifiedAt: new Date().toISOString(),
+        });
+        // Notify user
+        try {
+          const userSnap = await db.collection('users').doc(targetId).get();
+          const userData = userSnap.data();
+          if (userData?.expoPushToken) {
+            const notifRef = db.collection('users').doc(targetId).collection('notifications').doc();
+            await notifRef.set({
+              id: notifRef.id, type: 'license_verified', title: '🎉 License Approved!',
+              message: 'Your driving license has been verified. You can now post rides!',
+              read: false, createdAt: new Date().toISOString(),
+            });
+          }
+        } catch (e) { /* non-fatal */ }
+        await writeAuditLog(db, 'APPROVE_LICENSE', `Approved license for user ${targetId}`);
+        return res.json({ success: true, message: 'License approved' });
+      }
+
+      case 'REJECT_LICENSE': {
+        if (!targetId) return res.status(400).json({ success: false, message: 'Missing targetId (userId)' });
+        await db.collection('users').doc(targetId).update({
+          licenseVerified: false,
+          licenseVerificationStatus: 'rejected',
+          licenseRejectionReason: reason || 'License image is unclear or invalid.',
+        });
+        // Notify user
+        try {
+          const notifRef = db.collection('users').doc(targetId).collection('notifications').doc();
+          await notifRef.set({
+            id: notifRef.id, type: 'license_rejected', title: '⚠️ License Rejected',
+            message: reason || 'Your license was rejected. Please re-upload a clear image.',
+            read: false, createdAt: new Date().toISOString(),
+          });
+        } catch (e) { /* non-fatal */ }
+        await writeAuditLog(db, 'REJECT_LICENSE', `Rejected license for user ${targetId}`, reason);
+        return res.json({ success: true, message: 'License rejected' });
+      }
+
+      case 'REQUEST_RESUBMISSION': {
+        if (!targetId) return res.status(400).json({ success: false, message: 'Missing targetId (userId)' });
+        await db.collection('users').doc(targetId).update({
+          licenseVerified: false,
+          licenseVerificationStatus: 'resubmission_requested',
+          licenseRejectionReason: reason || 'Please re-upload your license with better image quality.',
+        });
+        try {
+          const notifRef = db.collection('users').doc(targetId).collection('notifications').doc();
+          await notifRef.set({
+            id: notifRef.id, type: 'license_resubmit', title: '📋 License Resubmission Required',
+            message: reason || 'Please re-upload your driving license with a clear, well-lit photo.',
+            read: false, createdAt: new Date().toISOString(),
+          });
+        } catch (e) { /* non-fatal */ }
+        await writeAuditLog(db, 'REQUEST_RESUBMISSION', `Requested resubmission from user ${targetId}`, reason);
+        return res.json({ success: true, message: 'Resubmission requested' });
+      }
+
+      case 'CANCEL_RIDE': {
+        if (!targetId) return res.status(400).json({ success: false, message: 'Missing targetId (rideId)' });
+        await db.collection('rides').doc(targetId).update({
+          status: 'cancelled',
+          cancelledAt: new Date().toISOString(),
+          cancelReason: reason || 'Cancelled by admin',
+        });
+        await writeAuditLog(db, 'CANCEL_RIDE', `Cancelled ride ${targetId}`, reason);
+        return res.json({ success: true, message: 'Ride cancelled by admin' });
+      }
+
+      case 'CHANGE_USER_ROLE': {
+        if (!targetId || !data?.role) return res.status(400).json({ success: false, message: 'Missing targetId or data.role' });
+        await db.collection('users').doc(targetId).update({ role: data.role });
+        await writeAuditLog(db, 'CHANGE_USER_ROLE', `Changed user ${targetId} role to ${data.role}`);
+        return res.json({ success: true, message: `User role changed to ${data.role}` });
+      }
+
+      case 'FLUSH_DB': {
+        const collections = ['rides', 'bookings', 'rideChats'];
+        let totalDeleted = 0;
+        for (const col of collections) {
+          const snap = await db.collection(col).get();
+          const batch = db.batch();
+          snap.docs.forEach((d: any) => batch.delete(d.ref));
+          if (snap.docs.length > 0) {
+            await batch.commit();
+            totalDeleted += snap.docs.length;
+          }
+        }
+        await writeAuditLog(db, 'FLUSH_DB', `Flushed database — ${totalDeleted} documents deleted`);
+        return res.json({ success: true, message: `Database flushed: ${totalDeleted} documents deleted` });
+      }
+
+      default:
+        return res.status(400).json({ success: false, message: `Unknown action: ${action}` });
+    }
+  } catch (error: any) {
+    console.error(`[ADMIN ACTION] Error executing ${action}:`, error);
+    return res.status(500).json({ success: false, message: error.message });
   }
 });
 

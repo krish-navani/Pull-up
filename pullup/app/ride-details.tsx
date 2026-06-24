@@ -6,6 +6,7 @@ import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { WARM_CORE } from '@/constants/theme';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import UserAvatar from '@/components/UserAvatar';
 import { collection, query, where, onSnapshot, doc, updateDoc, Timestamp } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
 import { getRideDirectionType, calculateDistance } from '@/utils/atlasLocationUtils';
@@ -281,6 +282,17 @@ export default function RideDetailsScreen() {
       }, { duration: 1000 });
     }
   }, [ride?.currentLocation, ride?.status, ride?.driverId, auth.user?.id]);
+
+  // Driver auto-redirect to navigation screen if ride is in_progress
+  useEffect(() => {
+    if (ride && auth.user && ride.status === 'in_progress') {
+      const isDriver = ride.driverId === auth.user.id;
+      if (isDriver) {
+        console.log('[RIDE DETAILS] Driver redirecting to app/navigation');
+        router.replace({ pathname: '/navigation', params: { rideId: ride.id } });
+      }
+    }
+  }, [ride?.status, ride?.driverId, auth.user?.id]);
 
   const handleNextStop = async () => {
     if (!ride) return;
@@ -596,52 +608,49 @@ export default function RideDetailsScreen() {
               },
             ]}
           >
-            <View style={styles.navHudCard}>
-              <View style={styles.navHudRow}>
-                <View style={styles.navHudIconBox}>
-                  <MaterialCommunityIcons
-                    name={
-                      navigationStops[ride.activeStopIndex || 0]?.type === 'pickup'
-                        ? 'account-plus'
-                        : navigationStops[ride.activeStopIndex || 0]?.type === 'dropoff'
-                        ? 'account-minus'
-                        : 'flag-checkered'
-                    }
-                    size={28}
-                    color={WARM_CORE.primary}
+            {ride.driverId === auth.user?.id ? (
+              <View style={styles.navHudCard}>
+                <View style={styles.navHudRow}>
+                  <View style={styles.navHudIconBox}>
+                    <MaterialCommunityIcons
+                      name={
+                        navigationStops[ride.activeStopIndex || 0]?.type === 'pickup'
+                          ? 'account-plus'
+                          : navigationStops[ride.activeStopIndex || 0]?.type === 'dropoff'
+                          ? 'account-minus'
+                          : 'flag-checkered'
+                      }
+                      size={28}
+                      color={WARM_CORE.primary}
+                    />
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 12 }}>
+                    <Text style={styles.navHudNext}>NEXT STOP</Text>
+                    <Text style={styles.navHudLabel} numberOfLines={2}>
+                      {navigationStops[ride.activeStopIndex || 0]?.label || 'Loading route...'}
+                    </Text>
+                    <Text style={styles.navHudAddress} numberOfLines={1}>
+                      {navigationStops[ride.activeStopIndex || 0]?.address || ''}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Progress bar */}
+                <View style={styles.navProgressBarBg}>
+                  <View
+                    style={[
+                      styles.navProgressBarFg,
+                      {
+                        width: `${
+                          navigationStops.length > 0
+                            ? ((ride.activeStopIndex || 0) / navigationStops.length) * 100
+                            : 0
+                        }%`,
+                      },
+                    ]}
                   />
                 </View>
-                <View style={{ flex: 1, marginLeft: 12 }}>
-                  <Text style={styles.navHudNext}>
-                    {ride.driverId === auth.user?.id ? 'NEXT STOP' : 'LIVE TRACKING'}
-                  </Text>
-                  <Text style={styles.navHudLabel} numberOfLines={2}>
-                    {navigationStops[ride.activeStopIndex || 0]?.label || 'Loading route...'}
-                  </Text>
-                  <Text style={styles.navHudAddress} numberOfLines={1}>
-                    {navigationStops[ride.activeStopIndex || 0]?.address || ''}
-                  </Text>
-                </View>
-              </View>
 
-              {/* Progress bar */}
-              <View style={styles.navProgressBarBg}>
-                <View
-                  style={[
-                    styles.navProgressBarFg,
-                    {
-                      width: `${
-                        navigationStops.length > 0
-                          ? ((ride.activeStopIndex || 0) / navigationStops.length) * 100
-                          : 0
-                      }%`,
-                    },
-                  ]}
-                />
-              </View>
-
-              {/* Actions for host / driver */}
-              {ride.driverId === auth.user?.id ? (
                 <TouchableOpacity
                   style={styles.navHudConfirmButton}
                   onPress={handleNextStop}
@@ -656,19 +665,32 @@ export default function RideDetailsScreen() {
                       : 'Arrived at Destination'}
                   </Text>
                 </TouchableOpacity>
-              ) : (
-                <View style={styles.passengerStatusRow}>
-                  <View style={styles.passengerStatusIndicator} />
-                  <Text style={styles.passengerStatusText}>
-                    {navigationStops[ride.activeStopIndex || 0]?.type === 'pickup'
-                      ? 'Driver is heading for pickup'
-                      : navigationStops[ride.activeStopIndex || 0]?.type === 'dropoff'
-                      ? 'Driver is heading for drop-off'
-                      : 'Heading to final destination'}
-                  </Text>
+              </View>
+            ) : (
+              <View style={styles.navHudCard}>
+                <View style={styles.navHudRow}>
+                  <View style={[styles.navHudIconBox, { backgroundColor: 'rgba(255, 122, 51, 0.15)' }]}>
+                    <MaterialCommunityIcons name="pulse" size={28} color={WARM_CORE.accent} />
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 12 }}>
+                    <Text style={[styles.navHudLabel, { fontSize: 16, fontWeight: '800', color: WARM_CORE.text }]}>
+                      Your ride is live
+                    </Text>
+                    <Text style={styles.navHudAddress}>
+                      Driver is currently on route
+                    </Text>
+                  </View>
                 </View>
-              )}
-            </View>
+                <TouchableOpacity
+                  style={[styles.navHudConfirmButton, { backgroundColor: WARM_CORE.success, marginTop: 12 }]}
+                  onPress={() => router.push({ pathname: '/navigation', params: { rideId: ride.id } })}
+                  activeOpacity={0.8}
+                >
+                  <MaterialCommunityIcons name="navigation" size={16} color={WARM_CORE.white} style={{ marginRight: 6 }} />
+                  <Text style={styles.navHudConfirmText}>Track Ride</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </Animated.View>
         )}
 
@@ -919,6 +941,27 @@ export default function RideDetailsScreen() {
                   </View>
                 </View>
               </View>
+
+              {/* Detour preferences badge */}
+              <View style={[
+                styles.detourBadgeContainer,
+                ride?.detourRadiusMeters && ride.detourRadiusMeters > 0 ? styles.detourBadgeOrange : styles.detourBadgeGrey
+              ]}>
+                <MaterialCommunityIcons 
+                  name={ride?.detourRadiusMeters && ride.detourRadiusMeters > 0 ? 'map-marker-path' : 'map-marker-off'} 
+                  size={15} 
+                  color={ride?.detourRadiusMeters && ride.detourRadiusMeters > 0 ? WARM_CORE.primary : WARM_CORE.textSecondary} 
+                />
+                <Text style={[
+                  styles.detourBadgeText,
+                  ride?.detourRadiusMeters && ride.detourRadiusMeters > 0 ? styles.detourBadgeTextOrange : styles.detourBadgeTextGrey
+                ]}>
+                  {ride?.detourRadiusMeters && ride.detourRadiusMeters > 0 
+                    ? `Supports detours up to ${(ride.detourRadiusMeters / 1000).toFixed(0)} km from driver route`
+                    : "Fixed Route — Meet driver at original pickup/drop-off"
+                  }
+                </Text>
+              </View>
             </Animated.View>
 
             {/* DATE + PRICE */}
@@ -944,11 +987,7 @@ export default function RideDetailsScreen() {
 
               <View style={styles.vehicleCard}>
                 <View style={styles.driverRow}>
-                  <View style={styles.avatar}>
-                    <Text style={styles.avatarText}>
-                      {ride.driverName.charAt(0)}
-                    </Text>
-                  </View>
+                  <UserAvatar imageUrl={ride.driverImage} name={ride.driverName} size={44} />
 
                   <View style={{ flex: 1 }}>
                     <Text style={styles.driverName}>{ride.driverName}</Text>
@@ -1676,6 +1715,35 @@ const styles = StyleSheet.create({
     color: WARM_CORE.success,
     fontSize: 12,
     fontWeight: '600',
+  },
+  detourBadgeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    marginTop: 12,
+    gap: 8,
+    borderWidth: 1,
+  },
+  detourBadgeOrange: {
+    backgroundColor: 'rgba(212, 80, 10, 0.08)',
+    borderColor: 'rgba(212, 80, 10, 0.18)',
+  },
+  detourBadgeGrey: {
+    backgroundColor: 'rgba(107, 114, 128, 0.06)',
+    borderColor: 'rgba(107, 114, 128, 0.15)',
+  },
+  detourBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+    flex: 1,
+  },
+  detourBadgeTextOrange: {
+    color: WARM_CORE.primary,
+  },
+  detourBadgeTextGrey: {
+    color: WARM_CORE.textSecondary,
   },
 });
 
