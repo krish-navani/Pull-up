@@ -20,9 +20,6 @@ import {
     Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import * as Linking from 'expo-linking';
-import * as WebBrowser from 'expo-web-browser';
-import apiClient from '@/utils/backendApiClient';
 
 // ─── Shared route marker token (same everywhere in the app) ──────────────────
 const ROUTE = {
@@ -296,15 +293,26 @@ export default function BookingConfirmationScreen() {
     ride.dropLocation.longitude
   ) : 'other';
 
-  const [customLocation, setCustomLocation] = useState<any>(null);
+  const [selectedPickup, setSelectedPickup] = useState<any>(null);
+  const [selectedDrop, setSelectedDrop] = useState<any>(null);
+  const [acknowledged, setAcknowledged] = useState(false);
 
-  const detourDistance = customLocation && ride
-    ? calculateDistance(
-        customLocation.latitude,
-        customLocation.longitude,
-        direction === 'home-to-atlas' ? ride.pickupLocation.latitude : ride.dropLocation.latitude,
-        direction === 'home-to-atlas' ? ride.pickupLocation.longitude : ride.dropLocation.longitude
-      )
+  const detourDistance = ride
+    ? (direction === 'home-to-atlas' && selectedPickup
+        ? calculateDistance(
+            selectedPickup.latitude,
+            selectedPickup.longitude,
+            ride.pickupLocation.latitude,
+            ride.pickupLocation.longitude
+          )
+        : (direction === 'atlas-to-home' && selectedDrop
+            ? calculateDistance(
+                selectedDrop.latitude,
+                selectedDrop.longitude,
+                ride.dropLocation.latitude,
+                ride.dropLocation.longitude
+              )
+            : 0))
     : 0;
 
   const detourDistanceMeters = detourDistance * 1000;
@@ -313,38 +321,11 @@ export default function BookingConfirmationScreen() {
 
   useEffect(() => {
     if (ride) {
-      if (direction === 'home-to-atlas') {
-        setCustomLocation(ride.pickupLocation);
-      } else {
-        setCustomLocation(ride.dropLocation);
-      }
+      const homeAddress = auth.user?.homeAddress;
+      setSelectedPickup(direction === 'home-to-atlas' && homeAddress ? homeAddress : ride.pickupLocation);
+      setSelectedDrop(direction === 'atlas-to-home' && homeAddress ? homeAddress : ride.dropLocation);
     }
-  }, [ride, direction]);
-
-  useEffect(() => {
-    const handleDeepLink = (event: { url: string }) => {
-      console.log('[BOOKING DEEP LINK] URL received:', event.url);
-      
-      if (event.url.includes('booking-success')) {
-        WebBrowser.dismissBrowser();
-        setShowSuccess(true);
-        setIsConfirming(false);
-      } else if (event.url.includes('payment-cancelled')) {
-        WebBrowser.dismissBrowser();
-        setIsConfirming(false);
-        Alert.alert('Booking Cancelled', 'Your payment was cancelled and the seat was released.');
-      } else if (event.url.includes('payment-failed')) {
-        WebBrowser.dismissBrowser();
-        setIsConfirming(false);
-        Alert.alert('Payment Failed', 'Payment verification failed. Please try booking again.');
-      }
-    };
-
-    const sub = Linking.addEventListener('url', handleDeepLink);
-    return () => {
-      sub.remove();
-    };
-  }, []);
+  }, [ride, direction, auth.user?.homeAddress]);
 
   // Staggered entrance
   const headerAnim = useFadeSlideIn(0,   14);
@@ -431,15 +412,18 @@ export default function BookingConfirmationScreen() {
       }
     }
 
+    if (!acknowledged) {
+      setErrorMessage('Please confirm your pickup and drop-off points.');
+      return;
+    }
+
     setIsConfirming(true);
     setErrorMessage(null);
     try {
-      const pickupLocation = direction === 'home-to-atlas' ? customLocation : null;
-      const dropLocation = direction === 'atlas-to-home' ? customLocation : null;
+      const pickupLocation = selectedPickup;
+      const dropLocation = selectedDrop;
 
-      // Call requestRide from AppContext to create a pending booking
       await requestRide(ride.id, seatsSelected, pickupLocation, dropLocation);
-      
       setShowSuccess(true);
       setIsConfirming(false);
     } catch (err: any) {
@@ -456,7 +440,7 @@ export default function BookingConfirmationScreen() {
           ride={ride}
           seatsSelected={seatsSelected}
           totalPrice={totalPrice}
-          customLocation={customLocation}
+          customLocation={direction === 'home-to-atlas' ? selectedPickup : selectedDrop}
           direction={direction}
           onGoToBookings={() => router.push('/(tabs)/my-bookings')}
         />
@@ -552,29 +536,38 @@ export default function BookingConfirmationScreen() {
           </View>
         </Animated.View>
 
-        {/* Custom Location Selection */}
+        {/* Dual Location Selection */}
         <Animated.View style={[st.card, {
           opacity: card2Anim.opacity,
           transform: [{ translateY: card2Anim.translateY }],
           zIndex: 999,
         }]}>
-          <Text style={st.sectionLabel}>
-            {direction === 'home-to-atlas' ? 'YOUR PICKUP POINT' : 'YOUR DROP-OFF POINT'}
-          </Text>
+          <Text style={st.sectionLabel}>YOUR JOURNEY POINTS</Text>
           <Text style={{ fontSize: 12, color: WARM_CORE.textSecondary, marginBottom: 12 }}>
-            {direction === 'home-to-atlas' 
-              ? 'Specify where the driver should pick you up.' 
-              : 'Specify where the driver should drop you off.'}
+            Review or customize your pickup and drop-off points.
           </Text>
           <LocationSearchInput
-            label={direction === 'home-to-atlas' ? 'Pickup Location' : 'Drop-off Location'}
-            value={customLocation?.address || ''}
+            label="Pickup Location"
+            value={selectedPickup?.address || ''}
             onChange={(location) => {
-              setCustomLocation(location);
+              setSelectedPickup(location);
               setErrorMessage(null);
             }}
-            placeholder={direction === 'home-to-atlas' ? 'Search pickup address...' : 'Search drop-off address...'}
-            readOnly={detourLimit === 0}
+            placeholder="Search pickup address..."
+            readOnly={detourLimit === 0 || direction !== 'home-to-atlas'}
+          />
+
+          <View style={{ height: 12 }} />
+
+          <LocationSearchInput
+            label="Drop-off Location"
+            value={selectedDrop?.address || ''}
+            onChange={(location) => {
+              setSelectedDrop(location);
+              setErrorMessage(null);
+            }}
+            placeholder="Search drop-off address..."
+            readOnly={detourLimit === 0 || direction !== 'atlas-to-home'}
           />
 
           {detourLimit > 0 ? (
@@ -595,7 +588,7 @@ export default function BookingConfirmationScreen() {
                   {isDetourValid ? "Detour is within limit" : "Detour exceeds driver limit"}
                 </Text>
                 <Text style={st.detourInfoText}>
-                  Your point is {detourDistance.toFixed(1)} km away. Driver limit: ${(detourLimit / 1000).toFixed(1)} km.
+                  Your detour point is {detourDistance.toFixed(1)} km away. Driver limit: {(detourLimit / 1000).toFixed(1)} km.
                 </Text>
               </View>
             </View>
@@ -636,6 +629,27 @@ export default function BookingConfirmationScreen() {
             <Text style={st.totalLabel}>Total Amount</Text>
             <Text style={st.totalValue}>₹{totalPrice}</Text>
           </View>
+        </Animated.View>
+
+        {/* Acknowledgment Checkbox */}
+        <Animated.View style={[st.checkboxRow, {
+          opacity: ctaAnim.opacity,
+          transform: [{ translateY: ctaAnim.translateY }],
+        }]}>
+          <TouchableOpacity 
+            onPress={() => setAcknowledged(!acknowledged)} 
+            style={st.checkboxClickable}
+            activeOpacity={0.7}
+          >
+            <MaterialCommunityIcons 
+              name={acknowledged ? "checkbox-marked" : "checkbox-blank-outline"} 
+              size={20} 
+              color={acknowledged ? WARM_CORE.primary : WARM_CORE.textSecondary} 
+            />
+            <Text style={st.checkboxText}>
+              I confirm my exact pickup and drop-off points.
+            </Text>
+          </TouchableOpacity>
         </Animated.View>
 
         {/* CTA */}
@@ -759,6 +773,24 @@ const st = StyleSheet.create({
   shimmerStripe:  { position: 'absolute', top: 0, bottom: 0, width: 90, backgroundColor: 'rgba(255,255,255,0.15)' },
   termsRow:       { flexDirection: 'row', gap: 8, alignItems: 'flex-start' },
   termsText:      { flex: 1, fontSize: 11, color: WARM_CORE.textSecondary, lineHeight: 17, fontWeight: '500' },
+  checkboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+    paddingHorizontal: 4,
+  },
+  checkboxClickable: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  checkboxText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: WARM_CORE.text,
+    flex: 1,
+  },
   detourInfoCard: {
     flexDirection: 'row',
     alignItems: 'center',

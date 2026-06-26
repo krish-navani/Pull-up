@@ -75,6 +75,7 @@ export interface OTPSignUpData {
   division: string;
   role: 'passenger' | 'driver';
   profileImage?: string; // Cloudinary URL for profile picture
+  homeAddress?: User['homeAddress'];
 }
 
 export interface OTPLoginData {
@@ -156,6 +157,7 @@ export const verifyOTPAndCreateAccount = async (
       division: signUpData.division,
       role: signUpData.role,
       profileImage: signUpData.profileImage || null,
+      homeAddress: signUpData.homeAddress || null,
       licenseVerified: false,
       profileComplete: true,
       createdAt: new Date().toISOString(),
@@ -263,6 +265,7 @@ const ensureUserDefaults = (firestoreData: Record<string, any>): User => {
       marketingUpdates: false,
     },
     mutedChats: firestoreData?.mutedChats ?? {},
+    homeAddress: firestoreData?.homeAddress ?? null,
   } as User;
 };
 

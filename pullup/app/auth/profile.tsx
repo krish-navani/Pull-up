@@ -31,6 +31,8 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WARM_CORE } from '@/constants/theme';
+import LocationSearchInput from '@/components/LocationSearchInput';
+import { Location as PullUpLocation } from '@/types';
 
 // Progress Bar Component
 const ProgressBar = ({ step, totalSteps, label }: { step: number; totalSteps: number; label: string }) => {
@@ -69,6 +71,7 @@ interface FormData {
   course: string;
   division: string;
   appId: string;
+  homeAddress: PullUpLocation | null;
   role?: 'driver' | 'passenger';
 }
 
@@ -113,6 +116,7 @@ export default function ProfileScreen() {
     course: '',
     division: '',
     appId: '',
+    homeAddress: null,
   });
 
   // Automatically prefill fullName from email and lock it
@@ -274,7 +278,7 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleInputChange = (field: keyof FormData, value: string) => {
+  const handleInputChange = (field: keyof FormData, value: any) => {
     setFormData(prev => ({ ...prev, [field]: value }));
     if (error) setError('');
 
@@ -319,6 +323,10 @@ export default function ProfileScreen() {
       setError('Please enter your app ID');
       return;
     }
+    if (!formData.homeAddress) {
+      setError('What is your home address?');
+      return;
+    }
 
     // Step 2: Validate email and OTP parameters
     if (!emailFromParams || !otpFromParams) {
@@ -352,6 +360,7 @@ export default function ProfileScreen() {
         division: formData.division,
         role,
         profileImage: image || undefined, // Include uploaded image URL or undefined if no image
+        homeAddress: formData.homeAddress,
       });
 
       console.log('[PROFILE] verifyOTPAndSignUp completed, user role:', role);
@@ -394,7 +403,8 @@ export default function ProfileScreen() {
     formData.year.length > 0 &&
     formData.course.length > 0 &&
     formData.division.length > 0 &&
-    formData.appId.trim().length > 0;
+    formData.appId.trim().length > 0 &&
+    !!formData.homeAddress;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -750,6 +760,17 @@ export default function ProfileScreen() {
               </ScrollView>
             )}
           </View>
+          <View style={styles.fieldContainer}>
+            <Text style={styles.label}>What is your home address?</Text>
+            <LocationSearchInput
+              label=""
+              value={formData.homeAddress?.address || ''}
+              location={formData.homeAddress || undefined}
+              placeholder="Search your home address"
+              onChange={(location) => handleInputChange('homeAddress', location)}
+            />
+          </View>
+
           {/* Role Selection */}
           <View style={styles.fieldContainer}>
             <Text style={styles.label}>Account Type</Text>

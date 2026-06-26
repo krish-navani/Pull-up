@@ -9,6 +9,8 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { WARM_CORE } from '@/constants/theme';
+import LocationSearchInput from '@/components/LocationSearchInput';
+import { Location as PullUpLocation } from '@/types';
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
@@ -39,6 +41,9 @@ interface EditableProfile {
   year: 'First Year' | 'Second Year' | 'Third Year' | 'Fourth Year' | 'Fifth Year' | 'Honors Degree';
   division: string;
   profileImage: string | null;
+  homeAddress: PullUpLocation | null;
+  emergencyContactName?: string;
+  emergencyContactPhone?: string;
 }
 
 interface ValidationErrors {
@@ -46,6 +51,7 @@ interface ValidationErrors {
   phone?: string;
   course?: string;
   division?: string;
+  homeAddress?: string;
 }
 
 const YEAR_OPTIONS = ['First Year', 'Second Year', 'Third Year', 'Fourth Year', 'Fifth Year', 'Honors Degree'] as const;
@@ -65,6 +71,9 @@ export default function ProfileEditScreen() {
     year: user?.year || 'First Year',
     division: user?.division || '',
     profileImage: user?.profileImage || null,
+    homeAddress: user?.homeAddress || null,
+    emergencyContactName: user?.emergencyContactName || '',
+    emergencyContactPhone: user?.emergencyContactPhone || '',
   });
 
   const [errors, setErrors] = useState<ValidationErrors>({});
@@ -108,6 +117,9 @@ export default function ProfileEditScreen() {
     if (!profile.division.trim()) {
       newErrors.division = 'Division is required';
     }
+    if (!profile.homeAddress) {
+      newErrors.homeAddress = 'Home address is required';
+    }
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -123,7 +135,10 @@ export default function ProfileEditScreen() {
       profile.course !== (user?.course || '') ||
       profile.year !== (user?.year || 'First Year') ||
       profile.division !== (user?.division || '') ||
-      profile.profileImage !== (user?.profileImage || null);
+      profile.profileImage !== (user?.profileImage || null) ||
+      profile.emergencyContactName !== (user?.emergencyContactName || '') ||
+      profile.emergencyContactPhone !== (user?.emergencyContactPhone || '') ||
+      JSON.stringify(profile.homeAddress || null) !== JSON.stringify(user?.homeAddress || null);
 
     setHasChanges(hasChanged);
   }, [profile, user]);
@@ -226,6 +241,9 @@ export default function ProfileEditScreen() {
         course: profile.course.trim(),
         year: profile.year,
         division: profile.division.trim(),
+        homeAddress: profile.homeAddress,
+        emergencyContactName: profile.emergencyContactName?.trim() || null,
+        emergencyContactPhone: profile.emergencyContactPhone?.trim() || null,
       };
 
       // Handle profile image changes (including removal)
@@ -261,6 +279,9 @@ export default function ProfileEditScreen() {
       year: user.year || 'First Year',
       division: user.division || '',
       profileImage: user.profileImage || null,
+      homeAddress: user.homeAddress || null,
+      emergencyContactName: user.emergencyContactName || '',
+      emergencyContactPhone: user.emergencyContactPhone || '',
     });
     setErrors({});
   }, [user]);
@@ -542,6 +563,86 @@ export default function ProfileEditScreen() {
           {errors.division && (
             <Text style={styles.errorText}>{errors.division}</Text>
           )}
+
+          <View style={styles.fieldSection}>
+            <View style={styles.fieldHeader}>
+              <MaterialCommunityIcons name="home-map-marker" size={18} color={WARM_CORE.primary} />
+              <Text style={styles.fieldLabel}>
+                Home Address
+                <Text style={styles.fieldLabelRequired}> *</Text>
+              </Text>
+            </View>
+            <LocationSearchInput
+              label=""
+              value={profile.homeAddress?.address || ''}
+              location={profile.homeAddress || undefined}
+              placeholder="Search your home address"
+              onChange={(location) => setProfile((prev) => ({ ...prev, homeAddress: location }))}
+            />
+            {errors.homeAddress && (
+              <Text style={styles.errorText}>{errors.homeAddress}</Text>
+            )}
+          </View>
+
+          <View style={styles.divider} />
+          
+          <Text style={[styles.fieldLabel, { marginTop: 16, marginBottom: 8, color: WARM_CORE.primary }]}>
+            Emergency Contact Information
+          </Text>
+
+          {/* Emergency Contact Name */}
+          <View style={styles.fieldSection}>
+            <View style={styles.fieldHeader}>
+              <MaterialCommunityIcons name="account-alert" size={18} color={WARM_CORE.primary} />
+              <Text style={styles.fieldLabel}>Contact Name</Text>
+            </View>
+            <View
+              style={[
+                styles.inputContainer,
+                focusedField === 'emergencyContactName' && styles.inputContainerFocused,
+              ]}
+            >
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., John Doe (Parent/Guardian)"
+                placeholderTextColor={WARM_CORE.textSecondary}
+                value={profile.emergencyContactName || ''}
+                onChangeText={(text) =>
+                  setProfile((prev) => ({ ...prev, emergencyContactName: text }))
+                }
+                onFocus={() => setFocusedField('emergencyContactName')}
+                onBlur={() => setFocusedField(null)}
+              />
+            </View>
+          </View>
+
+          {/* Emergency Contact Phone */}
+          <View style={styles.fieldSection}>
+            <View style={styles.fieldHeader}>
+              <MaterialCommunityIcons name="phone-alert" size={18} color={WARM_CORE.primary} />
+              <Text style={styles.fieldLabel}>Contact Phone</Text>
+            </View>
+            <View
+              style={[
+                styles.inputContainer,
+                focusedField === 'emergencyContactPhone' && styles.inputContainerFocused,
+              ]}
+            >
+              <TextInput
+                style={styles.input}
+                placeholder="e.g., 9876543210"
+                placeholderTextColor={WARM_CORE.textSecondary}
+                value={profile.emergencyContactPhone || ''}
+                onChangeText={(text) =>
+                  setProfile((prev) => ({ ...prev, emergencyContactPhone: text.replace(/\D/g, '').slice(0, 10) }))
+                }
+                onFocus={() => setFocusedField('emergencyContactPhone')}
+                onBlur={() => setFocusedField(null)}
+                keyboardType="phone-pad"
+                maxLength={10}
+              />
+            </View>
+          </View>
 
           {/* Action Buttons */}
           <View style={styles.actionButtons}>

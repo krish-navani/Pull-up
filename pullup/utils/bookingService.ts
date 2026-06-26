@@ -34,68 +34,92 @@ export const createBookingInFirestore = async (
   passengerDropLocation?: any
 ): Promise<string> => {
   try {
-    console.log('[BOOKING SERVICE] Creating booking for ride:', rideId);
+    console.log('[BOOKING SERVICE] Creating booking for ride in transaction:', rideId);
 
-    // VALIDATION 1: Check if passenger is the ride creator
-    if (passengerId === driverId) {
-      console.error('[BOOKING SERVICE] ❌ Passenger cannot book their own ride');
-      throw {
-        code: 'OWN_RIDE_BOOKING',
-        message: 'You cannot book your own ride',
-      };
-    }
-
-    // VALIDATION 2: Check for duplicate bookings (only block active bookings)
-    const existingBookingQuery = query(
-      collection(db, 'bookings'),
-      where('rideId', '==', rideId),
-      where('passengerId', '==', passengerId)
-    );
-    const existingBookings = await getDocs(existingBookingQuery);
-    
-    const activeBooking = existingBookings.docs.find(doc => {
-      const status = doc.data().status;
-      return status === 'pending' || status === 'accepted';
-    });
-    
-    if (activeBooking) {
-      console.error('[BOOKING SERVICE] ❌ Duplicate active booking detected');
-      throw {
-        code: 'DUPLICATE_BOOKING',
-        message: 'You have already booked this ride',
-      };
-    }
-
-    const bookingData = {
-      rideId,
-      passengerId,
-      passengerName,
-      passengerEmail,
-      driverId,
-      seatsBooked,
-      pricePerSeat,
-      totalPrice: seatsBooked * pricePerSeat,
-      status: 'pending' as const,
-      paymentStatus: 'pending' as const,
-      bookedAt: Timestamp.now(),
-      createdAt: Timestamp.now(),
-      updatedAt: Timestamp.now(),
-      passengerPickupLocation: passengerPickupLocation || null,
-      passengerDropLocation: passengerDropLocation || null,
-    };
-
-    console.log('[BOOKING SERVICE] Booking data:', bookingData);
-
-    // Set explicitly to bookingDocId = `${rideId}_${passengerId}`
     const bookingId = `${rideId}_${passengerId}`;
-    const docRef = doc(db, 'bookings', bookingId);
-    await setDoc(docRef, bookingData);
-    
-    // Also add to ride's bookedSeats array for driver view
-    await addBookingToRide(rideId, passengerId, passengerName, seatsBooked);
+    const bookingRef = doc(db, 'bookings', bookingId);
+    const rideRef = doc(db, 'rides', rideId);
+
+    await runTransaction(db, async (transaction) => {
+      const rideSnap = await transaction.get(rideRef);
+      if (!rideSnap.exists()) {
+        throw new Error('Ride not found');
+      }
+      
+      const rideData = rideSnap.data()!;
+
+      // VALIDATION 1: Check if passenger is the ride creator
+      if (passengerId === rideData.driverId) {
+        throw {
+          code: 'OWN_RIDE_BOOKING',
+          message: 'You cannot book your own ride',
+        };
+      }
+
+      // VALIDATION 2: Check capacity
+      if (rideData.availableSeats < seatsBooked) {
+        throw {
+          code: 'INSUFFICIENT_SEATS',
+          message: 'Requested seat count is no longer available',
+        };
+      }
+
+      // VALIDATION 3: Check duplicate booking
+      const bookingSnap = await transaction.get(bookingRef);
+      if (bookingSnap.exists()) {
+        const bStatus = bookingSnap.data()!.status;
+        if (bStatus === 'pending' || bStatus === 'accepted' || bStatus === 'confirmed') {
+          throw {
+            code: 'DUPLICATE_BOOKING',
+            message: 'You have already booked this ride',
+          };
+        }
+      }
+
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes from now
+
+      const bookingData = {
+        rideId,
+        passengerId,
+        passengerName,
+        passengerEmail,
+        driverId: rideData.driverId,
+        seatsBooked,
+        pricePerSeat,
+        totalPrice: seatsBooked * pricePerSeat,
+        status: 'pending' as const,
+        paymentStatus: 'pending' as const,
+        bookedAt: Timestamp.now(),
+        createdAt: Timestamp.now(),
+        updatedAt: Timestamp.now(),
+        passengerPickupLocation: passengerPickupLocation || null,
+        passengerDropLocation: passengerDropLocation || null,
+        expiresAt: Timestamp.fromDate(expiresAt),
+      };
+
+      transaction.set(bookingRef, bookingData);
+
+      // Also add to ride's bookedSeats array for driver view
+      const cleanBookedSeats = (rideData.bookedSeats || []).filter(
+        (b: any) => b.passengerId !== passengerId
+      );
+
+      const newBookingInfo = {
+        passengerId,
+        passengerName,
+        seatsBooked,
+        status: 'pending' as const,
+        bookedAt: new Date().toISOString(),
+      };
+
+      transaction.update(rideRef, {
+        bookedSeats: [...cleanBookedSeats, newBookingInfo],
+        updatedAt: Timestamp.now(),
+      });
+    });
 
     // Notify the driver about the new booking request
-    await sendNotification(
+    sendNotification(
       driverId,
       'booking_request',
       'New Booking Request 🚗',
@@ -106,7 +130,7 @@ export const createBookingInFirestore = async (
       passengerName
     ).catch(err => console.error('[BOOKING SERVICE] Failed to send booking_request notification to driver:', err));
 
-    console.log('[BOOKING SERVICE] ✅ Booking created successfully with ID:', bookingId);
+    console.log('[BOOKING SERVICE] ✅ Booking created transactionally successfully with ID:', bookingId);
     return bookingId;
   } catch (error: any) {
     console.error('[BOOKING SERVICE] ❌ Failed to create booking:', error);
@@ -484,7 +508,7 @@ export const acceptBookingAsDriver = async (
 
       transaction.update(bookingRef, {
         status: 'accepted',
-        expiresAt: Timestamp.fromDate(new Date(Date.now() + 30 * 60 * 1000)),
+        expiresAt: Timestamp.fromDate(new Date(Date.now() + 10 * 60 * 1000)),
         updatedAt: Timestamp.now(),
       });
 

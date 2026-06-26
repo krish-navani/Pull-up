@@ -1,81 +1,41 @@
 import React, { createContext, useCallback, useContext, useEffect, useReducer } from 'react';
-import { Alert, AppState } from 'react-native';
+import { Alert, AppState, Platform } from 'react-native';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
+import * as Notifications from 'expo-notifications';
+import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { doc, updateDoc, Timestamp, onSnapshot, collection, query, orderBy, where, limitToLast } from 'firebase/firestore';
+import { doc, updateDoc, Timestamp, onSnapshot, collection, query, orderBy, where, limitToLast, runTransaction, increment } from 'firebase/firestore';
 import { db } from '../utils/firebase';
 import { GeofenceEngine } from '../utils/geofenceEngine';
+import {
+  BACKGROUND_LOCATION_TASK,
+  BG_LOCATION_CONFIG,
+  BG_TASK_LAST_UPDATE_KEY,
+  BG_TASK_RIDE_ID_KEY,
+} from '../utils/backgroundLocationTask';
 
 // FCM messaging instance — loaded lazily so Expo Go doesn't crash on it
 let messaging: any = null;
 try {
   // @react-native-firebase/messaging requires a native build; gracefully degrade in Expo Go
-  messaging = require('@react-native-firebase/messaging').default;
+  if (Platform.OS !== 'web') {
+    messaging = require('@react-native-firebase/messaging').default;
+  }
 } catch (e) {
   console.warn('[FCM] @react-native-firebase/messaging not available (Expo Go). Push alerts disabled.', e);
 }
 
-const BACKGROUND_LOCATION_TASK = 'background-driver-location-task';
-
-TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }) => {
-  if (error) {
-    console.error('[BACKGROUND TASK] Error:', error);
-    return;
-  }
-  if (data) {
-    const { locations } = data as any;
-    if (locations && locations.length > 0) {
-      const location = locations[0];
-      const { latitude, longitude, heading, speed } = location.coords;
-      console.log('[BACKGROUND TASK] Driver coordinates update:', latitude, longitude);
-
-      try {
-        const activeRideId = await AsyncStorage.getItem('active_ride_id');
-        if (!activeRideId) {
-          console.log('[BACKGROUND TASK] No active ride ID found in storage. Skipping update.');
-          return;
-        }
-
-        const activeRideType = (await AsyncStorage.getItem('active_ride_type')) || 'carpool';
-
-        // 1. Update ride currentLocation and liveLocation in Firestore
-        const docRef = doc(db, activeRideType === 'carpool' ? 'rides' : 'taxiPools', activeRideId);
-        await updateDoc(docRef, {
-          currentLocation: {
-            latitude,
-            longitude,
-            updatedAt: new Date().toISOString(),
-          },
-          liveLocation: {
-            latitude,
-            longitude,
-            heading: heading ?? 0,
-            speed: speed ?? 0,
-            updatedAt: new Date().toISOString(),
-          },
-        });
-
-        // 2. Check and trigger completion using GeofenceEngine
-        const compResult = await GeofenceEngine.checkAndTriggerCompletion(activeRideId, { latitude, longitude }, activeRideType as any);
-        if (compResult.shouldComplete) {
-          console.log('[BACKGROUND TASK] Geofence engine triggered completion:', compResult.message);
-          // Stop background updates
-          try {
-            await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-          } catch (e) {}
-          await AsyncStorage.removeItem('active_ride_id');
-          await AsyncStorage.removeItem('active_ride_type');
-        } else if (activeRideType === 'carpool') {
-          // 3. Check and notify nearby pickups
-          await GeofenceEngine.checkAndNotifyNearbyPickups(activeRideId, { latitude, longitude });
-        }
-      } catch (err) {
-        console.error('[BACKGROUND TASK] Error executing background location updates:', err);
-      }
-    }
-  }
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
 });
+
 import {
     AppContextType,
     AuthState,
@@ -605,8 +565,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         const isTracking = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
         if (isTracking) {
           await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-          await AsyncStorage.removeItem('active_ride_id');
-          await AsyncStorage.removeItem('active_ride_type');
+          await AsyncStorage.removeItem(BG_TASK_RIDE_ID_KEY);
           console.log('[CONTEXT] Stopped background location updates task');
         }
       } catch (err) {}
@@ -633,21 +592,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             console.warn('[CONTEXT] Background location permission not granted');
           } else {
             // Register active ride ID/type in AsyncStorage for background task usage
-            await AsyncStorage.setItem('active_ride_id', rideId);
-            await AsyncStorage.setItem('active_ride_type', type);
+            await AsyncStorage.setItem(BG_TASK_RIDE_ID_KEY, rideId);
 
             // Start background location updates (throttled to 10 seconds or 15 meters)
             const isTaskRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
             if (isTaskRegistered) {
               await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
                 accuracy: Location.Accuracy.Balanced,
-                timeInterval: 10000,
-                distanceInterval: 15,
-                foregroundService: {
-                  notificationTitle: 'PullUp Driver Navigation',
-                  notificationBody: `Tracking location for your active ${type === 'carpool' ? 'carpool' : 'taxi pool'}.`,
-                  notificationColor: '#D4500A',
-                },
+                ...BG_LOCATION_CONFIG,
               });
               console.log('[CONTEXT] Started background location updates task');
             } else {
@@ -686,6 +638,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                   updatedAt: new Date().toISOString(),
                 },
               });
+              await AsyncStorage.setItem(BG_TASK_LAST_UPDATE_KEY, new Date().toISOString());
 
               // 2. Check and trigger completion using GeofenceEngine
               try {
@@ -694,8 +647,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                   // Stop background location updates as well
                   try {
                     await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-                    await AsyncStorage.removeItem('active_ride_id');
-                    await AsyncStorage.removeItem('active_ride_type');
+                    await AsyncStorage.removeItem(BG_TASK_RIDE_ID_KEY);
                   } catch (stopErr) {}
 
                   // Update local state if it's a carpool
@@ -785,8 +737,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const isTracking = await Location.hasStartedLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
           if (isTracking) {
             await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
-            await AsyncStorage.removeItem('active_ride_id');
-            await AsyncStorage.removeItem('active_ride_type');
+            await AsyncStorage.removeItem(BG_TASK_RIDE_ID_KEY);
             console.log('[CONTEXT] Stopped background location updates task on cleanup');
           }
         } catch (err) {
@@ -821,12 +772,56 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     const registerFCMToken = async () => {
       if (!state.auth.isSignedIn || !state.auth.user) return;
-      if (!messaging) {
+      if (false) {
         console.log('[FCM] messaging not available — skipping token registration (Expo Go)');
         return;
       }
 
       try {
+        if (Platform.OS === 'android') {
+          await Notifications.setNotificationChannelAsync('default', {
+            name: 'PullUp alerts',
+            importance: Notifications.AndroidImportance.MAX,
+            vibrationPattern: [0, 250, 250, 250],
+            lightColor: '#D4500A',
+            sound: 'default',
+          });
+        }
+
+        const existingPerms = await Notifications.getPermissionsAsync();
+        const finalPerms = existingPerms.granted
+          ? existingPerms
+          : await Notifications.requestPermissionsAsync({
+              ios: { allowAlert: true, allowBadge: true, allowSound: true },
+            });
+
+        if (!finalPerms.granted) {
+          console.warn('[PUSH] Notification permission denied by user');
+          return;
+        }
+
+        let expoPushToken: string | null = null;
+        const projectId =
+          Constants.expoConfig?.extra?.eas?.projectId ||
+          (Constants as any).easConfig?.projectId;
+        if (projectId) {
+          expoPushToken = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
+          console.log('[PUSH] Expo token registered:', expoPushToken.substring(0, 20) + '...');
+        }
+
+        if (!messaging) {
+          if (isMounted && state.auth.user) {
+            const userRef = doc(db, 'users', state.auth.user.id);
+            await updateDoc(userRef, {
+              expoPushToken,
+              devicePlatform: Platform.OS,
+              lastTokenRefresh: Timestamp.now(),
+            });
+          }
+          console.log('[PUSH] FCM unavailable; Expo push token fallback saved');
+          return;
+        }
+
         // Request notification permissions (required on iOS)
         const authStatus = await messaging().requestPermission();
         const enabled =
@@ -851,6 +846,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const userRef = doc(db, 'users', state.auth.user.id);
           await updateDoc(userRef, {
             fcmToken,
+            expoPushToken,
             devicePlatform: Platform.OS,
             lastTokenRefresh: Timestamp.now(),
           });
@@ -940,7 +936,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       dispatch({ type: 'SET_NOTIFICATIONS', payload: fetchedNotifications });
 
-      // Badge count is managed via FCM payload on the backend; no client-side badge call needed
+      Notifications.setBadgeCountAsync(fetchedNotifications.filter(n => !n.read).length)
+        .catch((err) => console.warn('[NOTIFICATIONS] Failed to sync badge count:', err));
     }, (error) => {
       console.error('[CONTEXT] Notifications listener error:', error);
     });
@@ -1265,51 +1262,105 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const cancelRide = useCallback(
     async (rideId: string) => {
       try {
-        console.log('[CONTEXT] Driver cancelling ride:', rideId);
+        console.log('[CONTEXT] Driver cancelling ride transactionally:', rideId);
 
-        // 1. Update status in Firestore
-        await updateRideStatus(rideId, 'cancelled');
+        const driverId = state.auth.user?.id;
+        if (!driverId) throw new Error('No authenticated user');
 
-        // 2. Fetch all bookings for this ride to cancel them and notify/refund
-        const rideBookings = state.bookings.filter(b => b.rideId === rideId && b.status !== 'cancelled' && b.status !== 'rejected');
-        
-        for (const booking of rideBookings) {
-          const bookingRef = doc(db, 'bookings', booking.id);
-          const isPaid = booking.paymentStatus === 'paid';
-          const refundAmount = booking.totalPrice || 0;
+        const rideRef = doc(db, 'rides', rideId);
+        const userRef = doc(db, 'users', driverId);
 
-          // Mark booking cancelled
-          const updateData: Record<string, any> = {
-            status: 'cancelled',
-            updatedAt: Timestamp.now(),
-            cancelledAt: Timestamp.now()
-          };
-          if (isPaid) {
-            updateData.refundStatus = 'pending';
-            updateData.refundAmount = refundAmount;
+        const bookingsToNotify: Array<{ id: string, passengerId: string, isPaid: boolean, refundAmount: number }> = [];
+
+        await runTransaction(db, async (transaction) => {
+          const rideSnap = await transaction.get(rideRef);
+          if (!rideSnap.exists()) {
+            throw new Error('Ride not found');
           }
-          await updateDoc(bookingRef, updateData);
 
-          // Update booking status in local state via dispatch
-          dispatch({ type: 'CANCEL_BOOKING', payload: booking.id });
+          const rideData = rideSnap.data()!;
+          const bookedSeats = rideData.bookedSeats || [];
 
-          // Send notification to passenger
+          // Reconstruct and read bookings
+          const bookingRefs = bookedSeats
+            .filter((b: any) => b.status !== 'cancelled' && b.status !== 'rejected')
+            .map((b: any) => ({
+              ref: doc(db, 'bookings', `${rideId}_${b.passengerId}`),
+              passengerId: b.passengerId
+            }));
+
+          const bookingSnaps = [];
+          for (const bRefObj of bookingRefs) {
+            const snap = await transaction.get(bRefObj.ref);
+            bookingSnaps.push({ snap, passengerId: bRefObj.passengerId });
+          }
+
+          // Increment driver cancelled count
+          transaction.update(userRef, {
+            ridesCancelled: increment(1),
+            updatedAt: Timestamp.now()
+          });
+
+          // Update ride status
+          const updatedBookedSeats = bookedSeats.map((b: any) => {
+            if (b.status !== 'cancelled' && b.status !== 'rejected') {
+              return { ...b, status: 'cancelled' };
+            }
+            return b;
+          });
+
+          transaction.update(rideRef, {
+            status: 'cancelled',
+            bookedSeats: updatedBookedSeats,
+            updatedAt: Timestamp.now(),
+            cancelledAt: new Date().toISOString()
+          });
+
+          // Cancel each booking document
+          for (const bObj of bookingSnaps) {
+            if (bObj.snap.exists()) {
+              const bData = bObj.snap.data() as any;
+              const isPaid = bData.paymentStatus === 'paid';
+              const refundAmount = bData.totalPrice || 0;
+
+              const updateData: Record<string, any> = {
+                status: 'cancelled',
+                updatedAt: Timestamp.now(),
+                cancelledAt: Timestamp.now()
+              };
+              if (isPaid) {
+                updateData.refundStatus = 'pending';
+                updateData.refundAmount = refundAmount;
+              }
+
+              transaction.update(bObj.snap.ref, updateData);
+              bookingsToNotify.push({
+                id: bObj.snap.id,
+                passengerId: bObj.passengerId,
+                isPaid,
+                refundAmount
+              });
+            }
+          }
+        });
+
+        // Update local state and trigger notifications
+        for (const bToNotify of bookingsToNotify) {
+          dispatch({ type: 'CANCEL_BOOKING', payload: bToNotify.id });
           await sendNotification(
-            booking.passengerId,
+            bToNotify.passengerId,
             'ride_cancelled',
             'Ride Cancelled by Driver ⚠️',
-            `The driver has cancelled the ride. ${isPaid ? `A refund of ₹${refundAmount} has been initiated.` : ''}`,
+            `The driver has cancelled the ride. ${bToNotify.isPaid ? `A refund of ₹${bToNotify.refundAmount} has been initiated.` : ''}`,
             rideId,
-            booking.id,
+            bToNotify.id,
             state.auth.user?.id,
             state.auth.user?.fullName
           ).catch(err => console.error('Failed to notify passenger:', err));
         }
 
-        // 3. Update local state for ride status
         dispatch({ type: 'CANCEL_RIDE', payload: rideId });
-
-        console.log('[CONTEXT] ✅ Ride cancelled successfully');
+        console.log('[CONTEXT] ✅ Ride cancelled successfully transactionally');
       } catch (error: any) {
         console.error('[CONTEXT] ❌ cancelRide failed:', error);
         throw error;

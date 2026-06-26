@@ -32,6 +32,16 @@ export type NotificationType =
   | 'payment_confirmed'
   | 'refund_initiated'
   | 'refund_completed'
+  | 'waitlist_joined'
+  | 'waitlist_promoted'
+  | 'waitlist_expired'
+  | 'sos'
+  | 'withdrawal_requested'
+  | 'withdrawal_approved'
+  | 'withdrawal_rejected'
+  | 'withdrawal_completed'
+  | 'payment_failed'
+  | 'cancellation'
   | 'general'
   | 'booking_expired';
 
@@ -89,14 +99,23 @@ type: ${type}`);
     if (type === 'message') {
       targetScreen = 'group-chat';
       targetId = rideId;
-    } else if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'pool_full'].includes(type)) {
+    } else if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'pool_full', 'cancellation'].includes(type)) {
       targetScreen = 'ride-details';
       targetId = rideId;
-    } else if (['payment_required', 'booking_expired'].includes(type)) {
+    } else if (['payment_required', 'payment_failed', 'booking_expired'].includes(type)) {
       targetScreen = 'my-bookings';
       targetId = bookingId || rideId;
     } else if (['pool_joined', 'pool_accepted', 'pool_request'].includes(type)) {
       targetScreen = 'taxi-pool-details';
+      targetId = rideId;
+    } else if (['waitlist_joined', 'waitlist_promoted', 'waitlist_expired'].includes(type)) {
+      targetScreen = 'ride-details';
+      targetId = rideId;
+    } else if (['withdrawal_requested', 'withdrawal_approved', 'withdrawal_rejected', 'withdrawal_completed'].includes(type)) {
+      targetScreen = 'wallet';
+      targetId = null;
+    } else if (type === 'sos') {
+      targetScreen = 'group-chat';
       targetId = rideId;
     }
 

@@ -534,6 +534,67 @@ export default function NavigationScreen() {
     }
   };
 
+  // Boarding and Drop-off checklist logic
+  const togglePassengerPickedUp = async (bookingId: string, currentVal: boolean) => {
+    try {
+      await updateDoc(doc(db, 'bookings', bookingId), {
+        pickedUp: !currentVal,
+        pickedUpAt: !currentVal ? new Date().toISOString() : null,
+        updatedAt: Timestamp.now()
+      });
+    } catch (err) {
+      console.error('Failed to toggle picked up:', err);
+      Alert.alert('Error', 'Failed to update boarding status.');
+    }
+  };
+
+  const togglePassengerDroppedOff = async (bookingId: string, currentVal: boolean) => {
+    try {
+      await updateDoc(doc(db, 'bookings', bookingId), {
+        droppedOff: !currentVal,
+        droppedOffAt: !currentVal ? new Date().toISOString() : null,
+        updatedAt: Timestamp.now()
+      });
+    } catch (err) {
+      console.error('Failed to toggle dropped off:', err);
+      Alert.alert('Error', 'Failed to update drop-off status.');
+    }
+  };
+
+  const handleConfirmBoarding = async () => {
+    if (!ride) return;
+    const unboarded = acceptedBookings.filter(b => !b.pickedUp);
+    if (unboarded.length > 0) {
+      Alert.alert(
+        'Passengers Not Boarded',
+        'Warning: Some passengers have not boarded the vehicle. Do you want to proceed and start the commute?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Proceed', onPress: () => doStartRide() }
+        ]
+      );
+    } else {
+      doStartRide();
+    }
+  };
+
+  const doStartRide = async () => {
+    if (!ride) return;
+    try {
+      await updateDoc(doc(db, 'rides', ride.id), {
+        status: 'in_progress',
+        pickupChecklistCompleted: true,
+        startedAt: new Date().toISOString(),
+        updatedAt: Timestamp.now()
+      });
+      Alert.alert('Commute Started', 'Ride is now in transit.');
+    } catch (err) {
+      console.error('Failed to start ride:', err);
+      Alert.alert('Error', 'Failed to start ride.');
+    }
+  };
+
+
   // 7. Group Chat Integration (Modal subscription)
   useEffect(() => {
     if (!rideId || !chatVisible) return;
@@ -831,6 +892,33 @@ export default function NavigationScreen() {
           })}
         </View>
 
+        {isDriver && ride && ride.pickupChecklistCompleted === true && acceptedBookings.length > 0 && (
+          <View style={{ marginBottom: 16, borderTopWidth: 1, borderTopColor: WARM_CORE.border, paddingTop: 16 }}>
+            <Text style={{ fontSize: 14, fontWeight: '700', color: WARM_CORE.text, marginBottom: 12 }}>Drop-Off Tracking</Text>
+            {acceptedBookings.map((item) => (
+              <TouchableOpacity
+                key={item.id}
+                onPress={() => togglePassengerDroppedOff(item.id, item.droppedOff)}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  paddingVertical: 8,
+                }}
+              >
+                <MaterialCommunityIcons
+                  name={item.droppedOff ? "checkbox-marked" : "checkbox-blank-outline"}
+                  size={20}
+                  color={item.droppedOff ? WARM_CORE.success : WARM_CORE.textSecondary}
+                  style={{ marginRight: 8 }}
+                />
+                <Text style={{ fontSize: 14, color: WARM_CORE.text, textDecorationLine: item.droppedOff ? 'line-through' : 'none' }}>
+                  {item.passengerName}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
         {isDriver && (
           <TouchableOpacity onPress={handleCompleteRide} style={styles.actionCTA}>
             <MaterialCommunityIcons name="checkbox-marked-circle-outline" size={20} color={WARM_CORE.white} style={{ marginRight: 8 }} />
@@ -973,6 +1061,46 @@ export default function NavigationScreen() {
           </KeyboardAvoidingView>
         </SafeAreaView>
       </Modal>
+
+      {/* FULLSCREEN BOARDING CHECKLIST FOR DRIVER */}
+      {isDriver && ride && ride.pickupChecklistCompleted !== true && (
+        <View style={[StyleSheet.absoluteFillObject, { backgroundColor: WARM_CORE.background, zIndex: 100, padding: 24, paddingTop: insets.top + 24 }]}>
+          <Text style={{ fontSize: 24, fontWeight: '800', color: WARM_CORE.text, marginBottom: 8 }}>Passenger Boarding Checklist</Text>
+          <Text style={{ fontSize: 14, color: WARM_CORE.textSecondary, marginBottom: 24 }}>Please verify all passengers have boarded the vehicle before starting transit.</Text>
+          <FlatList
+            data={acceptedBookings}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                onPress={() => togglePassengerPickedUp(item.id, item.pickedUp)}
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  paddingVertical: 16,
+                  borderBottomWidth: 1,
+                  borderBottomColor: WARM_CORE.border,
+                }}
+              >
+                <MaterialCommunityIcons
+                  name={item.pickedUp ? "checkbox-marked" : "checkbox-blank-outline"}
+                  size={24}
+                  color={item.pickedUp ? WARM_CORE.success : WARM_CORE.textSecondary}
+                  style={{ marginRight: 16 }}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ fontSize: 16, fontWeight: '600', color: WARM_CORE.text }}>{item.passengerName}</Text>
+                  <Text style={{ fontSize: 13, color: WARM_CORE.textSecondary }}>Seats: {item.seatsBooked}</Text>
+                </View>
+              </TouchableOpacity>
+            )}
+            style={{ flex: 1, marginBottom: 24 }}
+          />
+          <TouchableOpacity onPress={handleConfirmBoarding} style={styles.actionCTA}>
+            <MaterialCommunityIcons name="play-circle-outline" size={22} color={WARM_CORE.white} style={{ marginRight: 8 }} />
+            <Text style={styles.actionCTAText}>Confirm Boarding & Start Commute</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </SafeAreaView>
   );
 }

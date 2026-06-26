@@ -71,8 +71,8 @@ export const config = {
 
   // Razorpay Configuration
   razorpay: {
-    keyId: (process.env.RAZORPAY_KEY_ID || 'rzp_test_mockKeyId123').trim(),
-    keySecret: (process.env.RAZORPAY_KEY_SECRET || 'mockKeySecret123').trim(),
+    keyId: (process.env.RAZORPAY_KEY_ID || '').trim(),
+    keySecret: (process.env.RAZORPAY_KEY_SECRET || '').trim(),
   },
 
   // Commission System Config
@@ -98,14 +98,15 @@ export const validateConfig = () => {
 
   const missing = required.filter((key) => !process.env[key]);
 
-  // For testing convenience, in development we can fall back to test values if not set
+  // In development we warn; production fails fast above.
   if (missing.length > 0 && process.env.NODE_ENV === 'production') {
     throw new Error(`Missing environment variables in production: ${missing.join(', ')}`);
   } else if (missing.length > 0) {
-    console.warn(`[CONFIG] ⚠️ Missing environment variables in development: ${missing.join(', ')}. Using default placeholders.`);
+    console.warn(`[CONFIG] Missing environment variables in development: ${missing.join(', ')}. Payment and Firebase calls that need them will fail fast.`);
   }
 
   if (process.env.NODE_ENV !== 'production') {
     console.log('[CONFIG] Validation passed');
   }
 };
+

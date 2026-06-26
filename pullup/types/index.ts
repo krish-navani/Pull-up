@@ -19,10 +19,12 @@ export interface User {
   role: 'driver' | 'passenger';
   phone?: string;
   profileImage?: string | null;
+  homeAddress?: Location | null;
   licenseVerified?: boolean;
   profileComplete: boolean;
   createdAt?: string;
   updatedAt?: string;
+  fcmToken?: string | null;
   expoPushToken?: string | null;
   devicePlatform?: 'ios' | 'android' | null;
   notificationPreferences?: NotificationPreferences;
@@ -35,6 +37,20 @@ export interface User {
   licenseRejectionReason?: string;
   licenseUploadedAt?: string;
   licenseConfirmed?: boolean;
+
+  // Safety Layer
+  verifiedStudent?: boolean;
+  emergencyContactName?: string | null;
+  emergencyContactPhone?: string | null;
+
+  // Reliability statistics
+  ridesCompleted?: number;
+  ridesCancelled?: number;
+  noShowReports?: number;
+  lateStarts?: number;
+  bookingsCompleted?: number;
+  bookingsCancelled?: number;
+  noShows?: number;
 }
 
 export interface AuthState {
@@ -88,13 +104,13 @@ export interface BookingInfo {
   passengerId: string;
   passengerName: string;
   seatsBooked: number;
-  status: 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'confirmed';
+  status: 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'confirmed' | 'expired';
   bookedAt: string;
   cancelledAt?: string;
   penaltyApplied?: number;
   pickedUp?: boolean;
   droppedOff?: boolean;
-  paymentStatus?: 'pending' | 'paid' | 'failed';
+  paymentStatus?: 'pending' | 'paid' | 'failed' | 'expired' | 'refunded';
   totalPrice?: number;
   orderId?: string;
 }
@@ -105,7 +121,7 @@ export interface Booking {
   passengerId: string;
   driverId: string;
   seatsBooked: number;
-  status: 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'confirmed';
+  status: 'pending' | 'accepted' | 'rejected' | 'cancelled' | 'confirmed' | 'expired';
   bookedAt: string;
   cancelledAt?: string;
   penaltyApplied?: number;
@@ -113,7 +129,7 @@ export interface Booking {
   passengerDropLocation?: Location;
   pickedUp?: boolean;
   droppedOff?: boolean;
-  paymentStatus?: 'pending' | 'paid' | 'failed';
+  paymentStatus?: 'pending' | 'paid' | 'failed' | 'expired' | 'refunded';
   totalPrice?: number;
   orderId?: string;
 }

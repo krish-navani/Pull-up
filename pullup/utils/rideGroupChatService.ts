@@ -15,7 +15,7 @@ import {
   Unsubscribe,
   limitToLast
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { db, auth } from './firebase';
 import { sendNotification } from './notificationService';
 
 export interface GroupChatMessage {
@@ -59,6 +59,72 @@ export interface GroupChatRoom {
   lastMessageTime: any;
   updatedAt: any;
 }
+
+/**
+ * Checks if a user is authorized to participate in a ride group chat.
+ * Authorized users are:
+ * 1. The driver/host of the ride/pool.
+ * 2. A passenger with status 'confirmed' and paymentStatus 'paid' for a carpool.
+ * 3. A member of a taxipool.
+ * 4. A participant listed in the chat document.
+ */
+export const isUserAuthorizedForChat = async (rideId: string, userId: string): Promise<boolean> => {
+  try {
+    // 1. Check if user is the driver/host of the ride
+    const rideRef = doc(db, 'rides', rideId);
+    const rideSnap = await getDoc(rideRef);
+    if (rideSnap.exists()) {
+      const rideData = rideSnap.data();
+      if (rideData.driverId === userId) {
+        return true;
+      }
+    }
+
+    // 2. Check if user has a confirmed and paid booking
+    const bookingId = `${rideId}_${userId}`;
+    const bookingRef = doc(db, 'bookings', bookingId);
+    const bookingSnap = await getDoc(bookingRef);
+    if (bookingSnap.exists()) {
+      const bookingData = bookingSnap.data();
+      if (bookingData.status === 'confirmed' && bookingData.paymentStatus === 'paid') {
+        return true;
+      }
+    }
+
+    // 3. For Taxi Pools, check if user is a member of the taxi pool
+    const taxiPoolRef = doc(db, 'taxiPools', rideId);
+    const taxiPoolSnap = await getDoc(taxiPoolRef);
+    if (taxiPoolSnap.exists()) {
+      // Check if they are in poolMembers collection
+      const memberRef = doc(db, 'poolMembers', `${rideId}_${userId}`);
+      const memberSnap = await getDoc(memberRef);
+      if (memberSnap.exists()) {
+        return true;
+      }
+      
+      // Or check if they are the creator
+      const taxiPoolData = taxiPoolSnap.data();
+      if (taxiPoolData.creatorId === userId) {
+        return true;
+      }
+    }
+
+    // 4. Fallback: check rideChats participants
+    const chatRef = doc(db, 'rideChats', rideId);
+    const chatSnap = await getDoc(chatRef);
+    if (chatSnap.exists()) {
+      const chatData = chatSnap.data();
+      if (chatData.participants && chatData.participants.includes(userId)) {
+        return true;
+      }
+    }
+
+    return false;
+  } catch (error) {
+    console.error('[GROUP CHAT SERVICE] Error checking chat authorization:', error);
+    return false;
+  }
+};
 
 /**
  * Initialize a new group chat room for a ride/pool
@@ -211,6 +277,12 @@ export const sendGroupMessage = async (
   }
 ): Promise<string> => {
   try {
+    // Restrict Access: verify user is authorized for this chat
+    const isAuth = await isUserAuthorizedForChat(rideId, senderId);
+    if (!isAuth) {
+      throw new Error('Access denied: You must be a confirmed and paid participant to send messages.');
+    }
+
     const messagesRef = collection(db, 'rideChats', rideId, 'messages');
     
     // Add message
@@ -300,40 +372,64 @@ export const subscribeToGroupMessages = (
     onMessagesUpdate = callback!;
   }
 
-  const messagesRef = collection(db, 'rideChats', rideId, 'messages');
-  const q = query(messagesRef, orderBy('createdAt', 'asc'), limitToLast(limitCount));
+  const currentUserId = auth.currentUser?.uid;
+  if (!currentUserId) {
+    console.error("[GROUP CHAT SERVICE] No user logged in.");
+    return () => {};
+  }
 
-  return onSnapshot(
-    q,
-    (snapshot) => {
-      const messages: GroupChatMessage[] = [];
-      snapshot.forEach((docSnap) => {
-        const data = docSnap.data();
-        messages.push({
-          id: docSnap.id,
-          rideId: data.rideId,
-          senderId: data.senderId,
-          senderName: data.senderName,
-          senderPhoto: data.senderPhoto,
-          text: data.text,
-          createdAt: data.createdAt,
-          type: data.type,
-          imageUrl: data.imageUrl,
-          public_id: data.public_id,
-          location: data.location,
-          destination: data.destination,
-          rideCard: data.rideCard,
-          readBy: data.readBy || [],
-        } as GroupChatMessage);
-      });
-      onMessagesUpdate(messages);
-    },
-    (error) => {
-      console.log('[COLLECTION] rideChats/' + rideId + '/messages');
-      console.log('[QUERY] query(collection(db, "rideChats", "' + rideId + '", "messages"), orderBy("createdAt", "asc"), limitToLast(' + limitCount + '))');
-      console.error('[PERMISSION ERROR] ' + error.message);
+  let unsubscribes: Unsubscribe[] = [];
+  let isCancelled = false;
+
+  isUserAuthorizedForChat(rideId, currentUserId).then((isAuth) => {
+    if (isCancelled) return;
+    if (!isAuth) {
+      console.warn(`[GROUP CHAT SERVICE] Access denied: User ${currentUserId} is not authorized for chat ${rideId}`);
+      onMessagesUpdate([]);
+      return;
     }
-  );
+
+    const messagesRef = collection(db, 'rideChats', rideId, 'messages');
+    const q = query(messagesRef, orderBy('createdAt', 'asc'), limitToLast(limitCount));
+
+    const unsub = onSnapshot(
+      q,
+      (snapshot) => {
+        const messages: GroupChatMessage[] = [];
+        snapshot.forEach((docSnap) => {
+          const data = docSnap.data();
+          messages.push({
+            id: docSnap.id,
+            rideId: data.rideId,
+            senderId: data.senderId,
+            senderName: data.senderName,
+            senderPhoto: data.senderPhoto,
+            text: data.text,
+            createdAt: data.createdAt,
+            type: data.type,
+            imageUrl: data.imageUrl,
+            public_id: data.public_id,
+            location: data.location,
+            destination: data.destination,
+            rideCard: data.rideCard,
+            readBy: data.readBy || [],
+          } as GroupChatMessage);
+        });
+        onMessagesUpdate(messages);
+      },
+      (error) => {
+        console.log('[COLLECTION] rideChats/' + rideId + '/messages');
+        console.log('[QUERY] query(collection(db, "rideChats", "' + rideId + '", "messages"), orderBy("createdAt", "asc"), limitToLast(' + limitCount + '))');
+        console.error('[PERMISSION ERROR] ' + error.message);
+      }
+    );
+    unsubscribes.push(unsub);
+  });
+
+  return () => {
+    isCancelled = true;
+    unsubscribes.forEach((unsub) => unsub());
+  };
 };
 
 /**

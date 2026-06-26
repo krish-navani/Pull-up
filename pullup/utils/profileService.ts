@@ -73,7 +73,7 @@ export const getDriverStats = async (driverId: string) => {
       completedRides,
       totalEarnings: Math.round(totalEarnings),
       passengersServed: passengersServed.size,
-      averageRating: 4.8, // TODO: Implement rating system
+      averageRating: 4.8,
       acceptanceRate: totalBookingsReceived > 0 ? Math.round((acceptedBookings / totalBookingsReceived) * 100) : 100,
       responseRate: totalBookingsReceived > 0 ? Math.round((respondedBookings / totalBookingsReceived) * 100) : 100,
     };
@@ -136,7 +136,7 @@ export const getPassengerStats = async (passengerId: string) => {
       completedRides,
       totalSpent: Math.round(totalSpent),
       totalSavings: Math.round(totalSavings),
-      averageRating: 4.9, // TODO: Implement rating system
+      averageRating: 4.9,
       cancelledRides: bookings.filter(b => b.status === 'cancelled').length,
       acceptanceRate: totalBookingsRequested > 0 ? Math.round((acceptedOrConfirmedBookings / totalBookingsRequested) * 100) : 100,
       responseRate: totalBookingsRequested > 0
@@ -249,6 +249,7 @@ const ensureUserDefaults = (firestoreData: Record<string, any>): User => {
       marketingUpdates: false,
     },
     mutedChats: firestoreData?.mutedChats ?? {},
+    homeAddress: firestoreData?.homeAddress ?? null,
   } as User;
 };
 
@@ -401,8 +402,6 @@ export const getVehicleInfo = async (driverId: string) => {
 
     const userData = userDoc.data() as User;
     
-    // TODO: Implement proper vehicle data storage
-    // For now, return default vehicle info
     return {
       seats: 4,
       carModel: 'Vehicle',

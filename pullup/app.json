@@ -16,7 +16,8 @@
       "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "UIBackgroundModes": [
-          "location"
+          "location",
+          "remote-notification"
         ]
       }
     },
@@ -37,7 +38,8 @@
         "android.permission.FOREGROUND_SERVICE_LOCATION",
         "android.permission.INTERNET",
         "android.permission.RECEIVE_BOOT_COMPLETED",
-        "android.permission.VIBRATE"
+        "android.permission.VIBRATE",
+        "android.permission.POST_NOTIFICATIONS"
       ],
       "config": {
         "googleMaps": {
@@ -70,6 +72,15 @@
         {
           "locationAlwaysAndWhenInUsePermission": "Allow PullUp to access your location even when the app is in the background.",
           "isAndroidBackgroundLocationEnabled": true
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/logo.png",
+          "color": "#D4500A",
+          "defaultChannel": "default",
+          "sounds": []
         }
       ],
       "@react-native-firebase/app"

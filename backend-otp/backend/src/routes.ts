@@ -776,7 +776,7 @@ const releaseExpiredBookings = async () => {
             userId: bData.passengerId,
             type: 'booking_expired',
             title: 'Ride Booking Expired',
-            message: `Your booking request expired because payment was not completed within 30 minutes.`,
+            message: `Your booking request expired because payment was not completed within 10 minutes.`,
             rideId: bData.rideId,
             bookingId: doc.id,
             read: false,
@@ -785,6 +785,17 @@ const releaseExpiredBookings = async () => {
         }
       });
       await logAuditEvent(bData.passengerId, 'accepted_booking_expired', 0, { bookingId: doc.id, rideId: bData.rideId });
+      await triggerNotification(
+        bData.driverId,
+        'booking_expired',
+        'Payment Window Expired',
+        `${bData.passengerName || 'A passenger'} did not complete payment within 10 minutes. The seat has been released.`,
+        bData.rideId,
+        doc.id,
+        'ride-details',
+        bData.rideId
+      ).catch(e => console.error('[CLEANUP] Driver expiry notification error:', e));
+      await promoteWaitlist(db, bData.rideId).catch(e => console.error('[CLEANUP] Waitlist promotion error:', e));
     }
 
     // 2. Legacy 'payment_pending' bookings cleanup
@@ -969,6 +980,10 @@ router.post('/create-order', async (req: Request, res: Response) => {
       status = 400;
       code = 'INSUFFICIENT_SEATS';
       message = 'Requested seat count is no longer available';
+    } else if (error.message === 'ORDER_MISMATCH') {
+      status = 400;
+      code = 'ORDER_MISMATCH';
+      message = 'Payment order does not match this booking';
     }
 
     res.status(status).json({ success: false, code, message });
@@ -1013,6 +1028,10 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
         throw new Error('INVALID_BOOKING_STATUS');
       }
 
+      if (bookingData.orderId && bookingData.orderId !== razorpay_order_id) {
+        throw new Error('ORDER_MISMATCH');
+      }
+
       const rideRef = db.collection('rides').doc(bookingData.rideId);
       const rideDoc = await transaction.get(rideRef);
 
@@ -1037,14 +1056,17 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
         throw new Error('INSUFFICIENT_SEATS');
       }
 
-      const newAvailableSeats = Math.max(0, rideData.availableSeats - bookingData.seatsBooked);
+      const isLegacyFlow = true;
+      const nextBookingStatus = 'confirmed';
 
       const currentBookedSeats = rideData.bookedSeats || [];
+      let passengerFound = false;
       const updatedBookedSeats = currentBookedSeats.map((b: any) => {
         if (b.passengerId === bookingData.passengerId) {
+          passengerFound = true;
           return {
             ...b,
-            status: 'confirmed',
+            status: nextBookingStatus,
             paymentStatus: 'paid',
             paymentId: razorpay_payment_id,
           };
@@ -1052,14 +1074,41 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
         return b;
       });
 
+      if (!passengerFound) {
+        updatedBookedSeats.push({
+          passengerId: bookingData.passengerId,
+          passengerName: bookingData.passengerName,
+          seatsBooked: bookingData.seatsBooked,
+          status: nextBookingStatus,
+          paymentStatus: 'paid',
+          paymentId: razorpay_payment_id,
+          bookedAt: bookingData.bookedAt || new Date().toISOString(),
+        });
+      }
+
+      // Recalculate availableSeats dynamically
+      const reservedSeatsCount = updatedBookedSeats
+        .filter((b: any) => b.status === 'confirmed' || (b.status === 'pending' && b.paymentStatus === 'paid'))
+        .reduce((sum: number, b: any) => sum + b.seatsBooked, 0);
+      const newAvailableSeats = Math.max(0, rideData.totalSeats - reservedSeatsCount);
+
       // Writes begin here:
-      transaction.update(bookingRef, {
-        status: 'confirmed',
-        paymentStatus: 'paid',
-        paymentId: razorpay_payment_id,
-        paidAt: admin.firestore.Timestamp.now(),
-        updatedAt: admin.firestore.Timestamp.now(),
-      });
+      if (isLegacyFlow) {
+        transaction.update(bookingRef, {
+          status: 'confirmed',
+          paymentStatus: 'paid',
+          paymentId: razorpay_payment_id,
+          paidAt: admin.firestore.Timestamp.now(),
+          updatedAt: admin.firestore.Timestamp.now(),
+        });
+      } else {
+        transaction.update(bookingRef, {
+          paymentStatus: 'paid',
+          paymentId: razorpay_payment_id,
+          paidAt: admin.firestore.Timestamp.now(),
+          updatedAt: admin.firestore.Timestamp.now(),
+        });
+      }
 
       transaction.update(rideRef, {
         availableSeats: newAvailableSeats,
@@ -1067,68 +1116,84 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
         updatedAt: admin.firestore.Timestamp.now(),
       });
 
-      // Update /rideChats document & send system message
-      if (chatDoc.exists) {
-        transaction.update(chatRef, {
-          participants: admin.firestore.FieldValue.arrayUnion(bookingData.passengerId),
-          updatedAt: admin.firestore.Timestamp.now(),
-        });
-        
-        const messageRef = chatRef.collection('messages').doc();
-        transaction.set(messageRef, {
-          rideId: bookingData.rideId,
-          senderId: 'system',
-          senderName: 'System',
-          senderPhoto: '',
-          text: `${bookingData.passengerName} joined the ride`,
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          type: 'system',
-        });
-      } else {
-        transaction.set(chatRef, {
-          rideId: bookingData.rideId,
-          rideType: 'carpool',
-          participants: [bookingData.driverId, bookingData.passengerId],
-          lastMessage: 'Group chat created',
-          lastMessageTime: admin.firestore.Timestamp.now(),
-          updatedAt: admin.firestore.Timestamp.now(),
-        });
-        const messageRef = chatRef.collection('messages').doc();
-        transaction.set(messageRef, {
-          rideId: bookingData.rideId,
-          senderId: 'system',
-          senderName: 'System',
-          senderPhoto: '',
-          text: `${bookingData.passengerName} joined the ride`,
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
-          type: 'system',
-        });
-      }
+      if (isLegacyFlow) {
+        // Update /rideChats document & send system message
+        if (chatDoc.exists) {
+          transaction.update(chatRef, {
+            participants: admin.firestore.FieldValue.arrayUnion(bookingData.passengerId),
+            updatedAt: admin.firestore.Timestamp.now(),
+          });
+          
+          const messageRef = chatRef.collection('messages').doc();
+          transaction.set(messageRef, {
+            rideId: bookingData.rideId,
+            senderId: 'system',
+            senderName: 'System',
+            senderPhoto: '',
+            text: `${bookingData.passengerName} joined the ride`,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            type: 'system',
+          });
+        } else {
+          transaction.set(chatRef, {
+            rideId: bookingData.rideId,
+            rideType: 'carpool',
+            participants: [bookingData.driverId, bookingData.passengerId],
+            lastMessage: 'Group chat created',
+            lastMessageTime: admin.firestore.Timestamp.now(),
+            updatedAt: admin.firestore.Timestamp.now(),
+          });
+          const messageRef = chatRef.collection('messages').doc();
+          transaction.set(messageRef, {
+            rideId: bookingData.rideId,
+            senderId: 'system',
+            senderName: 'System',
+            senderPhoto: '',
+            text: `${bookingData.passengerName} joined the ride`,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            type: 'system',
+          });
+        }
 
-      if (walletDoc.exists) {
-        const wData = walletDoc.data()!;
-        transaction.update(walletRef, {
-          pendingBalance: (wData.pendingBalance || 0) + bookingData.totalPrice,
-          updatedAt: admin.firestore.Timestamp.now(),
-        });
-      } else {
-        transaction.set(walletRef, {
+        if (walletDoc.exists) {
+          const wData = walletDoc.data()!;
+          transaction.update(walletRef, {
+            pendingBalance: (wData.pendingBalance || 0) + bookingData.totalPrice,
+            updatedAt: admin.firestore.Timestamp.now(),
+          });
+        } else {
+          transaction.set(walletRef, {
+            userId: bookingData.driverId,
+            walletBalance: 0,
+            pendingBalance: bookingData.totalPrice,
+            lockedBalance: 0,
+            lifetimeEarnings: 0,
+            lifetimeWithdrawals: 0,
+            updatedAt: admin.firestore.Timestamp.now(),
+          });
+        }
+
+        const ledgerRef = db.collection('walletTransactions').doc(`pending_${bookingId}`);
+        transaction.set(ledgerRef, {
           userId: bookingData.driverId,
-          walletBalance: 0,
-          pendingBalance: bookingData.totalPrice,
-          lockedBalance: 0,
-          lifetimeEarnings: 0,
-          lifetimeWithdrawals: 0,
+          bookingId,
+          rideId: bookingData.rideId,
+          type: 'pending_earning',
+          status: 'pending',
+          amount: bookingData.totalPrice,
+          paymentId: razorpay_payment_id,
+          orderId: razorpay_order_id,
+          createdAt: admin.firestore.Timestamp.now(),
           updatedAt: admin.firestore.Timestamp.now(),
-        });
-      }
+        }, { merge: true });
 
-      if (statsDoc.exists) {
-        const statsData = statsDoc.data()!;
-        transaction.update(statsRef, {
-          totalRevenue: (statsData.totalRevenue || 0) + bookingData.totalPrice,
-          updatedAt: admin.firestore.Timestamp.now(),
-        });
+        if (statsDoc.exists) {
+          const statsData = statsDoc.data()!;
+          transaction.update(statsRef, {
+            totalRevenue: (statsData.totalRevenue || 0) + bookingData.totalPrice,
+            updatedAt: admin.firestore.Timestamp.now(),
+          });
+        }
       }
 
       return { 
@@ -1139,36 +1204,62 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
         passengerName: bookingData.passengerName,
         driverId: bookingData.driverId,
         seatsBooked: bookingData.seatsBooked,
-        totalPrice: bookingData.totalPrice 
+        totalPrice: bookingData.totalPrice,
+        isLegacyFlow
       };
     });
 
     if (!result.alreadyProcessed) {
       await logAuditEvent(result.passengerId, 'booking_payment_verified', result.totalPrice, { bookingId, rideId: result.rideId, paymentId: razorpay_payment_id });
 
-      // Send payment success notification to passenger
-      await triggerNotification(
-        result.passengerId,
-        'payment_confirmed',
-        'Payment Success 💰',
-        `Your payment of INR ${result.totalPrice} was successful and booking is confirmed.`,
-        result.rideId,
-        bookingId,
-        'ride-details',
-        result.rideId
-      ).catch(e => console.error('[PAYMENT_NOTIF] Passenger notification error:', e));
+      if (result.isLegacyFlow) {
+        // Send payment success notification to passenger
+        await triggerNotification(
+          result.passengerId,
+          'payment_confirmed',
+          'Payment Success 💰',
+          `Your payment of INR ${result.totalPrice} was successful and booking is confirmed.`,
+          result.rideId,
+          bookingId,
+          'ride-details',
+          result.rideId
+        ).catch(e => console.error('[PAYMENT_NOTIF] Passenger notification error:', e));
 
-      // Send booking confirmed notification to driver
-      await triggerNotification(
-        result.driverId,
-        'booking_accepted',
-        'New Ride Booking Confirmed',
-        `${result.passengerName} paid ₹${result.totalPrice} and booked ${result.seatsBooked} seat(s).`,
-        result.rideId,
-        bookingId,
-        'ride-details',
-        result.rideId
-      ).catch(e => console.error('[PAYMENT_NOTIF] Driver notification error:', e));
+        // Send booking confirmed notification to driver
+        await triggerNotification(
+          result.driverId,
+          'booking_accepted',
+          'New Ride Booking Confirmed',
+          `${result.passengerName} paid ₹${result.totalPrice} and booked ${result.seatsBooked} seat(s).`,
+          result.rideId,
+          bookingId,
+          'ride-details',
+          result.rideId
+        ).catch(e => console.error('[PAYMENT_NOTIF] Driver notification error:', e));
+      } else {
+        // Escrow/New flow notifications
+        await triggerNotification(
+          result.passengerId,
+          'payment_confirmed',
+          'Payment Success (Escrow) 💰',
+          `Your payment of INR ${result.totalPrice} was successful. Driver approval is pending.`,
+          result.rideId,
+          bookingId,
+          'ride-details',
+          result.rideId
+        ).catch(e => console.error('[PAYMENT_NOTIF] Passenger notification error:', e));
+
+        await triggerNotification(
+          result.driverId,
+          'booking_request',
+          'New Paid Ride Request',
+          `${result.passengerName} has paid ₹${result.totalPrice} and requested ${result.seatsBooked} seat(s). Approval required.`,
+          result.rideId,
+          bookingId,
+          'ride-details',
+          result.rideId
+        ).catch(e => console.error('[PAYMENT_NOTIF] Driver notification error:', e));
+      }
       
       // Check if ride is now full and dispatch capacity reached notifications
       try {
@@ -1214,7 +1305,7 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      message: 'Payment verified and booking confirmed successfully',
+      message: 'Payment verified successfully',
       bookingId: result.bookingId,
       rideId: result.rideId,
     });
@@ -1529,6 +1620,880 @@ router.post('/complete-ride', async (req: Request, res: Response) => {
     res.status(status).json({ success: false, code, message });
   }
 });
+
+// Helper function to calculate distance using Haversine formula
+function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  const R = 6371e3; // metres
+  const phi1 = lat1 * Math.PI / 180;
+  const phi2 = lat2 * Math.PI / 180;
+  const deltaPhi = (lat2 - lat1) * Math.PI / 180;
+  const deltaLambda = (lon2 - lon1) * Math.PI / 180;
+
+  const a = Math.sin(deltaPhi / 2) * Math.sin(deltaPhi / 2) +
+            Math.cos(phi1) * Math.cos(phi2) *
+            Math.sin(deltaLambda / 2) * Math.sin(deltaLambda / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+  return R * c; // in metres
+}
+
+// Helper to promote the next passenger in the waitlist
+export async function promoteWaitlist(db: admin.firestore.Firestore, rideId: string) {
+  try {
+    console.log(`[WAITLIST] Checking waitlist promotion for ride: ${rideId}`);
+    
+    // Get the ride document
+    const rideRef = db.collection('rides').doc(rideId);
+    const rideSnap = await rideRef.get();
+    if (!rideSnap.exists) return;
+    const rideData = rideSnap.data()!;
+    
+    if (rideData.availableSeats <= 0) {
+      console.log('[WAITLIST] No available seats for waitlist promotion.');
+      return;
+    }
+    
+    // Query the next waitlisted user
+    const waitlistSnap = await db.collection('rideWaitlist')
+      .where('rideId', '==', rideId)
+      .where('status', '==', 'joined')
+      .orderBy('position', 'asc')
+      .limit(1)
+      .get();
+      
+    if (waitlistSnap.empty) {
+      console.log('[WAITLIST] Waitlist is empty.');
+      return;
+    }
+    
+    const waitlistDoc = waitlistSnap.docs[0];
+    const waitlistData = waitlistDoc.data();
+    const userId = waitlistData.userId;
+    
+    // Get User info
+    const userSnap = await db.collection('users').doc(userId).get();
+    if (!userSnap.exists) return;
+    const userData = userSnap.data()!;
+    
+    const bookingId = `${rideId}_${userId}`;
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes offer hold
+    
+    await db.runTransaction(async (transaction) => {
+      const bRef = db.collection('bookings').doc(bookingId);
+      const wRef = db.collection('rideWaitlist').doc(waitlistDoc.id);
+      
+      // Perform writes
+      transaction.set(bRef, {
+        id: bookingId,
+        rideId,
+        driverId: rideData.driverId,
+        passengerId: userId,
+        passengerName: userData.fullName || 'Passenger',
+        passengerEmail: userData.email || '',
+        seatsBooked: 1,
+        pricePerSeat: rideData.price || 0,
+        totalPrice: rideData.price || 0,
+        status: 'accepted',
+        paymentStatus: 'pending',
+        bookedAt: new Date().toISOString(),
+        createdAt: admin.firestore.Timestamp.now(),
+        expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
+        isWaitlistOffer: true
+      });
+      
+      transaction.update(wRef, {
+        status: 'offered',
+        offeredAt: admin.firestore.Timestamp.now(),
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+      
+      const cleanBookedSeats = (rideData.bookedSeats || []).filter(
+        (b: any) => b.passengerId !== userId
+      );
+      const newBookingInfo = {
+        passengerId: userId,
+        passengerName: userData.fullName || 'Passenger',
+        seatsBooked: 1,
+        status: 'accepted',
+        bookedAt: new Date().toISOString(),
+      };
+      
+      transaction.update(rideRef, {
+        bookedSeats: [...cleanBookedSeats, newBookingInfo],
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+    });
+    
+    await triggerNotification(
+      userId,
+      'waitlist_available',
+      'Waitlist Seat Available! 🚗',
+      `A seat has opened up. You have 5 minutes to complete payment and claim it.`,
+      rideId,
+      bookingId,
+      'ride-details',
+      rideId
+    );
+    
+    console.log(`[WAITLIST] Promoted user ${userId} to offered state on ride ${rideId}`);
+  } catch (error) {
+    console.error('[WAITLIST] Error promoting waitlist:', error);
+  }
+}
+
+// POST /waitlist/join
+router.post('/waitlist/join', async (req: Request, res: Response) => {
+  try {
+    const { rideId, userId } = req.body;
+    if (!rideId || !userId) {
+      return res.status(400).json({ success: false, message: 'Missing rideId or userId' });
+    }
+
+    const db = getDb();
+    
+    // Check if user is the driver
+    const rideRef = db.collection('rides').doc(rideId);
+    const rideSnap = await rideRef.get();
+    if (!rideSnap.exists) {
+      return res.status(404).json({ success: false, message: 'Ride not found' });
+    }
+    const rideData = rideSnap.data()!;
+    if (rideData.driverId === userId) {
+      return res.status(400).json({ success: false, message: 'You cannot join the waitlist of your own ride' });
+    }
+
+    // Check duplicate waitlist entry or existing booking
+    const waitlistRef = db.collection('rideWaitlist').doc(`${rideId}_${userId}`);
+    const waitlistSnap = await waitlistRef.get();
+    if (waitlistSnap.exists && waitlistSnap.data()!.status === 'joined') {
+      return res.status(400).json({ success: false, message: 'You are already on the waitlist for this ride' });
+    }
+
+    const bookingRef = db.collection('bookings').doc(`${rideId}_${userId}`);
+    const bookingSnap = await bookingRef.get();
+    if (bookingSnap.exists) {
+      const bStatus = bookingSnap.data()!.status;
+      if (bStatus === 'pending' || bStatus === 'accepted' || bStatus === 'confirmed') {
+        return res.status(400).json({ success: false, message: 'You already have an active booking or request for this ride' });
+      }
+    }
+
+    // Determine position
+    const existingWaitlist = await db.collection('rideWaitlist')
+      .where('rideId', '==', rideId)
+      .where('status', 'in', ['joined', 'offered'])
+      .get();
+      
+    const position = existingWaitlist.size + 1;
+
+    await waitlistRef.set({
+      id: `${rideId}_${userId}`,
+      rideId,
+      userId,
+      position,
+      status: 'joined',
+      joinedAt: admin.firestore.Timestamp.now(),
+      updatedAt: admin.firestore.Timestamp.now()
+    });
+
+    res.json({ success: true, position });
+  } catch (error: any) {
+    console.error('[API] /waitlist/join error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /accept-booking
+router.post('/accept-booking', async (req: Request, res: Response) => {
+  try {
+    const { bookingId } = req.body;
+    if (!bookingId) {
+      return res.status(400).json({ success: false, message: 'Missing booking ID' });
+    }
+
+    const db = getDb();
+    const result = await db.runTransaction(async (transaction) => {
+      const bookingRef = db.collection('bookings').doc(bookingId);
+      const bookingSnap = await transaction.get(bookingRef);
+
+      if (!bookingSnap.exists) throw new Error('BOOKING_NOT_FOUND');
+      const bookingData = bookingSnap.data()!;
+
+      if (bookingData.status !== 'pending') {
+        throw new Error('INVALID_BOOKING_STATUS');
+      }
+      if (bookingData.paymentStatus !== 'paid') {
+        throw new Error('BOOKING_NOT_PAID');
+      }
+
+      const rideRef = db.collection('rides').doc(bookingData.rideId);
+      const rideSnap = await transaction.get(rideRef);
+      if (!rideSnap.exists) throw new Error('RIDE_NOT_FOUND');
+      const rideData = rideSnap.data()!;
+
+      const chatRef = db.collection('rideChats').doc(bookingData.rideId);
+      const chatDoc = await transaction.get(chatRef);
+
+      const walletRef = db.collection('wallets').doc(bookingData.driverId);
+      const walletDoc = await transaction.get(walletRef);
+
+      // Writes begin here:
+      transaction.update(bookingRef, {
+        status: 'confirmed',
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+
+      const updatedBookedSeats = (rideData.bookedSeats || []).map((b: any) => {
+        if (b.passengerId === bookingData.passengerId) {
+          return { ...b, status: 'confirmed' };
+        }
+        return b;
+      });
+      transaction.update(rideRef, {
+        bookedSeats: updatedBookedSeats,
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+
+      // Update rideChats
+      if (chatDoc.exists) {
+        transaction.update(chatRef, {
+          participants: admin.firestore.FieldValue.arrayUnion(bookingData.passengerId),
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+        const msgRef = chatRef.collection('messages').doc();
+        transaction.set(msgRef, {
+          rideId: bookingData.rideId,
+          senderId: 'system',
+          senderName: 'System',
+          senderPhoto: '',
+          text: `${bookingData.passengerName} joined the ride`,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          type: 'system'
+        });
+      } else {
+        transaction.set(chatRef, {
+          rideId: bookingData.rideId,
+          rideType: 'carpool',
+          participants: [bookingData.driverId, bookingData.passengerId],
+          lastMessage: 'Group chat created',
+          lastMessageTime: admin.firestore.Timestamp.now(),
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+        const msgRef = chatRef.collection('messages').doc();
+        transaction.set(msgRef, {
+          rideId: bookingData.rideId,
+          senderId: 'system',
+          senderName: 'System',
+          senderPhoto: '',
+          text: `${bookingData.passengerName} joined the ride`,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          type: 'system'
+        });
+      }
+
+      // Update Driver Wallet
+      let pendingBalance = 0;
+      if (walletDoc.exists) {
+        pendingBalance = walletDoc.data()!.pendingBalance || 0;
+        transaction.update(walletRef, {
+          pendingBalance: parseFloat((pendingBalance + bookingData.totalPrice).toFixed(2)),
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      } else {
+        transaction.set(walletRef, {
+          userId: bookingData.driverId,
+          walletBalance: 0,
+          pendingBalance: bookingData.totalPrice,
+          lockedBalance: 0,
+          lifetimeEarnings: 0,
+          lifetimeWithdrawals: 0,
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      }
+
+      // Wallet Transaction Log
+      const txRef = db.collection('walletTransactions').doc();
+      transaction.set(txRef, {
+        userId: bookingData.driverId,
+        rideId: bookingData.rideId,
+        bookingId: bookingId,
+        amount: bookingData.totalPrice,
+        type: 'earning_pending',
+        status: 'pending',
+        referenceType: 'booking',
+        referenceId: bookingId,
+        createdAt: admin.firestore.Timestamp.now()
+      });
+
+      return {
+        driverId: bookingData.driverId,
+        passengerId: bookingData.passengerId,
+        passengerName: bookingData.passengerName,
+        totalPrice: bookingData.totalPrice,
+        rideId: bookingData.rideId
+      };
+    });
+
+    // Send notifications & log analytics
+    await triggerNotification(
+      result.passengerId,
+      'booking_confirmed',
+      'Ride Confirmed! 🎉',
+      `Your booking request was approved by the driver.`,
+      result.rideId,
+      bookingId,
+      'ride-details',
+      result.rideId
+    ).catch(e => console.error('[ACCEPT_BOOKING] Notif error:', e));
+
+    // Log event to analytics
+    await db.collection('analytics').add({
+      eventType: 'booking_accepted',
+      userId: result.driverId,
+      bookingId,
+      rideId: result.rideId,
+      amount: result.totalPrice,
+      createdAt: admin.firestore.Timestamp.now()
+    }).catch(e => console.error('[ANALYTICS] Event log error:', e));
+
+    res.json({ success: true, message: 'Booking accepted and driver wallet credited (pending clearance)' });
+  } catch (error: any) {
+    console.error('[API] /accept-booking error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /reject-booking
+router.post('/reject-booking', async (req: Request, res: Response) => {
+  try {
+    const { bookingId } = req.body;
+    if (!bookingId) {
+      return res.status(400).json({ success: false, message: 'Missing booking ID' });
+    }
+
+    const db = getDb();
+    const result = await db.runTransaction(async (transaction) => {
+      const bookingRef = db.collection('bookings').doc(bookingId);
+      const bookingSnap = await transaction.get(bookingRef);
+
+      if (!bookingSnap.exists) throw new Error('BOOKING_NOT_FOUND');
+      const bookingData = bookingSnap.data()!;
+
+      if (bookingData.status !== 'pending' && bookingData.status !== 'accepted') {
+        throw new Error('INVALID_BOOKING_STATUS');
+      }
+
+      const rideRef = db.collection('rides').doc(bookingData.rideId);
+      const rideSnap = await transaction.get(rideRef);
+      if (!rideSnap.exists) throw new Error('RIDE_NOT_FOUND');
+      const rideData = rideSnap.data()!;
+
+      const walletRef = db.collection('wallets').doc(bookingData.passengerId);
+      const walletSnap = await transaction.get(walletRef);
+
+      // Writes begin here:
+      transaction.update(bookingRef, {
+        status: 'rejected',
+        refundStatus: 'completed',
+        refundAmount: bookingData.totalPrice,
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+
+      // Update bookedSeats array: remove
+      const updatedBookedSeats = (rideData.bookedSeats || []).filter(
+        (b: any) => b.passengerId !== bookingData.passengerId
+      );
+      const newAvailableSeats = Math.min(rideData.totalSeats, rideData.availableSeats + bookingData.seatsBooked);
+
+      transaction.update(rideRef, {
+        bookedSeats: updatedBookedSeats,
+        availableSeats: newAvailableSeats,
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+
+      // Update Passenger Wallet
+      let balance = 0;
+      if (walletSnap.exists) {
+        balance = walletSnap.data()!.walletBalance || 0;
+        transaction.update(walletRef, {
+          walletBalance: parseFloat((balance + bookingData.totalPrice).toFixed(2)),
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      } else {
+        transaction.set(walletRef, {
+          userId: bookingData.passengerId,
+          walletBalance: bookingData.totalPrice,
+          pendingBalance: 0,
+          lockedBalance: 0,
+          lifetimeEarnings: 0,
+          lifetimeWithdrawals: 0,
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      }
+
+      // Wallet Transaction Log
+      const txRef = db.collection('walletTransactions').doc();
+      transaction.set(txRef, {
+        userId: bookingData.passengerId,
+        rideId: bookingData.rideId,
+        bookingId: bookingId,
+        amount: bookingData.totalPrice,
+        type: 'refund',
+        status: 'cleared',
+        referenceType: 'booking',
+        referenceId: bookingId,
+        createdAt: admin.firestore.Timestamp.now()
+      });
+
+      return {
+        passengerId: bookingData.passengerId,
+        rideId: bookingData.rideId,
+        totalPrice: bookingData.totalPrice,
+        driverName: rideData.driverName || 'Driver'
+      };
+    });
+
+    // Notify passenger
+    await triggerNotification(
+      result.passengerId,
+      'booking_rejected',
+      'Booking Request Declined',
+      `Your request has been rejected. ₹${result.totalPrice} has been refunded to your wallet.`,
+      result.rideId,
+      bookingId,
+      'my-bookings',
+      result.rideId
+    ).catch(e => console.error('[REJECT_BOOKING] Notif error:', e));
+
+    // Waitlist promotion trigger
+    await promoteWaitlist(db, result.rideId);
+
+    res.json({ success: true, message: 'Booking rejected and passenger refunded successfully' });
+  } catch (error: any) {
+    console.error('[API] /reject-booking error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /passenger-no-show
+router.post('/passenger-no-show', async (req: Request, res: Response) => {
+  try {
+    const { bookingId, driverLat, driverLng } = req.body;
+    if (!bookingId) {
+      return res.status(400).json({ success: false, message: 'Missing booking ID' });
+    }
+
+    const db = getDb();
+    const result = await db.runTransaction(async (transaction) => {
+      const bookingRef = db.collection('bookings').doc(bookingId);
+      const bookingSnap = await transaction.get(bookingRef);
+
+      if (!bookingSnap.exists) throw new Error('BOOKING_NOT_FOUND');
+      const bookingData = bookingSnap.data()!;
+
+      if (bookingData.status !== 'confirmed') {
+        throw new Error('INVALID_BOOKING_STATUS');
+      }
+
+      const rideRef = db.collection('rides').doc(bookingData.rideId);
+      const rideSnap = await transaction.get(rideRef);
+      if (!rideSnap.exists) throw new Error('RIDE_NOT_FOUND');
+      const rideData = rideSnap.data()!;
+
+      const passengerUserRef = db.collection('users').doc(bookingData.passengerId);
+      const passengerUserSnap = await transaction.get(passengerUserRef);
+
+      // Verify coordinate limits if coordinates are provided
+      if (driverLat !== undefined && driverLng !== undefined) {
+        const pickupLoc = bookingData.passengerPickupLocation || rideData.pickupLocation;
+        if (pickupLoc && pickupLoc.latitude !== undefined && pickupLoc.longitude !== undefined) {
+          const dist = calculateDistance(driverLat, driverLng, pickupLoc.latitude, pickupLoc.longitude);
+          if (dist > 200) {
+            throw new Error('DRIVER_TOO_FAR_FROM_PICKUP');
+          }
+        }
+      }
+
+      // Check departure time and grace window
+      const departureTime = new Date(rideData.departureTime).getTime();
+      const fiveMinsLater = departureTime + 5 * 60 * 1000;
+      if (Date.now() < fiveMinsLater) {
+        throw new Error('GRACE_PERIOD_ACTIVE');
+      }
+
+      const totalPrice = bookingData.totalPrice || 0;
+      const penaltyAmount = Math.min(50, totalPrice);
+      const refundAmount = Math.max(0, totalPrice - penaltyAmount);
+
+      // Writes begin here:
+      transaction.update(bookingRef, {
+        status: 'no_show',
+        refundStatus: 'completed',
+        refundAmount: refundAmount,
+        penaltyApplied: penaltyAmount,
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+
+      // Increment passenger noShows
+      if (passengerUserSnap.exists) {
+        const pData = passengerUserSnap.data()!;
+        transaction.update(passengerUserRef, {
+          noShows: (pData.noShows || 0) + 1,
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      }
+
+      // Credit ₹50 penalty to driver wallet (compensation)
+      const driverWalletRef = db.collection('wallets').doc(bookingData.driverId);
+      const driverWalletSnap = await transaction.get(driverWalletRef);
+      if (driverWalletSnap.exists) {
+        const wData = driverWalletSnap.data()!;
+        transaction.update(driverWalletRef, {
+          walletBalance: parseFloat(((wData.walletBalance || 0) + penaltyAmount).toFixed(2)),
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      } else {
+        transaction.set(driverWalletRef, {
+          userId: bookingData.driverId,
+          walletBalance: penaltyAmount,
+          pendingBalance: 0,
+          lockedBalance: 0,
+          lifetimeEarnings: penaltyAmount,
+          lifetimeWithdrawals: 0,
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      }
+
+      // Refund remaining to passenger wallet
+      const passengerWalletRef = db.collection('wallets').doc(bookingData.passengerId);
+      const passengerWalletSnap = await transaction.get(passengerWalletRef);
+      if (passengerWalletSnap.exists) {
+        const wData = passengerWalletSnap.data()!;
+        transaction.update(passengerWalletRef, {
+          walletBalance: parseFloat(((wData.walletBalance || 0) + refundAmount).toFixed(2)),
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      } else {
+        transaction.set(passengerWalletRef, {
+          userId: bookingData.passengerId,
+          walletBalance: refundAmount,
+          pendingBalance: 0,
+          lockedBalance: 0,
+          lifetimeEarnings: 0,
+          lifetimeWithdrawals: 0,
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      }
+
+      // Transaction log - passenger penalty
+      const txPassengerRef = db.collection('walletTransactions').doc();
+      transaction.set(txPassengerRef, {
+        userId: bookingData.passengerId,
+        rideId: bookingData.rideId,
+        bookingId: bookingId,
+        amount: -penaltyAmount,
+        type: 'penalty',
+        status: 'cleared',
+        referenceType: 'booking',
+        referenceId: bookingId,
+        createdAt: admin.firestore.Timestamp.now()
+      });
+
+      // Transaction log - passenger refund
+      if (refundAmount > 0) {
+        const txPassengerRefundRef = db.collection('walletTransactions').doc();
+        transaction.set(txPassengerRefundRef, {
+          userId: bookingData.passengerId,
+          rideId: bookingData.rideId,
+          bookingId: bookingId,
+          amount: refundAmount,
+          type: 'refund',
+          status: 'cleared',
+          referenceType: 'booking',
+          referenceId: bookingId,
+          createdAt: admin.firestore.Timestamp.now()
+        });
+      }
+
+      // Transaction log - driver payout
+      if (penaltyAmount > 0) {
+        const txDriverRef = db.collection('walletTransactions').doc();
+        transaction.set(txDriverRef, {
+          userId: bookingData.driverId,
+          rideId: bookingData.rideId,
+          bookingId: bookingId,
+          amount: penaltyAmount,
+          type: 'no_show_compensation',
+          status: 'cleared',
+          referenceType: 'booking',
+          referenceId: bookingId,
+          createdAt: admin.firestore.Timestamp.now()
+        });
+      }
+
+      // Remove passenger from chat participants
+      const chatRef = db.collection('rideChats').doc(bookingData.rideId);
+      const chatDoc = await transaction.get(chatRef);
+      if (chatDoc.exists) {
+        transaction.update(chatRef, {
+          participants: admin.firestore.FieldValue.arrayRemove(bookingData.passengerId),
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+        const msgRef = chatRef.collection('messages').doc();
+        transaction.set(msgRef, {
+          rideId: bookingData.rideId,
+          senderId: 'system',
+          senderName: 'System',
+          senderPhoto: '',
+          text: `${bookingData.passengerName} removed from ride (Passenger No-Show)`,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          type: 'system'
+        });
+      }
+
+      return {
+        passengerId: bookingData.passengerId,
+        rideId: bookingData.rideId,
+        driverId: bookingData.driverId,
+        passengerName: bookingData.passengerName,
+        refundAmount,
+        penaltyAmount
+      };
+    });
+
+    // Notify passenger
+    await triggerNotification(
+      result.passengerId,
+      'ride_cancelled',
+      'No-Show Penalty Applied ⚠️',
+      `You were marked as a no-show. A penalty of ₹${result.penaltyAmount} was charged, and the remaining ₹${result.refundAmount} has been refunded.`,
+      result.rideId,
+      bookingId,
+      'my-bookings',
+      result.rideId
+    ).catch(e => console.error('[NO_SHOW_NOTIF] Passenger error:', e));
+
+    res.json({ success: true, message: 'Passenger marked as no-show, penalty applied, and remainder refunded' });
+  } catch (error: any) {
+    console.error('[API] /passenger-no-show error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /driver-no-show
+router.post('/driver-no-show', async (req: Request, res: Response) => {
+  try {
+    const { bookingId, passengerLat, passengerLng } = req.body;
+    if (!bookingId) {
+      return res.status(400).json({ success: false, message: 'Missing booking ID' });
+    }
+
+    const db = getDb();
+    const result = await db.runTransaction(async (transaction) => {
+      const bookingRef = db.collection('bookings').doc(bookingId);
+      const bookingSnap = await transaction.get(bookingRef);
+
+      if (!bookingSnap.exists) throw new Error('BOOKING_NOT_FOUND');
+      const bookingData = bookingSnap.data()!;
+
+      if (bookingData.status !== 'confirmed') {
+        throw new Error('INVALID_BOOKING_STATUS');
+      }
+
+      const rideRef = db.collection('rides').doc(bookingData.rideId);
+      const rideSnap = await transaction.get(rideRef);
+      if (!rideSnap.exists) throw new Error('RIDE_NOT_FOUND');
+      const rideData = rideSnap.data()!;
+
+      const driverUserRef = db.collection('users').doc(bookingData.driverId);
+      const driverUserSnap = await transaction.get(driverUserRef);
+
+      // Verify coordinate limits if coordinates are provided
+      if (passengerLat !== undefined && passengerLng !== undefined) {
+        const pickupLoc = bookingData.passengerPickupLocation || rideData.pickupLocation;
+        if (pickupLoc && pickupLoc.latitude !== undefined && pickupLoc.longitude !== undefined) {
+          const dist = calculateDistance(passengerLat, passengerLng, pickupLoc.latitude, pickupLoc.longitude);
+          if (dist > 200) {
+            throw new Error('PASSENGER_TOO_FAR_FROM_PICKUP');
+          }
+        }
+
+        // Check driver's current location from their user profile
+        if (driverUserSnap.exists) {
+          const driverData = driverUserSnap.data()!;
+          const driverLoc = driverData.currentLocation || rideData.currentLocation;
+          if (driverLoc && driverLoc.latitude !== undefined && driverLoc.longitude !== undefined) {
+            const driverDist = calculateDistance(passengerLat, passengerLng, driverLoc.latitude, driverLoc.longitude);
+            if (driverDist <= 500) {
+              throw new Error('DRIVER_IS_NEARBY');
+            }
+          }
+        }
+      }
+
+      // Check departure time and grace window (departure + 5 minutes)
+      const departureTime = new Date(rideData.departureTime).getTime();
+      const fiveMinsLater = departureTime + 5 * 60 * 1000;
+      if (Date.now() < fiveMinsLater) {
+        throw new Error('GRACE_PERIOD_ACTIVE');
+      }
+
+      const totalPrice = bookingData.totalPrice || 0;
+
+      // Writes begin here:
+      transaction.update(bookingRef, {
+        status: 'cancelled',
+        refundStatus: 'completed',
+        refundAmount: totalPrice,
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+
+      // Increment driver noShowReports
+      if (driverUserSnap.exists) {
+        const dData = driverUserSnap.data()!;
+        transaction.update(driverUserRef, {
+          noShowReports: (dData.noShowReports || 0) + 1,
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      }
+
+      // Fully refund passenger wallet
+      const passengerWalletRef = db.collection('wallets').doc(bookingData.passengerId);
+      const passengerWalletSnap = await transaction.get(passengerWalletRef);
+      if (passengerWalletSnap.exists) {
+        const wData = passengerWalletSnap.data()!;
+        transaction.update(passengerWalletRef, {
+          walletBalance: parseFloat(((wData.walletBalance || 0) + totalPrice).toFixed(2)),
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      } else {
+        transaction.set(passengerWalletRef, {
+          userId: bookingData.passengerId,
+          walletBalance: totalPrice,
+          pendingBalance: 0,
+          lockedBalance: 0,
+          lifetimeEarnings: 0,
+          lifetimeWithdrawals: 0,
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+      }
+
+      // Wallet Transaction Log
+      const txPassengerRefundRef = db.collection('walletTransactions').doc();
+      transaction.set(txPassengerRefundRef, {
+        userId: bookingData.passengerId,
+        rideId: bookingData.rideId,
+        bookingId: bookingId,
+        amount: totalPrice,
+        type: 'refund',
+        status: 'cleared',
+        referenceType: 'booking',
+        referenceId: bookingId,
+        createdAt: admin.firestore.Timestamp.now()
+      });
+
+      // Remove passenger from chat participants
+      const chatRef = db.collection('rideChats').doc(bookingData.rideId);
+      const chatDoc = await transaction.get(chatRef);
+      if (chatDoc.exists) {
+        transaction.update(chatRef, {
+          participants: admin.firestore.FieldValue.arrayRemove(bookingData.passengerId),
+          updatedAt: admin.firestore.Timestamp.now()
+        });
+        const msgRef = chatRef.collection('messages').doc();
+        transaction.set(msgRef, {
+          rideId: bookingData.rideId,
+          senderId: 'system',
+          senderName: 'System',
+          senderPhoto: '',
+          text: `${bookingData.passengerName} removed from ride (Driver No-Show)`,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          type: 'system'
+        });
+      }
+
+      return {
+        passengerId: bookingData.passengerId,
+        rideId: bookingData.rideId,
+        driverId: bookingData.driverId,
+        totalPrice
+      };
+    });
+
+    // Notify driver they were reported as no-show
+    await triggerNotification(
+      result.driverId,
+      'ride_cancelled',
+      'No-Show Report Received ⚠️',
+      `A passenger reported you as a no-show for your ride. This affects your reliability score.`,
+      result.rideId,
+      bookingId,
+      'ride-details',
+      result.rideId
+    ).catch(e => console.error('[NO_SHOW_NOTIF] Driver error:', e));
+
+    res.json({ success: true, message: 'Driver reported as no-show, passenger fully refunded' });
+  } catch (error: any) {
+    console.error('[API] /driver-no-show error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /rate-user
+router.post('/rate-user', async (req: Request, res: Response) => {
+  try {
+    const { targetUserId, rating, reviewText, reviewerId } = req.body;
+    if (!targetUserId || !rating || !reviewerId) {
+      return res.status(400).json({ success: false, message: 'Missing targetUserId, rating, or reviewerId' });
+    }
+
+    const numRating = parseFloat(rating);
+    if (isNaN(numRating) || numRating < 1 || numRating > 5) {
+      return res.status(400).json({ success: false, message: 'Rating must be a number between 1 and 5' });
+    }
+
+    const db = getDb();
+    await db.runTransaction(async (transaction) => {
+      const userRef = db.collection('users').doc(targetUserId);
+      const userSnap = await transaction.get(userRef);
+
+      if (!userSnap.exists) {
+        throw new Error('USER_NOT_FOUND');
+      }
+
+      const userData = userSnap.data()!;
+      const currentRating = userData.rating || 0;
+      const currentCount = userData.ratingCount || 0;
+
+      const newCount = currentCount + 1;
+      const newRating = parseFloat(((currentRating * currentCount + numRating) / newCount).toFixed(2));
+
+      // Update user ratings
+      transaction.update(userRef, {
+        rating: newRating,
+        ratingCount: newCount,
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+
+      // Write review document
+      const reviewRef = db.collection('users').doc(targetUserId).collection('reviews').doc();
+      transaction.set(reviewRef, {
+        id: reviewRef.id,
+        reviewerId,
+        rating: numRating,
+        reviewText: reviewText || '',
+        createdAt: admin.firestore.Timestamp.now()
+      });
+    });
+
+    res.json({ success: true, message: 'Rating and review aggregated successfully' });
+  } catch (error: any) {
+    console.error('[API] /rate-user error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+
 
 const clearPendingBalances = async (db: admin.firestore.Firestore, userId: string) => {
   try {
@@ -1985,9 +2950,9 @@ export async function triggerNotification(
 
     // 2. Map notification type to preference channel
     let isAllowed = true;
-    if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'booking_expired'].includes(type)) {
+    if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'booking_expired', 'waitlist_joined', 'waitlist_promoted', 'waitlist_expired', 'sos', 'cancellation'].includes(type)) {
       isAllowed = prefs.rideUpdates !== false;
-    } else if (['payment_required', 'payment_confirmed', 'refund_initiated', 'refund_completed'].includes(type)) {
+    } else if (['payment_required', 'payment_confirmed', 'payment_failed', 'refund_initiated', 'refund_completed'].includes(type)) {
       isAllowed = prefs.paymentUpdates !== false;
     } else if (['message'].includes(type)) {
       isAllowed = prefs.chatUpdates !== false;
@@ -2000,6 +2965,8 @@ export async function triggerNotification(
       }
     } else if (['pool_joined', 'pool_accepted', 'pool_full', 'pool_request'].includes(type)) {
       isAllowed = prefs.poolUpdates !== false;
+    } else if (['withdrawal_requested', 'withdrawal_approved', 'withdrawal_rejected', 'withdrawal_completed'].includes(type)) {
+      isAllowed = prefs.paymentUpdates !== false;
     } else if (['marketing', 'campaign'].includes(type)) {
       isAllowed = prefs.marketingUpdates === true;
     }
@@ -2720,6 +3687,151 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
           doc.id
         );
         await doc.ref.update({ paymentReminder5mSent: true });
+      }
+    }
+
+    // ─── 5.1 UNPAID PENDING BOOKINGS TIMEOUT (10 min) ───
+    const unpaidPendingSnap = await db.collection('bookings')
+      .where('status', '==', 'pending')
+      .where('paymentStatus', '==', 'pending')
+      .get();
+
+    for (const bDoc of unpaidPendingSnap.docs) {
+      const booking = bDoc.data();
+      const expiresAt = booking.expiresAt ? (booking.expiresAt.toDate ? booking.expiresAt.toDate() : new Date(booking.expiresAt)) : null;
+      if (expiresAt && expiresAt <= now) {
+        console.log(`[SWEEP] Expiring unpaid pending booking request: ${bDoc.id}`);
+        const rideId = booking.rideId;
+        const passengerId = booking.passengerId;
+
+        await db.runTransaction(async (transaction) => {
+          const bRef = db.collection('bookings').doc(bDoc.id);
+          const rideRef = db.collection('rides').doc(rideId);
+          const rSnap = await transaction.get(rideRef);
+
+          transaction.update(bRef, {
+            status: 'cancelled',
+            paymentStatus: 'failed',
+            updatedAt: admin.firestore.Timestamp.now()
+          });
+
+          if (rSnap.exists) {
+            const rideData = rSnap.data()!;
+            const updatedBookedSeats = (rideData.bookedSeats || []).filter(
+              (b: any) => b.passengerId !== passengerId
+            );
+            transaction.update(rideRef, {
+              bookedSeats: updatedBookedSeats,
+              updatedAt: admin.firestore.Timestamp.now()
+            });
+          }
+        });
+      }
+    }
+
+    // ─── 5.2 WAITLIST OFFER HOLD TIMEOUT (5 min) ───
+    const expiredOffersSnap = await db.collection('bookings')
+      .where('status', '==', 'accepted')
+      .where('paymentStatus', '==', 'pending')
+      .get();
+
+    for (const bDoc of expiredOffersSnap.docs) {
+      const booking = bDoc.data();
+      const expiresAt = booking.expiresAt ? (booking.expiresAt.toDate ? booking.expiresAt.toDate() : new Date(booking.expiresAt)) : null;
+      if (expiresAt && expiresAt <= now) {
+        console.log(`[SWEEP] Expiring waitlist offer: ${bDoc.id}`);
+        const rideId = booking.rideId;
+        const passengerId = booking.passengerId;
+
+        await db.runTransaction(async (transaction) => {
+          const bRef = db.collection('bookings').doc(bDoc.id);
+          const rideRef = db.collection('rides').doc(rideId);
+          const waitlistRef = db.collection('rideWaitlist').doc(`${rideId}_${passengerId}`);
+
+          const rSnap = await transaction.get(rideRef);
+
+          transaction.update(bRef, {
+            status: 'cancelled',
+            updatedAt: admin.firestore.Timestamp.now()
+          });
+
+          transaction.set(waitlistRef, {
+            status: 'expired',
+            updatedAt: admin.firestore.Timestamp.now()
+          }, { merge: true });
+
+          if (rSnap.exists) {
+            const rideData = rSnap.data()!;
+            const updatedBookedSeats = (rideData.bookedSeats || []).filter(
+              (b: any) => b.passengerId !== passengerId
+            );
+            transaction.update(rideRef, {
+              bookedSeats: updatedBookedSeats,
+              updatedAt: admin.firestore.Timestamp.now()
+            });
+          }
+        });
+
+        await triggerNotification(
+          passengerId,
+          'waitlist_expired',
+          'Seat Offer Expired ⏰',
+          `Your 5-minute window to claim the seat has expired.`,
+          rideId,
+          bDoc.id,
+          'ride-details',
+          rideId
+        );
+
+        // Promote the next waitlist passenger
+        await promoteWaitlist(db, rideId);
+      }
+    }
+
+    // ─── 5.3 TAXI POOL MINIMUM PARTICIPATION CHECK (30 min) ───
+    const openTaxiPoolsSnap = await db.collection('taxiPools')
+      .where('status', 'in', ['OPEN', 'FULL'])
+      .get();
+
+    for (const pDoc of openTaxiPoolsSnap.docs) {
+      const pool = pDoc.data();
+      const poolId = pDoc.id;
+      const depTime = new Date(pool.departureTime);
+      const diffMs = depTime.getTime() - now.getTime();
+      const diffMins = Math.floor(diffMs / 60000);
+
+      // Check if it departs within 30 minutes
+      if (diffMins <= 30 && diffMins > 0) {
+        const membersSnap = await db.collection('poolMembers').where('poolId', '==', poolId).get();
+        const memberCount = membersSnap.size;
+
+        if (memberCount < 2 && pool.hostOverride !== true && !pool.minParticipationChecked) {
+          console.log(`[SWEEP] Taxi Pool Cancelled: Minimum participation not met for pool ${poolId}`);
+          
+          await pDoc.ref.update({
+            status: 'cancelled',
+            cancelReason: 'Minimum participation threshold (2 members) not met.',
+            minParticipationChecked: true,
+            updatedAt: admin.firestore.Timestamp.now()
+          });
+
+          await triggerSystemChatMessage(db, poolId, 'Taxi Pool cancelled: Minimum participation threshold (2 members) not met.');
+          await archiveDocument(db, 'taxiPools', 'archivedTaxiPools', poolId);
+
+          // Notify creator
+          await triggerNotification(
+            pool.creatorId,
+            'pool_joined',
+            'Taxi Pool Cancelled ⚠️',
+            `Your taxi pool was cancelled because it did not reach the minimum threshold of 2 members 30 minutes before departure.`,
+            poolId,
+            null,
+            'taxi-pool-details',
+            poolId
+          ).catch(e => console.error('[TAXI_POOL_SWEEP] Notif error:', e));
+        } else if (!pool.minParticipationChecked) {
+          await pDoc.ref.update({ minParticipationChecked: true });
+        }
       }
     }
 

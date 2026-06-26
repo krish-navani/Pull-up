@@ -5,7 +5,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import React, { useEffect } from 'react';
-import { ActivityIndicator, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Platform, Text, TouchableOpacity, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import 'react-native-reanimated';
 
@@ -22,7 +22,9 @@ import {
 // FCM messaging — loaded lazily so we degrade gracefully in Expo Go
 let messaging: any = null;
 try {
-  messaging = require('@react-native-firebase/messaging').default;
+  if (Platform.OS !== 'web') {
+    messaging = require('@react-native-firebase/messaging').default;
+  }
 } catch (e) {
   console.warn('[FCM] @react-native-firebase/messaging not available in _layout (Expo Go).');
 }
@@ -91,11 +93,11 @@ function RootLayoutContent() {
         if (!resolvedScreen && type) {
           if (['chat_message', 'message', 'sos'].includes(type)) {
             resolvedScreen = 'group-chat';
-          } else if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'payment_confirmed'].includes(type)) {
+          } else if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'payment_confirmed', 'booking_expired', 'waitlist_joined', 'waitlist_promoted', 'waitlist_expired', 'cancellation'].includes(type)) {
             resolvedScreen = 'ride-details';
-          } else if (['pool_request', 'pool_accepted', 'pool_rejected'].includes(type)) {
+          } else if (['pool_request', 'pool_accepted', 'pool_rejected', 'pool_joined', 'pool_full'].includes(type)) {
             resolvedScreen = 'taxi-pool-details';
-          } else if (['withdrawal_requested', 'withdrawal_approved'].includes(type)) {
+          } else if (['withdrawal_requested', 'withdrawal_approved', 'withdrawal_rejected', 'withdrawal_completed'].includes(type)) {
             resolvedScreen = 'wallet';
           } else if (type === 'marketing') {
             resolvedScreen = 'notifications';
