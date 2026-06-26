@@ -113,7 +113,7 @@ export default function CreateTaxiPoolScreen() {
     const loadRoutePreview = async () => {
       setLoadingRoute(true);
       try {
-        const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCIZ1Lccen5Ek7-0cXIU3Pxv5he7vhmZ6Y';
+        const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs';
         const result = await fetchRoute(
           pickup,
           destination,

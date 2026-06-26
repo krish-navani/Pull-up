@@ -1621,7 +1621,7 @@ function PassengerProfileRow({
       }
 
       const acceptedBookings = allBookings.filter(b => b.status === 'accepted' || b.status === 'confirmed');
-      const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCIZ1Lccen5Ek7-0cXIU3Pxv5he7vhmZ6Y';
+      const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs';
 
       // Map accepted bookings to their waypoint coordinates
       const baselineWaypoints = acceptedBookings.map(b => {

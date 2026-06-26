@@ -10,6 +10,9 @@ import admin from 'firebase-admin';
 
 const router = Router();
 
+// Set to true to bypass and mock all Razorpay payments/subscriptions. Set to false to reconnect Razorpay.
+const BYPASS_RAZORPAY = true;
+
 // Health check endpoint
 router.get('/health', (req: Request, res: Response) => {
   res.json({
@@ -117,7 +120,16 @@ router.get('/checkout-page', (req: Request, res: Response) => {
     const bookingId = "${bookingId || ''}";
     const keyId = "${keyId}";
 
-    if (!orderId || !amount) {
+    const bypass = ${BYPASS_RAZORPAY};
+    if (bypass) {
+      setTimeout(() => {
+        verifyPayment({
+          razorpay_payment_id: "pay_mock_" + Math.random().toString(36).substring(7),
+          razorpay_order_id: orderId,
+          razorpay_signature: "sig_mock"
+        });
+      }, 500);
+    } else if (!orderId || !amount) {
       showError("Invalid payment configuration. Missing order parameters.");
     } else {
       setTimeout(openPayment, 800);
@@ -596,7 +608,10 @@ router.post('/create-subscription', async (req: Request, res: Response) => {
     const plan = planId === 'yearly' ? { price: 2500, days: 365 } : planId === 'quarterly' ? { price: 700, days: 90 } : { price: 250, days: 30 }; // Defaults to monthly
 
     const rzp = getRazorpay();
-    const order = await rzp.orders.create({
+    const order = BYPASS_RAZORPAY ? {
+      id: `order_mock_${Math.random().toString(36).substring(7)}`,
+      amount: plan.price * 100
+    } : await rzp.orders.create({
       amount: plan.price * 100, // paise
       currency: 'INR',
       receipt: `sub_rcpt_${userId.substring(0, 8)}_${Date.now()}`,
@@ -634,7 +649,7 @@ router.post('/verify-subscription', async (req: Request, res: Response) => {
       .update(razorpay_order_id + '|' + razorpay_payment_id)
       .digest('hex');
 
-    if (generated_signature !== razorpay_signature) {
+    if (!BYPASS_RAZORPAY && generated_signature !== razorpay_signature) {
       return res.status(400).json({ success: false, message: 'Payment verification failed: invalid signature' });
     }
 
@@ -900,7 +915,10 @@ router.post('/create-order', async (req: Request, res: Response) => {
       const totalAmount = bookingData.totalPrice || (rideData.price * bookingData.seatsBooked);
 
       const rzp = getRazorpay();
-      const order = await rzp.orders.create({
+      const order = BYPASS_RAZORPAY ? {
+        id: `order_mock_${Math.random().toString(36).substring(7)}`,
+        amount: Math.round(totalAmount * 100)
+      } : await rzp.orders.create({
         amount: Math.round(totalAmount * 100),
         currency: 'INR',
         receipt: `rcpt_car_${rideId.substring(0, 8)}_${Date.now()}`,
@@ -1004,7 +1022,7 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
       .update(razorpay_order_id + '|' + razorpay_payment_id)
       .digest('hex');
 
-    if (generated_signature !== razorpay_signature) {
+    if (!BYPASS_RAZORPAY && generated_signature !== razorpay_signature) {
       return res.status(400).json({ success: false, message: 'Payment verification failed: signature invalid' });
     }
 

@@ -28,7 +28,7 @@
         "EXPO_PUBLIC_OTP_LENGTH": "4",
         "EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME": "dednna8sw",
         "EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET": "pullup_driver_license",
-        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyCIZ1Lccen5Ek7-0cXIU3Pxv5he7vhmZ6Y"
+        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs"
       },
       "android": {
         "buildType": "apk"
@@ -50,7 +50,7 @@
         "EXPO_PUBLIC_OTP_LENGTH": "4",
         "EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME": "dednna8sw",
         "EXPO_PUBLIC_CLOUDINARY_UPLOAD_PRESET": "pullup_driver_license",
-        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyCIZ1Lccen5Ek7-0cXIU3Pxv5he7vhmZ6Y"
+        "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs"
       }
     }
   },
