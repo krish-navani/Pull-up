@@ -3050,7 +3050,7 @@ export async function triggerNotification(
               sound: 'default',
               channelId: 'default',
               notificationCount: unreadCount,
-              icon: 'ic_stat_pullup',
+              // icon: 'ic_stat_pullup' — removed; use app's default launcher icon
             },
           },
           apns: {

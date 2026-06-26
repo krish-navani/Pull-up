@@ -773,10 +773,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
     const registerFCMToken = async () => {
       if (!state.auth.isSignedIn || !state.auth.user) return;
-      if (false) {
-        console.log('[FCM] messaging not available — skipping token registration (Expo Go)');
-        return;
-      }
+      // messaging is null in Expo Go (guarded at module level above)
+      // We still continue to register an Expo push token for Expo Go fallback
 
       try {
         if (Platform.OS === 'android') {
