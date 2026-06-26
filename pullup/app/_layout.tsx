@@ -19,10 +19,12 @@ import {
   BG_LOCATION_CONFIG,
 } from '@/utils/backgroundLocationTask';
 
+import Constants from 'expo-constants';
+
 // FCM messaging — loaded lazily so we degrade gracefully in Expo Go
 let messaging: any = null;
 try {
-  if (Platform.OS !== 'web') {
+  if (Platform.OS !== 'web' && Constants.appOwnership !== 'expo') {
     messaging = require('@react-native-firebase/messaging').default;
   }
 } catch (e) {

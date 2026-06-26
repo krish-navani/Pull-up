@@ -15,11 +15,12 @@ import {
   BG_TASK_RIDE_ID_KEY,
 } from '../utils/backgroundLocationTask';
 
+
 // FCM messaging instance — loaded lazily so Expo Go doesn't crash on it
 let messaging: any = null;
 try {
   // @react-native-firebase/messaging requires a native build; gracefully degrade in Expo Go
-  if (Platform.OS !== 'web') {
+  if (Platform.OS !== 'web' && Constants.appOwnership !== 'expo') {
     messaging = require('@react-native-firebase/messaging').default;
   }
 } catch (e) {
