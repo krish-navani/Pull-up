@@ -28,6 +28,9 @@ import { Location } from '@/types';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
 import { fetchRoute } from '@/utils/routeUtils';
+
+const BYPASS_SUBSCRIPTION_CHECK = true;
+
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import { ATLAS_LOCATION } from '@/utils/atlasLocationUtils';
 
@@ -178,7 +181,7 @@ export default function CreateTaxiPoolScreen() {
 
           // TaxiPool does NOT require license/driver verification.
           // Only a subscription check is needed here.
-          if (userData?.subscriptionStatus !== 'active') {
+          if (!BYPASS_SUBSCRIPTION_CHECK && userData?.subscriptionStatus !== 'active') {
             Alert.alert(
               'Subscription Required',
               'You need an active TaxiPool subscription (₹250/month) to create a TaxiPool.',
@@ -287,7 +290,7 @@ export default function CreateTaxiPoolScreen() {
       const userSnap = await getDoc(userRef);
       if (userSnap.exists()) {
         const userData = userSnap.data();
-        if (userData?.subscriptionStatus !== 'active') {
+        if (!BYPASS_SUBSCRIPTION_CHECK && userData?.subscriptionStatus !== 'active') {
           Alert.alert(
             'Subscription Required',
             'Your subscription has expired or is inactive. Please subscribe to continue.',

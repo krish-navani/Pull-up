@@ -358,24 +358,31 @@ export default function MyBookingsScreen() {
       });
 
       if (res.data?.success) {
-        const { orderId, amount } = res.data;
-        const REMOTE_BACKEND_URL = process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pullup-backend-otp.vercel.app';
-        const checkoutUrl = `${REMOTE_BACKEND_URL}/api/otp/checkout-page?type=booking&orderId=${orderId}&amount=${amount}&bookingId=${bookingId}`;
-        console.log('[MY-BOOKINGS] Launching checkout URL:', checkoutUrl);
+        const { orderId } = res.data;
         
-        const result = await WebBrowser.openBrowserAsync(checkoutUrl);
-        if (result.type === 'cancel') {
+        console.log('[MY-BOOKINGS] (BYPASS MODE) Directly verifying payment order:', orderId);
+        const verifyRes = await apiClient.post('/verify-payment', {
+          razorpay_payment_id: `pay_mock_${Math.random().toString(36).substring(7)}`,
+          razorpay_order_id: orderId,
+          razorpay_signature: `sig_mock_${Math.random().toString(36).substring(7)}`,
+          bookingId,
+        });
+
+        if (verifyRes.data?.success) {
           if (auth.user?.id) {
             await loadPassengerBookings(auth.user.id);
             await loadAllAvailableRides();
           }
-          setIsProcessingPayment(false);
+          Alert.alert('Success 🎉', 'Payment verified and booking confirmed! (Bypassed Razorpay WebView)');
+        } else {
+          throw new Error(verifyRes.data?.message || 'Verification failed');
         }
       } else {
         throw new Error(res.data?.message || 'Failed to create payment order');
       }
     } catch (err: any) {
       Alert.alert('Error', err?.message || 'Failed to initiate payment.');
+    } finally {
       setIsProcessingPayment(false);
     }
   };

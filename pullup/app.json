@@ -83,7 +83,8 @@
           "sounds": []
         }
       ],
-      "@react-native-firebase/app"
+      "@react-native-firebase/app",
+      "./plugins/withNotificationFix"
     ],
     "experiments": {
       "typedRoutes": true

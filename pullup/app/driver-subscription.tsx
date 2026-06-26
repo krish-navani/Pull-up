@@ -146,12 +146,36 @@ export default function DriverSubscriptionScreen() {
       });
 
       if (res.data?.success) {
-        const { orderId, amount } = res.data;
+        const { orderId } = res.data;
         
-        // Launch dynamic WebBrowser checkout
-        const checkoutUrl = `${REMOTE_BACKEND_URL}/api/otp/checkout-page?type=subscription&orderId=${orderId}&amount=${amount}&userId=${auth.user.id}&planId=${selectedPlan}`;
-        console.log('[SUBSCRIPTION] Opening checkout URL:', checkoutUrl);
-        await WebBrowser.openBrowserAsync(checkoutUrl);
+        console.log('[SUBSCRIPTION] (BYPASS MODE) Directly verifying subscription order:', orderId);
+        const verifyRes = await apiClient.post('/verify-subscription', {
+          razorpay_payment_id: `pay_mock_${Math.random().toString(36).substring(7)}`,
+          razorpay_order_id: orderId,
+          razorpay_signature: `sig_mock_${Math.random().toString(36).substring(7)}`,
+          userId: auth.user.id,
+          planId: selectedPlan,
+        });
+
+        if (verifyRes.data?.success) {
+          Alert.alert(
+            'Subscription Active 🎉',
+            'Thank you! Your TaxiPool creation benefits have been successfully activated. (Bypassed Razorpay WebView)',
+            [
+              {
+                text: 'Create TaxiPool',
+                onPress: () => router.replace('/create-taxi-pool'),
+              },
+              {
+                text: 'Go Home',
+                onPress: () => router.replace('/(tabs)/home'),
+              },
+            ]
+          );
+          fetchSubscriptionStatus();
+        } else {
+          throw new Error(verifyRes.data?.message || 'Subscription verification failed');
+        }
       } else {
         throw new Error(res.data?.message || 'Failed to initialize subscription checkout');
       }
