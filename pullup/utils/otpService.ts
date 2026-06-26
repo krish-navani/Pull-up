@@ -162,7 +162,7 @@ export const verifyOTP = async (
 export const deleteOTP = async (email: string): Promise<void> => {
   try {
     const fullEmail = email.includes('@') ? email : email + UNIVERSITY_DOMAIN;
-    const otpDocId = fullEmail.replace(/[.@]/g, '_');
+    const otpDocId = fullEmail.replace(/[.@]/g, '_').toLowerCase();
     await ensureAuthenticated();
     await deleteDoc(doc(collection(db, 'otpVerification'), otpDocId));
   } catch (error) {

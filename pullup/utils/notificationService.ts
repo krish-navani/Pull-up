@@ -120,7 +120,7 @@ type: ${type}`);
     }
 
     // 2. Call backend REST endpoint
-    const backendUrl = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000';
+    const backendUrl = process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pullup-backend-otp.vercel.app';
     const response = await fetch(`${backendUrl}/api/otp/send-notification`, {
       method: 'POST',
       headers: {

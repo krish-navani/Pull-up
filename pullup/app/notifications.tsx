@@ -182,7 +182,7 @@ export default function NotificationsScreen() {
       const campaignId = (notification as any).campaignId;
       if (campaignId) {
         try {
-          await fetch(`${process.env.EXPO_PUBLIC_API_URL || 'http://localhost:3000'}/api/otp/analytics/track`, {
+          await fetch(`${process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pullup-backend-otp.vercel.app'}/api/otp/analytics/track`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ campaignId, action: 'clicked' }),

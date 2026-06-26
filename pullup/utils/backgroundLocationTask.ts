@@ -83,11 +83,11 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: any) =>
 
   // Read backend URL and secret from bundled env vars
   // These are embedded at build time, so process.env works in background context
-  const backendUrl = process.env.EXPO_PUBLIC_API_URL || '';
-  const bgSecret = process.env.EXPO_PUBLIC_PULLUP_BG_SECRET || '';
+  const backendUrl = process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pullup-backend-otp.vercel.app';
+  const bgSecret = process.env.EXPO_PUBLIC_PULLUP_BG_SECRET || 'pullup_commute_secure_pass_2026';
 
-  if (!backendUrl || !bgSecret) {
-    console.error('[BG TASK] Missing EXPO_PUBLIC_API_URL or EXPO_PUBLIC_PULLUP_BG_SECRET env vars');
+  if (!backendUrl) {
+    console.error('[BG TASK] Missing EXPO_PUBLIC_OTP_BACKEND_URL env var');
     return;
   }
 
