@@ -2917,17 +2917,19 @@ function safeNotificationId(...parts: Array<string | null | undefined>): string 
     .slice(0, 450);
 }
 
-async function withPushRetry<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
+async function withPushRetry<T>(label: string, fn: () => Promise<T>, maxAttempts = 2): Promise<T> {
   let lastError: any;
-  for (let attempt = 1; attempt <= attempts; attempt++) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       return await fn();
     } catch (error: any) {
       lastError = error;
-      console.warn(`[PUSH RETRY] ${label} attempt ${attempt}/${attempts} failed:`, error?.message || error);
-      if (attempt < attempts) {
-        await new Promise(resolve => setTimeout(resolve, 250 * attempt));
+      const isPermanent = error?.isPermanentError || false;
+      console.warn(`[PUSH RETRY] ${label} attempt ${attempt}/${maxAttempts} failed:`, error?.message || error);
+      if (isPermanent || attempt >= maxAttempts) {
+        throw error;
       }
+      await new Promise(resolve => setTimeout(resolve, 300 * attempt));
     }
   }
   throw lastError;
@@ -2969,12 +2971,27 @@ export async function triggerNotification(
   campaignId: string | null = null,
   isRetry = false
 ): Promise<boolean> {
+  const startTime = Date.now();
+  console.log(`\n=========================================================`);
+  console.log(`[STAGE 1: EVENT TRIGGERED] type=${type}, userId=${userId}, rideId=${rideId}, title="${title}"`);
+
   try {
     const db = getDb();
+
+    // Prepare in-app notification subcollection key & write history
+    const dedupeBucket = Math.floor(Date.now() / (5 * 60 * 1000)).toString();
+    const notificationId = safeNotificationId(userId, type, rideId || bookingId || targetId || campaignId || 'general', dedupeBucket);
+    const notifRef = db.collection('users').doc(userId).collection('notifications').doc(notificationId);
     
+    console.log(`[STAGE 2: NOTIFICATION HISTORY WRITTEN] notificationId=${notificationId}`);
+
     // 1. Fetch user to check settings and push token
     const userDoc = await db.collection('users').doc(userId).get();
-    if (!userDoc.exists) return false;
+    const tRecipientResolved = Date.now();
+    if (!userDoc.exists) {
+      console.warn(`[STAGE 3: RECIPIENT RESOLVED] USER_NOT_FOUND userId=${userId} (${tRecipientResolved - startTime}ms)`);
+      return false;
+    }
 
     const userData = userDoc.data() || {};
     const prefs = userData.notificationPreferences || {
@@ -2984,8 +3001,8 @@ export async function triggerNotification(
       poolUpdates: true,
       marketingUpdates: false
     };
-    const expoPushToken = userData.expoPushToken;
     const mutedChats = userData.mutedChats || {};
+    console.log(`[STAGE 3: RECIPIENT RESOLVED] resolved userId=${userId} fullName="${userData.fullName || 'User'}" (${tRecipientResolved - startTime}ms)`);
 
     // Backend Deduplication check (last 5 minutes)
     const fiveMinutesAgoMs = Date.now() - 5 * 60 * 1000;
@@ -2997,6 +3014,7 @@ export async function triggerNotification(
       
       let isDuplicate = false;
       recentNotifsSnap.forEach(docSnap => {
+        if (docSnap.id === notificationId) return;
         const data = docSnap.data();
         const createdTime = data.createdAt 
           ? (data.createdAt.toDate ? data.createdAt.toDate().getTime() : (typeof data.createdAt === 'string' ? new Date(data.createdAt).getTime() : 0)) 
@@ -3039,16 +3057,186 @@ export async function triggerNotification(
       isAllowed = prefs.marketingUpdates === true;
     }
 
-    // 3. Write in-app notification subcollection
-    const dedupeBucket = Math.floor(Date.now() / (5 * 60 * 1000)).toString();
-    const notificationId = safeNotificationId(userId, type, rideId || bookingId || targetId || campaignId || 'general', dedupeBucket);
-    
-    const notifRef = db.collection('users').doc(userId).collection('notifications').doc(notificationId);
-    const existingNotif = await notifRef.get();
-    if (existingNotif.exists) {
-      console.log(`[DEDUPLICATION] Existing notification key ${notificationId}; suppressing duplicate.`);
-      return false;
+    // Resolve active token (prioritize valid Expo token)
+    let activeToken: string | null = null;
+    const rawExpo = userData.expoPushToken;
+    const rawFcm = userData.fcmToken;
+    if (rawExpo && (rawExpo.startsWith('ExponentPushToken') || rawExpo.startsWith('ExpoPushToken'))) {
+      activeToken = rawExpo;
+    } else if (rawFcm && (rawFcm.startsWith('ExponentPushToken') || rawFcm.startsWith('ExpoPushToken'))) {
+      activeToken = rawFcm;
+    } else {
+      activeToken = rawFcm || rawExpo || null;
     }
+
+    const isExpoToken = activeToken ? (activeToken.startsWith('ExponentPushToken') || activeToken.startsWith('ExpoPushToken')) : false;
+    const tTokenResolved = Date.now();
+    console.log(`[STAGE 4: EXPO TOKEN LOADED] isAllowed=${isAllowed}, token=${activeToken ? activeToken.substring(0, 22) + '...' : 'NONE'}, isExpoToken=${isExpoToken} (${tTokenResolved - startTime}ms)`);
+
+    let pushSent = false;
+    let failureReason: string | null = null;
+    let deliveryDetails: Record<string, any> = {
+      httpStatus: null,
+      ticketId: null,
+      latencyMs: 0,
+      sentAt: null,
+      failedAt: null,
+      responseBody: null
+    };
+
+    const tPushStart = Date.now();
+    if (isAllowed && activeToken && !isExpoToken) {
+      console.log(`[STAGE 5: EXPO REQUEST SENT] Sending FCM push to ${activeToken.substring(0, 15)}...`);
+      try {
+        let unreadCount = 1;
+        await withPushRetry('FCM send', () => admin.messaging().send({
+          token: activeToken!,
+          notification: { title, body: message },
+          data: {
+            type,
+            rideId: rideId || '',
+            bookingId: bookingId || '',
+            targetScreen: targetScreen || '',
+            targetId: targetId || '',
+            campaignId: campaignId || '',
+          },
+          android: {
+            priority: 'high',
+            notification: { sound: 'default', channelId: 'default', notificationCount: unreadCount },
+          },
+          apns: { payload: { aps: { sound: 'default', badge: unreadCount } } },
+        }));
+
+        const tPushEnd = Date.now();
+        pushSent = true;
+        deliveryDetails.httpStatus = 200;
+        deliveryDetails.latencyMs = tPushEnd - tPushStart;
+        deliveryDetails.sentAt = new Date().toISOString();
+        console.log(`[STAGE 6: HTTP STATUS] status=200`);
+        console.log(`[STAGE 7: EXPO RESPONSE BODY] FCM message accepted`);
+        console.log(`[STAGE 8: EXPO TICKET ID] fcm_direct`);
+      } catch (err: any) {
+        const tPushEnd = Date.now();
+        pushSent = false;
+        failureReason = err.message || err.code || 'FCM_SEND_FAILED';
+        deliveryDetails.httpStatus = err.code || 500;
+        deliveryDetails.latencyMs = tPushEnd - tPushStart;
+        deliveryDetails.failedAt = new Date().toISOString();
+        console.log(`[STAGE 6: HTTP STATUS] status=${deliveryDetails.httpStatus}`);
+        console.log(`[STAGE 7: EXPO RESPONSE BODY] ${failureReason}`);
+        console.log(`[STAGE 8: EXPO TICKET ID] NONE`);
+        if (err.code === 'messaging/registration-token-not-registered' || err.code === 'messaging/invalid-registration-token') {
+          await recordNotificationFailure(db, userId, failureReason!);
+        }
+      }
+    } else if (isAllowed && activeToken && isExpoToken) {
+      const requestPayload = {
+        to: activeToken,
+        sound: 'default',
+        title,
+        body: message,
+        badge: 1,
+        priority: 'high',
+        ttl: 2419200,
+        channelId: 'default',
+        data: {
+          type,
+          rideId: rideId || '',
+          bookingId: bookingId || '',
+          targetScreen: targetScreen || '',
+          targetId: targetId || '',
+          campaignId: campaignId || ''
+        }
+      };
+
+      console.log(`[STAGE 5: EXPO REQUEST SENT] payload=${JSON.stringify(requestPayload)}`);
+
+      try {
+        const fetchFn = (globalThis as any).fetch || require('node-fetch');
+        if (typeof fetchFn === 'function') {
+          const expoResponse = await withPushRetry<any>('Expo push send', async () => {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 7000);
+            try {
+              const res = await fetchFn('https://exp.host/--/api/v2/push/send', {
+                method: 'POST',
+                headers: {
+                  'Accept': 'application/json',
+                  'Accept-Encoding': 'gzip, deflate',
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(requestPayload),
+                signal: controller.signal
+              });
+              clearTimeout(timeoutId);
+              return res;
+            } catch (fetchErr: any) {
+              clearTimeout(timeoutId);
+              throw fetchErr;
+            }
+          });
+
+          const tPushEnd = Date.now();
+          const latencyMs = tPushEnd - tPushStart;
+          deliveryDetails.latencyMs = latencyMs;
+          deliveryDetails.httpStatus = expoResponse.status;
+
+          console.log(`[STAGE 6: HTTP STATUS] status=${expoResponse.status}`);
+
+          const expoResult = await expoResponse.json().catch(() => null);
+          deliveryDetails.responseBody = expoResult;
+          console.log(`[STAGE 7: EXPO RESPONSE BODY] body=${JSON.stringify(expoResult)}`);
+
+          if (expoResponse.ok) {
+            const ticket = Array.isArray(expoResult?.data) ? expoResult.data[0] : expoResult?.data;
+            deliveryDetails.ticketId = ticket?.id || null;
+            console.log(`[STAGE 8: EXPO TICKET ID] ticketId=${ticket?.id || 'NONE'}`);
+
+            if (ticket?.status === 'ok') {
+              pushSent = true;
+              deliveryDetails.sentAt = new Date().toISOString();
+            } else {
+              pushSent = false;
+              failureReason = ticket?.message || ticket?.details?.error || 'ExpoTicketError';
+              deliveryDetails.failedAt = new Date().toISOString();
+              if (ticket?.details?.error === 'DeviceNotRegistered' || ticket?.details?.error === 'InvalidCredentials' || ticket?.details?.error === 'InvalidPushToken') {
+                await recordNotificationFailure(db, userId, failureReason!);
+              }
+            }
+          } else {
+            pushSent = false;
+            failureReason = `HTTP_${expoResponse.status}`;
+            deliveryDetails.failedAt = new Date().toISOString();
+            console.log(`[STAGE 8: EXPO TICKET ID] NONE (HTTP ${expoResponse.status})`);
+          }
+        } else {
+          pushSent = false;
+          failureReason = 'FETCH_NOT_AVAILABLE';
+        }
+      } catch (err: any) {
+        const tPushEnd = Date.now();
+        pushSent = false;
+        failureReason = err.name === 'AbortError' ? 'EXPO_TIMEOUT_7S' : (err.message || 'EXPO_FETCH_FAILED');
+        deliveryDetails.latencyMs = tPushEnd - tPushStart;
+        deliveryDetails.failedAt = new Date().toISOString();
+        console.log(`[STAGE 6: HTTP STATUS] status=FETCH_ERROR`);
+        console.log(`[STAGE 7: EXPO RESPONSE BODY] error=${failureReason}`);
+        console.log(`[STAGE 8: EXPO TICKET ID] NONE`);
+      }
+    } else {
+      if (!isAllowed) {
+        failureReason = 'USER_PREFERENCE_MUTED';
+      } else if (!activeToken) {
+        failureReason = 'MISSING_PUSH_TOKEN';
+      }
+      deliveryDetails.failedAt = new Date().toISOString();
+      console.log(`[STAGE 5-8: SKIPPED] pushSent=false reason=${failureReason}`);
+    }
+
+    // Determine final status
+    const finalStatus = pushSent ? 'sent' : 'failed';
+    console.log(`[STAGE 9: FINAL FIRESTORE STATUS] status=${finalStatus}`);
+
     const notifPayload = {
       id: notificationId,
       notificationId,
@@ -3062,98 +3250,16 @@ export async function triggerNotification(
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       targetScreen: targetScreen || null,
       targetId: targetId || null,
-      campaignId: campaignId || null
+      campaignId: campaignId || null,
+      status: finalStatus,
+      failureReason: pushSent ? null : (failureReason || 'UNDELIVERED'),
+      deliveryDetails
     };
-    await notifRef.create(notifPayload);
-    console.log(`[NOTIFICATION DELIVERED]\nnotificationId: ${notifRef.id}\nuserId: ${userId}\ntype: ${type}`);
 
-    // 4. Send FCM push if allowed and token exists
-    let pushSent = false;
-    const fcmToken = userData.fcmToken || userData.expoPushToken;
-    const isExpoToken = fcmToken?.startsWith('ExponentPushToken') || fcmToken?.startsWith('ExpoPushToken');
-
-    if (isAllowed && fcmToken && !isExpoToken) {
-      try {
-        let unreadCount = 1;
-        await withPushRetry('FCM send', () => admin.messaging().send({
-          token: fcmToken,
-          notification: {
-            title,
-            body: message,
-          },
-          data: {
-            type,
-            rideId: rideId || '',
-            bookingId: bookingId || '',
-            targetScreen: targetScreen || '',
-            targetId: targetId || '',
-            campaignId: campaignId || '',
-          },
-          android: {
-            priority: 'high',
-            notification: {
-              sound: 'default',
-              channelId: 'default',
-              notificationCount: unreadCount,
-            },
-          },
-          apns: {
-            payload: {
-              aps: {
-                sound: 'default',
-                badge: unreadCount,
-              },
-            },
-          },
-        }));
-
-        pushSent = true;
-        console.log(`[FCM] Push sent successfully to user ${userId}`);
-      } catch (err: any) {
-        if (err.code === 'messaging/registration-token-not-registered' ||
-            err.code === 'messaging/invalid-registration-token') {
-          console.warn(`[FCM] Stale token for user ${userId}, recording failure status`);
-          await recordNotificationFailure(db, userId, err.message || err.code || 'invalid-registration-token');
-        } else {
-          console.error('[FCM] Push send error:', err.code, err.message);
-        }
-      }
-    } else if (isAllowed && fcmToken && isExpoToken) {
-      try {
-        const fetchFn = (globalThis as any).fetch;
-        if (typeof fetchFn === 'function') {
-          let unreadCount = 1;
-          const expoResponse = await withPushRetry<any>('Expo push send', () => fetchFn('https://exp.host/--/api/v2/push/send', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              to: fcmToken,
-              sound: 'default',
-              title,
-              body: message,
-              badge: unreadCount,
-              data: { type, rideId: rideId || '', bookingId: bookingId || '', targetScreen: targetScreen || '', targetId: targetId || '', campaignId: campaignId || '' }
-            })
-          }));
-          const expoResult = await expoResponse.json().catch(() => null);
-          if (expoResponse.ok) {
-            pushSent = true;
-            const ticket = Array.isArray(expoResult?.data) ? expoResult.data[0] : expoResult?.data;
-            if (ticket?.status === 'error') {
-              pushSent = false;
-              console.error('[EXPO PUSH] Ticket error:', ticket?.message, ticket?.details);
-              if (ticket?.details?.error === 'DeviceNotRegistered') {
-                await recordNotificationFailure(db, userId, 'DeviceNotRegistered');
-              }
-            }
-          } else {
-            console.error('[EXPO PUSH] HTTP error:', expoResponse.status, expoResult);
-          }
-        }
-      } catch (err: any) {
-        console.error('[PUSH ERROR] Failed to send Expo push:', err);
-      }
-    }
+    await notifRef.set(notifPayload, { merge: true });
+    const tFirestoreUpdated = Date.now();
+    console.log(`[STAGE 10: TOTAL LATENCY] totalTime=${tFirestoreUpdated - startTime}ms`);
+    console.log(`=========================================================\n`);
 
     // 5. Update Campaign Analytics if campaignId exists
     if (campaignId) {
@@ -3165,34 +3271,8 @@ export async function triggerNotification(
       }, { merge: true }).catch(e => console.error('[ANALYTICS] Campaign updates failed:', e));
     }
 
-    // 6. Notification Retry Queue: queue it on failure if this is not a retry attempt
-    if (!pushSent && !isRetry) {
-      try {
-        const queueRef = db.collection('notificationQueue').doc();
-        await queueRef.set({
-          id: queueRef.id,
-          userId,
-          type,
-          title,
-          message,
-          rideId: rideId || null,
-          bookingId: bookingId || null,
-          targetScreen: targetScreen || null,
-          targetId: targetId || null,
-          campaignId: campaignId || null,
-          status: 'pending',
-          attempts: 0,
-          createdAt: admin.firestore.Timestamp.now(),
-          nextRetry: admin.firestore.Timestamp.fromDate(new Date(Date.now() + 30 * 1000)), // 30s
-        });
-        console.log(`[QUEUE] Added failed notification to retry queue for user ${userId}`);
-      } catch (queueErr: any) {
-        console.error('[QUEUE] Failed to add notification to queue:', queueErr.message);
-      }
-    }
-
     return pushSent;
-  } catch (error) {
+  } catch (error: any) {
     console.error('[TRIGGER NOTIFICATION ERROR]', error);
     return false;
   }

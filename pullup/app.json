@@ -17,9 +17,13 @@
       "infoPlist": {
         "UIBackgroundModes": [
           "location",
+          "remote-notification",
+          "location",
           "remote-notification"
-        ]
-      }
+        ],
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bundleIdentifier": "com.soham5713.PullUp"
     },
     "android": {
       "adaptiveIcon": {
@@ -92,9 +96,8 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "6dfffcf9-d30c-49f7-b295-b1b765c2a139"
+        "projectId": "58d3a18c-0e66-4eff-81d3-a71eb775b788"
       }
-    },
-    "owner": "rhythm_029"
+    }
   }
 }

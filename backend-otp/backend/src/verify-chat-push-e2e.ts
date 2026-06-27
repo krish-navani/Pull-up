@@ -97,9 +97,9 @@ async function runTestCases(db: admin.firestore.Firestore) {
   console.log('✅ Staging mock user pre-populated');
 
   // =========================================================================
-  // TEST 1: Push Notification (Debug Endpoint check)
+  // TEST 1: Push Notification Diagnostics & Direct Synchronous Dispatch
   // =========================================================================
-  console.log('\n🧪 TEST 1: Push Notification Diagnostics (/debug-notification)');
+  console.log('\n🧪 TEST 1: Push Notification Diagnostics & Direct Synchronous Dispatch (/debug-notification & /send-notification)');
   const res1 = await postJson('/api/otp/debug-notification', { userId: testUserId });
   
   if (res1.statusCode !== 200) {
@@ -111,7 +111,41 @@ async function runTestCases(db: admin.firestore.Firestore) {
   if (results.FIRESTORE !== 'PASS' || results.TOKEN !== 'PASS' || results.FORMAT !== 'PASS') {
     throw new Error(`TEST 1 FAILED: Invalid diagnostics flags: ${JSON.stringify(results)}`);
   }
-  console.log('  ✅ VERIFIED: debug-notification endpoint returned correct audit results.');
+
+  console.log('  Testing direct synchronous dispatch via /send-notification...');
+  const resSend = await postJson('/api/otp/send-notification', {
+    userId: testUserId,
+    type: 'booking_request',
+    title: 'New Seat Request 🚗',
+    message: 'Audit user requested 1 seat on your ride.',
+    rideId: testRideId,
+    bookingId: `b_${suffix}`
+  });
+
+  if (resSend.statusCode !== 200 || !resSend.data.success) {
+    throw new Error(`TEST 1 FAILED: Direct send endpoint returned: ${JSON.stringify(resSend.data)}`);
+  }
+
+  // Verify notification history doc in Firestore has status 'sent' or 'failed' (never 'pending')
+  const notifsSnap = await db.collection('users').doc(testUserId).collection('notifications')
+    .orderBy('createdAt', 'desc')
+    .limit(1)
+    .get();
+
+  if (notifsSnap.empty) {
+    throw new Error('TEST 1 FAILED: In-app notification history was not created in Firestore');
+  }
+
+  const notifDoc = notifsSnap.docs[0];
+  const notifData = notifDoc.data();
+  docsToCleanup.push(`users/${testUserId}/notifications/${notifDoc.id}`);
+
+  console.log('  Notification document status:', notifData.status, 'failureReason:', notifData.failureReason);
+  if (notifData.status !== 'sent' && notifData.status !== 'failed') {
+    throw new Error(`TEST 1 FAILED: Notification document status is invalid or pending: ${notifData.status}`);
+  }
+
+  console.log('  ✅ VERIFIED: debug-notification and direct synchronous push dispatch returned valid results.');
 
   // =========================================================================
   // TEST 2: Realtime Message Delivery Simulation
