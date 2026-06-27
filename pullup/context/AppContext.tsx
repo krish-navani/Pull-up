@@ -770,6 +770,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     let isMounted = true;
     let unsubTokenRefresh: (() => void) | null = null;
+    let unsubForegroundMessage: (() => void) | null = null;
 
     const registerFCMToken = async () => {
       if (!state.auth.isSignedIn || !state.auth.user) return;
@@ -871,7 +872,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
         // Handle foreground FCM messages — show a real local OS notification
         // (FCM does NOT show the notification tray banner by itself when the app is open)
-        messaging().onMessage(async (remoteMessage: any) => {
+        unsubForegroundMessage = messaging().onMessage(async (remoteMessage: any) => {
           if (!isMounted) return;
           try {
             const { notification, data } = remoteMessage;
@@ -918,6 +919,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return () => {
       isMounted = false;
       if (unsubTokenRefresh) unsubTokenRefresh();
+      if (unsubForegroundMessage) unsubForegroundMessage();
     };
   }, [state.auth.isSignedIn, state.auth.user?.id]);
 
@@ -1227,16 +1229,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const logout = useCallback(async () => {
     dispatch({ type: 'SET_LOADING', payload: true });
     try {
+      if (state.auth.user?.id) {
+        try {
+          await updateDoc(doc(db, 'users', state.auth.user.id), {
+            fcmToken: null,
+            expoPushToken: null,
+            lastTokenRefresh: Timestamp.now(),
+          });
+        } catch (tokenErr) {
+          console.warn('[PUSH] Failed to clear push tokens on logout:', tokenErr);
+        }
+      }
+      await Notifications.setBadgeCountAsync(0).catch(() => {});
       await logoutUser();
       // FCM token is tied to device, not user — no need to clear it on logout
       dispatch({ type: 'LOGOUT' });
+      dispatch({ type: 'CLEAR_NOTIFICATIONS' });
       dispatch({ type: 'SET_ERROR', payload: null });
     } catch (error: any) {
       dispatch({ type: 'SET_ERROR', payload: error.message || 'Failed to logout' });
     } finally {
       dispatch({ type: 'SET_LOADING', payload: false });
     }
-  }, []);
+  }, [state.auth.user?.id]);
 
   const createRide = useCallback(
     async (rideData: Omit<Ride, 'id' | 'createdAt' | 'driverId' | 'driverName' | 'bookedSeats' | 'status'>) => {

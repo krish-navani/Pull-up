@@ -8,6 +8,7 @@ import {
     subscribeToNotifications,
 } from '@/utils/notificationService';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import * as Notifications from 'expo-notifications';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { WARM_CORE } from '@/constants/theme';
 import { useCallback, useState } from 'react';
@@ -128,6 +129,7 @@ export default function NotificationsScreen() {
         markAllNotificationsAsRead(auth.user.id).catch(err => 
           console.error('[NOTIFICATIONS] Failed to auto mark all as read:', err)
         );
+        Notifications.setBadgeCountAsync(0).catch(() => {});
 
         // Badge count is managed via FCM payload — no expo-notifications call needed
 
@@ -219,6 +221,10 @@ export default function NotificationsScreen() {
           } as any);
         } else if (targetScreen === 'profile') {
           router.push('/(tabs)/profile' as any);
+        } else if (targetScreen === 'wallet') {
+          router.push('/wallet' as any);
+        } else if (targetScreen === 'notifications') {
+          router.push('/notifications' as any);
         } else {
           if (notification.actionUrl) {
             router.push(notification.actionUrl as any);
@@ -249,12 +255,14 @@ export default function NotificationsScreen() {
 
       try {
         await deleteNotification(auth.user.id, notificationId);
+        const remainingUnread = notifications.filter(n => n.id !== notificationId && !n.read).length;
+        await Notifications.setBadgeCountAsync(remainingUnread).catch(() => {});
       } catch (error) {
         console.error('[NOTIFICATIONS] Error deleting notification:', error);
         Alert.alert('Error', 'Failed to delete notification');
       }
     },
-    [auth.user]
+    [auth.user, notifications]
   );
 
   const handleMarkAllAsRead = useCallback(async () => {
@@ -262,7 +270,7 @@ export default function NotificationsScreen() {
 
     try {
       await markAllNotificationsAsRead(auth.user.id);
-      // Badge count managed by FCM payload on backend
+      await Notifications.setBadgeCountAsync(0).catch(() => {});
       Alert.alert('Success', 'All notifications marked as read');
     } catch (error) {
       console.error('[NOTIFICATIONS] Error marking all as read:', error);
@@ -280,6 +288,8 @@ export default function NotificationsScreen() {
         onPress: async () => {
           try {
             await clearReadNotifications(auth.user!.id);
+            const unreadCount = notifications.filter(n => !n.read).length;
+            await Notifications.setBadgeCountAsync(unreadCount).catch(() => {});
             Alert.alert('Success', 'Read notifications cleared');
           } catch (error) {
             console.error('[NOTIFICATIONS] Error clearing read:', error);
@@ -289,7 +299,7 @@ export default function NotificationsScreen() {
         style: 'destructive',
       },
     ]);
-  }, [auth.user]);
+  }, [auth.user, notifications]);
 
   const getNotificationIcon = (
     type: Notification['type']

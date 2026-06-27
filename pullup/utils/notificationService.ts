@@ -13,6 +13,7 @@ import {
     Unsubscribe,
     updateDoc,
     where,
+    writeBatch,
 } from 'firebase/firestore';
 import { db } from './firebase';
 
@@ -42,6 +43,9 @@ export type NotificationType =
   | 'withdrawal_completed'
   | 'payment_failed'
   | 'cancellation'
+  | 'license_verified'
+  | 'license_rejected'
+  | 'license_resubmit'
   | 'general'
   | 'booking_expired'
   | 'driver_arrived'           // Driver is within 50m of passenger pickup
@@ -119,6 +123,9 @@ type: ${type}`);
     } else if (type === 'sos') {
       targetScreen = 'group-chat';
       targetId = rideId;
+    } else if (['license_verified', 'license_rejected', 'license_resubmit'].includes(type)) {
+      targetScreen = 'profile';
+      targetId = null;
     }
 
     // 2. Call backend REST endpoint
@@ -272,9 +279,13 @@ export const markAllNotificationsAsRead = async (userId: string): Promise<void> 
 
     const querySnapshot = await getDocs(q);
 
-    querySnapshot.forEach(async (doc) => {
-      await updateDoc(doc.ref, { read: true });
+    const batch = writeBatch(db);
+    querySnapshot.forEach((docSnap) => {
+      batch.update(docSnap.ref, { read: true });
     });
+    if (!querySnapshot.empty) {
+      await batch.commit();
+    }
 
     console.log(`[NOTIFICATIONS] ✅ Marked all notifications as read for ${userId}`);
   } catch (error) {
@@ -311,9 +322,13 @@ export const clearReadNotifications = async (userId: string): Promise<void> => {
 
     const querySnapshot = await getDocs(q);
 
-    querySnapshot.forEach(async (doc) => {
-      await deleteDoc(doc.ref);
+    const batch = writeBatch(db);
+    querySnapshot.forEach((docSnap) => {
+      batch.delete(docSnap.ref);
     });
+    if (!querySnapshot.empty) {
+      await batch.commit();
+    }
 
     console.log(`[NOTIFICATIONS] ✅ Cleared read notifications for ${userId}`);
   } catch (error) {

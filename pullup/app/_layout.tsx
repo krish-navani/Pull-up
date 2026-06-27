@@ -83,8 +83,6 @@ function RootLayoutContent() {
 
   // Handle FCM notification taps for deep-linking (background + cold-boot)
   useEffect(() => {
-    if (!messaging) return;
-
     const handleNotificationRouting = (data: any) => {
       try {
         const { targetScreen, targetId, rideId, rideType, type } = data;
@@ -127,54 +125,57 @@ function RootLayoutContent() {
           router.push('/wallet' as any);
         } else if (resolvedScreen === 'notifications') {
           router.push('/notifications' as any);
+        } else if (resolvedScreen === 'my-bookings' || resolvedScreen === 'bookings') {
+          router.push({ pathname: '/(tabs)/my-bookings', params: { bookingId: targetId || '' } } as any);
         }
       } catch (err) {
         console.error('[FCM DEEP LINK] Error in handleNotificationRouting:', err);
       }
     };
 
-    // Cold-boot: app opened by tapping a notification while killed
-    messaging().getInitialNotification().then((remoteMessage: any) => {
-      if (remoteMessage?.data) {
-        console.log('[FCM DEEP LINK] Cold-boot notification tapped:', remoteMessage.data);
-        handleNotificationRouting(remoteMessage.data);
-      }
-    }).catch((err: any) => {
-      console.error('[FCM DEEP LINK] getInitialNotification error:', err);
-    });
+    let unsubBackground: (() => void) | null = null;
+    if (messaging) {
+      // Cold-boot: app opened by tapping a notification while killed
+      messaging().getInitialNotification().then((remoteMessage: any) => {
+        if (remoteMessage?.data) {
+          console.log('[FCM DEEP LINK] Cold-boot notification tapped:', remoteMessage.data);
+          handleNotificationRouting(remoteMessage.data);
+        }
+      }).catch((err: any) => {
+        console.error('[FCM DEEP LINK] getInitialNotification error:', err);
+      });
 
-    // Background: app was in background and brought to foreground by tap
-    const unsubBackground = messaging().onNotificationOpenedApp((remoteMessage: any) => {
-      if (remoteMessage?.data) {
-        console.log('[FCM DEEP LINK] Background notification tapped:', remoteMessage.data);
-        handleNotificationRouting(remoteMessage.data);
+      // Background: app was in background and brought to foreground by tap
+      unsubBackground = messaging().onNotificationOpenedApp((remoteMessage: any) => {
+        if (remoteMessage?.data) {
+          console.log('[FCM DEEP LINK] Background notification tapped:', remoteMessage.data);
+          handleNotificationRouting(remoteMessage.data);
+        }
+      });
+    }
+
+    Notifications.getLastNotificationResponseAsync()
+      .then((response) => {
+        const data = response?.notification?.request?.content?.data;
+        if (data) {
+          console.log('[EXPO DEEP LINK] Cold/background notification tapped:', data);
+          handleNotificationRouting(data);
+        }
+      })
+      .catch((err) => console.error('[EXPO DEEP LINK] getLastNotificationResponseAsync error:', err));
+
+    const expoResponseSub = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data;
+      if (data) {
+        console.log('[EXPO DEEP LINK] Notification response received:', data);
+        handleNotificationRouting(data);
       }
     });
 
     return () => {
       if (unsubBackground) unsubBackground();
+      expoResponseSub.remove();
     };
-  }, [router]);
-
-  // Handle taps on local expo-notifications (foreground notifications we schedule ourselves)
-  useEffect(() => {
-    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
-      try {
-        const data = response.notification.request.content.data as any;
-        if (!data) return;
-        const { type, rideId, targetScreen, targetId } = data;
-        const resolvedRideId = rideId || targetId;
-        console.log('[LOCAL NOTIF TAP] type:', type, 'rideId:', resolvedRideId);
-        if (['driver_arrived', 'passenger_confirmed_pickup', 'ride_started'].includes(type) && resolvedRideId) {
-          router.push({ pathname: '/navigation', params: { rideId: resolvedRideId } } as any);
-        } else if (resolvedRideId) {
-          router.push({ pathname: '/ride-details', params: { rideId: resolvedRideId } } as any);
-        }
-      } catch (err) {
-        console.error('[LOCAL NOTIF TAP] Error:', err);
-      }
-    });
-    return () => sub.remove();
   }, [router]);
 
   // Request location permission on app launch

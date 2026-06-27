@@ -2909,6 +2909,30 @@ router.post('/approve-withdrawal', async (req: Request, res: Response) => {
   }
 });
 
+function safeNotificationId(...parts: Array<string | null | undefined>): string {
+  return parts
+    .filter(Boolean)
+    .join('_')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 450);
+}
+
+async function withPushRetry<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastError: any;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error;
+      console.warn(`[PUSH RETRY] ${label} attempt ${attempt}/${attempts} failed:`, error?.message || error);
+      if (attempt < attempts) {
+        await new Promise(resolve => setTimeout(resolve, 250 * attempt));
+      }
+    }
+  }
+  throw lastError;
+}
+
 // Helper function to send unified notification and push alert
 export async function triggerNotification(
   userId: string,
@@ -2985,17 +3009,24 @@ export async function triggerNotification(
       isAllowed = prefs.poolUpdates !== false;
     } else if (['withdrawal_requested', 'withdrawal_approved', 'withdrawal_rejected', 'withdrawal_completed'].includes(type)) {
       isAllowed = prefs.paymentUpdates !== false;
+    } else if (['license_verified', 'license_rejected', 'license_resubmit'].includes(type)) {
+      isAllowed = prefs.rideUpdates !== false;
     } else if (['marketing', 'campaign'].includes(type)) {
       isAllowed = prefs.marketingUpdates === true;
     }
 
     // 3. Write in-app notification subcollection
-    const timestampSecs = Math.floor(Date.now() / 1000);
-    const notificationId = `${rideId || 'general'}_${userId}_${type}_${timestampSecs}`;
+    const dedupeBucket = Math.floor(Date.now() / (5 * 60 * 1000)).toString();
+    const notificationId = safeNotificationId(userId, type, rideId || bookingId || targetId || campaignId || 'general', dedupeBucket);
     
-    const notifRef = db.collection('users').doc(userId).collection('notifications').doc();
+    const notifRef = db.collection('users').doc(userId).collection('notifications').doc(notificationId);
+    const existingNotif = await notifRef.get();
+    if (existingNotif.exists) {
+      console.log(`[DEDUPLICATION] Existing notification key ${notificationId}; suppressing duplicate.`);
+      return false;
+    }
     const notifPayload = {
-      id: notifRef.id,
+      id: notificationId,
       notificationId,
       userId,
       type,
@@ -3009,7 +3040,7 @@ export async function triggerNotification(
       targetId: targetId || null,
       campaignId: campaignId || null
     };
-    await notifRef.set(notifPayload);
+    await notifRef.create(notifPayload);
     console.log(`[NOTIFICATION DELIVERED]\nnotificationId: ${notifRef.id}\nuserId: ${userId}\ntype: ${type}`);
 
     // 4. Send FCM push if allowed and token exists
@@ -3021,7 +3052,7 @@ export async function triggerNotification(
       try {
         // Calculate unread count for badge
         let unreadCount = 1;
-        try {
+        if (false) try {
           const unreadSnap = await db.collection('users').doc(userId).collection('notifications')
             .where('read', '==', false)
             .get();
@@ -3030,7 +3061,7 @@ export async function triggerNotification(
           console.warn('[BADGE] Failed to fetch unread count, defaulting to 1:', e);
         }
 
-        await admin.messaging().send({
+        await withPushRetry('FCM send', () => admin.messaging().send({
           token: fcmToken,
           notification: {
             title,
@@ -3061,7 +3092,7 @@ export async function triggerNotification(
               },
             },
           },
-        });
+        }));
 
         pushSent = true;
         console.log(`[FCM] Push sent successfully to user ${userId}`);
@@ -3089,7 +3120,7 @@ export async function triggerNotification(
             unreadCount = unreadSnap.size;
           } catch (_) {}
 
-          const expoResponse = await fetchFn('https://exp.host/--/api/v2/push/send', {
+          const expoResponse = await withPushRetry<any>('Expo push send', () => fetchFn('https://exp.host/--/api/v2/push/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -3100,8 +3131,21 @@ export async function triggerNotification(
               badge: unreadCount,
               data: { type, rideId: rideId || '', bookingId: bookingId || '', targetScreen: targetScreen || '', targetId: targetId || '', campaignId: campaignId || '' }
             })
-          });
-          if (expoResponse.ok) pushSent = true;
+          }));
+          const expoResult = await expoResponse.json().catch(() => null);
+          if (expoResponse.ok) {
+            pushSent = true;
+            const ticket = Array.isArray(expoResult?.data) ? expoResult.data[0] : expoResult?.data;
+            if (ticket?.status === 'error') {
+              pushSent = false;
+              console.error('[EXPO PUSH] Ticket error:', ticket?.message, ticket?.details);
+              if (ticket?.details?.error === 'DeviceNotRegistered') {
+                await db.collection('users').doc(userId).update({ expoPushToken: null }).catch(() => {});
+              }
+            }
+          } else {
+            console.error('[EXPO PUSH] HTTP error:', expoResponse.status, expoResult);
+          }
         }
       } catch (err) {
         console.error('[PUSH ERROR] Failed to send legacy Expo push:', err);
@@ -3927,7 +3971,7 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
     } catch (error: any) {
       if (error.message && (error.message.includes('FAILED_PRECONDITION') || error.message.includes('index'))) {
         console.warn('[SWEEP] Missing collectionGroup index for notifications/createdAt. Falling back to per-user notification purge.');
-        try {
+        if (false) try {
           const usersSnap = await db.collection('users').get();
           console.log(`[SWEEP-FALLBACK] Processing ${usersSnap.size} users for notification purge...`);
 
@@ -4069,7 +4113,7 @@ router.post('/admin-action', async (req: Request, res: Response) => {
         try {
           const userSnap = await db.collection('users').doc(targetId).get();
           const userData = userSnap.data();
-          if (userData?.expoPushToken) {
+          if (false && userData?.expoPushToken) {
             const notifRef = db.collection('users').doc(targetId).collection('notifications').doc();
             await notifRef.set({
               id: notifRef.id, type: 'license_verified', title: '🎉 License Approved!',
@@ -4078,6 +4122,16 @@ router.post('/admin-action', async (req: Request, res: Response) => {
             });
           }
         } catch (e) { /* non-fatal */ }
+        await triggerNotification(
+          targetId,
+          'license_verified',
+          'License Approved!',
+          'Your driving license has been verified. You can now post rides!',
+          null,
+          null,
+          'profile',
+          null
+        ).catch(e => console.error('[ADMIN ACTION] License approval notification failed:', e));
         await writeAuditLog(db, 'APPROVE_LICENSE', `Approved license for user ${targetId}`);
         return res.json({ success: true, message: 'License approved' });
       }
@@ -4092,12 +4146,22 @@ router.post('/admin-action', async (req: Request, res: Response) => {
         // Notify user
         try {
           const notifRef = db.collection('users').doc(targetId).collection('notifications').doc();
-          await notifRef.set({
+          if (false) await notifRef.set({
             id: notifRef.id, type: 'license_rejected', title: '⚠️ License Rejected',
             message: reason || 'Your license was rejected. Please re-upload a clear image.',
             read: false, createdAt: new Date().toISOString(),
           });
         } catch (e) { /* non-fatal */ }
+        await triggerNotification(
+          targetId,
+          'license_rejected',
+          'License Rejected',
+          reason || 'Your license was rejected. Please re-upload a clear image.',
+          null,
+          null,
+          'profile',
+          null
+        ).catch(e => console.error('[ADMIN ACTION] License rejection notification failed:', e));
         await writeAuditLog(db, 'REJECT_LICENSE', `Rejected license for user ${targetId}`, reason);
         return res.json({ success: true, message: 'License rejected' });
       }
@@ -4111,12 +4175,22 @@ router.post('/admin-action', async (req: Request, res: Response) => {
         });
         try {
           const notifRef = db.collection('users').doc(targetId).collection('notifications').doc();
-          await notifRef.set({
+          if (false) await notifRef.set({
             id: notifRef.id, type: 'license_resubmit', title: '📋 License Resubmission Required',
             message: reason || 'Please re-upload your driving license with a clear, well-lit photo.',
             read: false, createdAt: new Date().toISOString(),
           });
         } catch (e) { /* non-fatal */ }
+        await triggerNotification(
+          targetId,
+          'license_resubmit',
+          'License Resubmission Required',
+          reason || 'Please re-upload your driving license with a clear, well-lit photo.',
+          null,
+          null,
+          'profile',
+          null
+        ).catch(e => console.error('[ADMIN ACTION] License resubmission notification failed:', e));
         await writeAuditLog(db, 'REQUEST_RESUBMISSION', `Requested resubmission from user ${targetId}`, reason);
         return res.json({ success: true, message: 'Resubmission requested' });
       }
