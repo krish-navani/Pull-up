@@ -10,7 +10,12 @@ interface UserAvatarProps {
 }
 
 export default function UserAvatar({ imageUrl, name, size = 44, style }: UserAvatarProps) {
+  const [hasError, setHasError] = React.useState(false);
   const initial = name && name.trim() ? name.trim()[0].toUpperCase() : '?';
+
+  React.useEffect(() => {
+    setHasError(false);
+  }, [imageUrl]);
 
   const containerStyle = {
     width: size,
@@ -23,16 +28,22 @@ export default function UserAvatar({ imageUrl, name, size = 44, style }: UserAva
     fontWeight: '700' as const,
   };
 
-  if (imageUrl) {
+  const cleanUrl = imageUrl && typeof imageUrl === 'string' && imageUrl.trim().length > 0 ? imageUrl.trim() : null;
+
+  if (cleanUrl && !hasError) {
     return (
       <Image
-        source={{ uri: imageUrl }}
+        source={{ uri: cleanUrl }}
         style={[
           styles.avatarImage,
           containerStyle,
           style,
         ]}
         resizeMode="cover"
+        onError={() => {
+          console.warn('[AVATAR] Failed to load image:', cleanUrl);
+          setHasError(true);
+        }}
       />
     );
   }

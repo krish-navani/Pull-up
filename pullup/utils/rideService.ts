@@ -551,9 +551,65 @@ export const deleteExpiredRides = async (): Promise<number> => {
 };
 
 /**
- * Start a scheduled interval to automatically delete expired rides
- * Runs every 5 minutes to check for rides older than 6 hours
- * Call this once in your app initialization (e.g., in AppContext or main app file)
+ * Auto-delete ongoing rides that have been in_progress for more than 5 hours.
+ * Sends a push notification to the driver informing them that the ride was stopped.
+ */
+export const cleanupStaleInProgressRides = async (): Promise<number> => {
+  try {
+    console.log('[RIDE SERVICE] Checking for stale in-progress rides (>5 hrs)...');
+    const now = new Date();
+    const fiveHoursAgo = new Date(now.getTime() - 5 * 60 * 60 * 1000); // 5 hours
+
+    const q = query(
+      collection(db, 'rides'),
+      where('status', '==', 'in_progress')
+    );
+
+    const querySnapshot = await getDocs(q);
+    let count = 0;
+
+    for (const docSnap of querySnapshot.docs) {
+      try {
+        const data = docSnap.data();
+        const startTimeStr = data.startedAt || data.departureTime;
+        if (!startTimeStr) continue;
+
+        const startTime = new Date(startTimeStr);
+        if (startTime.getTime() < fiveHoursAgo.getTime()) {
+          const rideId = docSnap.id;
+          const driverId = data.driverId;
+
+          // Send notification to driver
+          if (driverId) {
+            await sendNotification(
+              driverId,
+              'ride_cancelled',
+              'Ride Auto-Stopped ⚠️',
+              'Your ride was automatically stopped as it exceeded 5 hours without reaching the destination.',
+              rideId
+            ).catch(err => console.warn('[RIDE SERVICE] Failed to notify driver of auto-stopped ride:', err));
+          }
+
+          // Delete stale ride document
+          await deleteDoc(docSnap.ref);
+          count++;
+          console.log('[RIDE SERVICE] 🛑 Auto-deleted stale in-progress ride (>5h):', rideId);
+        }
+      } catch (err) {
+        console.error('[RIDE SERVICE] Error cleaning up stale ride:', docSnap.id, err);
+      }
+    }
+
+    return count;
+  } catch (error: any) {
+    console.error('[RIDE SERVICE] ❌ Failed to cleanup stale in-progress rides:', error);
+    return 0;
+  }
+};
+
+/**
+ * Start a scheduled interval to automatically delete expired & stale rides
+ * Runs every 5 minutes
  */
 let rideCleanupInterval: any = null;
 
@@ -565,13 +621,16 @@ export const startRideCleanupScheduler = (): void => {
   
   console.log('[RIDE SERVICE] Starting ride cleanup scheduler...');
   
+  const runCleanups = () => {
+    deleteExpiredRides().catch(err => console.error('[RIDE SERVICE] Expired cleanup failed:', err));
+    cleanupStaleInProgressRides().catch(err => console.error('[RIDE SERVICE] Stale cleanup failed:', err));
+  };
+
   // Run immediately on start
-  deleteExpiredRides().catch(err => console.error('[RIDE SERVICE] Initial cleanup failed:', err));
+  runCleanups();
   
   // Then run every 5 minutes (300,000 ms)
-  rideCleanupInterval = setInterval(() => {
-    deleteExpiredRides().catch(err => console.error('[RIDE SERVICE] Scheduled cleanup failed:', err));
-  }, 5 * 60 * 1000);
+  rideCleanupInterval = setInterval(runCleanups, 5 * 60 * 1000);
 };
 
 /**

@@ -43,7 +43,9 @@ export type NotificationType =
   | 'payment_failed'
   | 'cancellation'
   | 'general'
-  | 'booking_expired';
+  | 'booking_expired'
+  | 'driver_arrived'           // Driver is within 50m of passenger pickup
+  | 'passenger_confirmed_pickup'; // Passenger confirmed they boarded
 
 export interface Notification {
   id: string;

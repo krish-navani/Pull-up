@@ -15,6 +15,9 @@ import {
   Image,
   Dimensions,
   Linking,
+  Animated,
+  Easing,
+  ScrollView,
 } from 'react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
@@ -22,7 +25,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { doc, onSnapshot, updateDoc, Timestamp, collection, query, where } from 'firebase/firestore';
+import { doc, onSnapshot, updateDoc, Timestamp, collection, query, where, getDoc } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
 import { useAppContext } from '@/context/AppContext';
 import { WARM_CORE } from '@/constants/theme';
@@ -42,10 +45,12 @@ import {
   BG_LOCATION_CONFIG,
 } from '@/utils/backgroundLocationTask';
 
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+
 // Signal strength thresholds (milliseconds)
-const SIGNAL_LIVE_MS   = 30_000;  // < 30s  → 🟢 LIVE
-const SIGNAL_WEAK_MS   = 90_000;  // 30–90s → 🟡 WEAK
-// > 90s → 🔴 OFFLINE
+const SIGNAL_LIVE_MS   = 30_000;  // < 30s  → LIVE
+const SIGNAL_WEAK_MS   = 90_000;  // 30–90s → WEAK
+// > 90s → OFFLINE
 
 type SignalStatus = 'live' | 'weak' | 'offline' | 'idle';
 
@@ -56,23 +61,36 @@ export default function NavigationScreen() {
   const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView>(null);
 
-  // States
+  // Core states
   const [ride, setRide] = useState<any>(null);
   const [acceptedBookings, setAcceptedBookings] = useState<any[]>([]);
   const [driverLocation, setDriverLocation] = useState<{ latitude: number; longitude: number; heading?: number; speed?: number } | null>(null);
   const [routeCoordinates, setRouteCoordinates] = useState<any[]>([]);
   const [routeDistance, setRouteDistance] = useState<string>('Calculating...');
   const [routeDuration, setRouteDuration] = useState<string>('Calculating...');
+  const [distanceToDestKm, setDistanceToDestKm] = useState<number>(999);
   const [loading, setLoading] = useState(true);
   const [refreshingRoute, setRefreshingRoute] = useState(false);
   const [autoFollow, setAutoFollow] = useState(true);
   const [isMuted, setIsMuted] = useState(false);
+  const [currentSpeed, setCurrentSpeed] = useState<number>(0);
 
   // Modals & Menu
   const [menuVisible, setMenuVisible] = useState(false);
   const [sosVisible, setSosVisible] = useState(false);
   const [chatVisible, setChatVisible] = useState(false);
   const [bgPermModalVisible, setBgPermModalVisible] = useState(false);
+  const [showPassengerList, setShowPassengerList] = useState(false);
+
+  // Passenger "Driver Arrived" confirmation modal
+  const [driverArrivedModalVisible, setDriverArrivedModalVisible] = useState(false);
+  const [arrivedBookingId, setArrivedBookingId] = useState<string | null>(null);
+  const [confirmingPickup, setConfirmingPickup] = useState(false);
+
+  // Panel expansion
+  const [panelExpanded, setPanelExpanded] = useState(false);
+  const panelAnim = useRef(new Animated.Value(0)).current;
+  const finishRideAnim = useRef(new Animated.Value(1)).current;
 
   // Signal strength tracking
   const [signalStatus, setSignalStatus] = useState<SignalStatus>('idle');
@@ -84,29 +102,49 @@ export default function NavigationScreen() {
   // Track whether background task is currently registered
   const bgTrackingActiveRef = useRef(false);
 
+  // Driver profile image
+  const [driverProfileImage, setDriverProfileImage] = useState<string | null>(null);
+
   // Group Chat state
   const [messages, setMessages] = useState<GroupChatMessage[]>([]);
   const [chatText, setChatText] = useState('');
   const [sendingMessage, setSendingMessage] = useState(false);
   const chatListRef = useRef<FlatList>(null);
 
+  // Pulse animation for finish ride button when within range
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
   const isDriver = useMemo(() => {
     if (!ride || !auth.user) return false;
     return ride.driverId === auth.user.id;
   }, [ride, auth.user]);
 
+  const isWithin2km = useMemo(() => distanceToDestKm <= 2.0, [distanceToDestKm]);
+
+  // Start pulsing finish ride button when within 2km
+  useEffect(() => {
+    if (isWithin2km && isDriver) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, { toValue: 1.06, duration: 700, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+          Animated.timing(pulseAnim, { toValue: 1, duration: 700, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+        ])
+      ).start();
+    } else {
+      pulseAnim.stopAnimation();
+      pulseAnim.setValue(1);
+    }
+  }, [isWithin2km, isDriver]);
+
   const currentStageIndex = useMemo(() => {
     if (!ride) return 0;
     if (ride.status === 'completed') return 4;
     if (ride.status === 'in_progress') return 3;
-    
     const hasPaidBookings = acceptedBookings.length > 0 && acceptedBookings.some(b => b.paymentStatus === 'paid');
     if (hasPaidBookings) return 2;
-    
     const hasAcceptedBookings = acceptedBookings.length > 0 || (ride.bookedSeats && ride.bookedSeats.some((s: any) => s.status === 'accepted' || s.status === 'confirmed'));
     if (hasAcceptedBookings) return 1;
-    
-    return 0; // Created
+    return 0;
   }, [ride, acceptedBookings]);
 
   const stages = [
@@ -114,8 +152,22 @@ export default function NavigationScreen() {
     { label: 'Accepted', icon: 'account-check' },
     { label: 'Paid', icon: 'cash-check' },
     { label: 'Transit', icon: 'swap-horizontal' },
-    { label: 'Completed', icon: 'checkbox-marked-circle' }
+    { label: 'Done', icon: 'checkbox-marked-circle' }
   ];
+
+  // Fetch driver profile image
+  useEffect(() => {
+    if (!ride?.driverId) return;
+    const fetchDriverProfile = async () => {
+      try {
+        const userSnap = await getDoc(doc(db, 'users', ride.driverId));
+        if (userSnap.exists()) {
+          setDriverProfileImage(userSnap.data()?.profileImage || null);
+        }
+      } catch {}
+    };
+    fetchDriverProfile();
+  }, [ride?.driverId]);
 
   // Update presence status to navigating
   useEffect(() => {
@@ -176,7 +228,7 @@ export default function NavigationScreen() {
     return () => unsub();
   }, [rideId, auth.user]);
 
-  // 2. Subscribe to accepted bookings
+  // 2. Subscribe to accepted bookings (with notifiedArrived field)
   useEffect(() => {
     if (!rideId || !ride || !auth.user) return;
 
@@ -188,8 +240,17 @@ export default function NavigationScreen() {
       where('status', 'in', ['accepted', 'confirmed'])
     );
     const unsub = onSnapshot(q, (snap) => {
-      const list = snap.docs.map(doc => doc.data());
+      const list = snap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setAcceptedBookings(list);
+
+      // Check if driver arrived notification was sent to this passenger
+      if (!isDriverUser) {
+        const myBooking = list.find((b: any) => b.passengerId === auth.user!.id);
+        if (myBooking && (myBooking as any).notifiedArrived && !(myBooking as any).pickedUp && !driverArrivedModalVisible) {
+          setArrivedBookingId(myBooking.id);
+          setDriverArrivedModalVisible(true);
+        }
+      }
     }, (error) => {
       console.error('[NAVIGATION] Bookings subscription error:', error);
     });
@@ -208,27 +269,20 @@ export default function NavigationScreen() {
     return wps;
   }, [acceptedBookings]);
 
-  // ─── Stop background tracking helper (used in multiple places) ────────────
+  // ─── Stop background tracking helper ────────────────────────────────────────
   const stopBackgroundTracking = useCallback(async () => {
     try {
-      // Remove foreground subscription
       if (fgSubRef.current) {
         fgSubRef.current.remove();
         fgSubRef.current = null;
       }
-
-      // Stop background task if it's registered
       const isRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
       if (isRegistered) {
         await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
         console.log('[NAVIGATION] ✅ Background location task stopped');
       }
       bgTrackingActiveRef.current = false;
-
-      // Clear stored rideId so the task doesn't fire on a stale ride
       await AsyncStorage.removeItem(BG_TASK_RIDE_ID_KEY);
-
-      // Clear signal interval
       if (signalIntervalRef.current) {
         clearInterval(signalIntervalRef.current);
         signalIntervalRef.current = null;
@@ -239,63 +293,44 @@ export default function NavigationScreen() {
     }
   }, []);
 
-  // ─── 3. Driver Location Watcher — Foreground + Background ─────────────────
+  // ─── 3. Driver Location Watcher — Foreground + Background ───────────────────
   useEffect(() => {
     if (!ride || !isDriver) return;
-
-    // Only start tracking on active/in_progress rides
     if (ride.status !== 'in_progress' && ride.status !== 'active') return;
-
-    // Prevent double-registration when ride document re-triggers this effect
     if (bgTrackingActiveRef.current) return;
 
     const startTracking = async () => {
-      // ── Step 1: Foreground permission ──────────────────────────────────────
       const { status: fgStatus } = await Location.requestForegroundPermissionsAsync();
       if (fgStatus !== 'granted') {
-        Alert.alert(
-          'Location Required',
-          'PullUp needs "While Using the App" location access for navigation. Please enable it in Settings.',
-          [
-            { text: 'Open Settings', onPress: () => Linking.openSettings() },
-            { text: 'Cancel', style: 'cancel' },
-          ]
-        );
+        Alert.alert('Location Required', 'PullUp needs location access for navigation.', [
+          { text: 'Open Settings', onPress: () => Linking.openSettings() },
+          { text: 'Cancel', style: 'cancel' },
+        ]);
         return;
       }
 
-      // ── Step 2: Background permission ─────────────────────────────────────
       const { status: bgStatus } = await Location.requestBackgroundPermissionsAsync();
       if (bgStatus !== 'granted') {
-        // Show explanation modal — don't block navigation, just warn
         setBgPermModalVisible(true);
-        console.warn('[NAVIGATION] Background location permission denied — tracking will pause when app is backgrounded');
-        // Fall through: still start foreground-only tracking
       }
 
-      // ── Step 3: Persist rideId for background task ─────────────────────────
       await AsyncStorage.setItem(BG_TASK_RIDE_ID_KEY, ride.id);
 
-      // ── Step 4: Determine initial accuracy based on speed ─────────────────
       const getAccuracyForSpeed = (speedMps: number | null): Location.LocationAccuracy => {
         const kmh = (speedMps ?? 0) * 3.6;
         return kmh >= 10 ? Location.Accuracy.High : Location.Accuracy.Balanced;
       };
 
-      // ── Step 5: Start background OS-level location updates ─────────────────
       if (bgStatus === 'granted') {
         try {
-          // Stop any stale registration first
           const alreadyRegistered = await TaskManager.isTaskRegisteredAsync(BACKGROUND_LOCATION_TASK);
           if (alreadyRegistered) {
             await Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK);
           }
-
           await Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
             accuracy: Location.Accuracy.High,
             ...BG_LOCATION_CONFIG,
           });
-
           bgTrackingActiveRef.current = true;
           console.log('[NAVIGATION] ✅ Background location task started for ride:', ride.id);
         } catch (bgErr) {
@@ -303,8 +338,6 @@ export default function NavigationScreen() {
         }
       }
 
-      // ── Step 6: Foreground subscription for smooth map UI ─────────────────
-      // Runs in parallel with background task. Updates the map marker in real time.
       let lastWriteTime = 0;
       let lastAccuracy = Location.Accuracy.High;
 
@@ -312,22 +345,25 @@ export default function NavigationScreen() {
         fgSubRef.current = await Location.watchPositionAsync(
           {
             accuracy: Location.Accuracy.High,
-            timeInterval: 4000,   // 4s — smooth UI without hammering GPS
-            distanceInterval: 10, // or every 10m
+            timeInterval: 3000,
+            distanceInterval: 8,
           },
           async (loc) => {
             const { latitude, longitude, heading, speed } = loc.coords;
             const now = Date.now();
 
-            // Update map marker immediately
             setDriverLocation({ latitude, longitude, heading: heading ?? 0, speed: speed ?? 0 });
+            setCurrentSpeed(Math.round((speed ?? 0) * 3.6)); // convert m/s to km/h
 
-            // Battery-aware accuracy: switch accuracy tier based on speed
+            // Update distance to destination
+            if (ride?.dropLocation) {
+              const distKm = calculateDistance(latitude, longitude, ride.dropLocation.latitude, ride.dropLocation.longitude);
+              setDistanceToDestKm(distKm);
+            }
+
             const desiredAccuracy = getAccuracyForSpeed(speed);
             if (desiredAccuracy !== lastAccuracy && bgTrackingActiveRef.current) {
               lastAccuracy = desiredAccuracy;
-              console.log('[NAVIGATION] Switching accuracy to:', desiredAccuracy === Location.Accuracy.High ? 'High' : 'Balanced');
-              // Restart background task with new accuracy (fire-and-forget)
               Location.stopLocationUpdatesAsync(BACKGROUND_LOCATION_TASK)
                 .then(() => Location.startLocationUpdatesAsync(BACKGROUND_LOCATION_TASK, {
                   accuracy: desiredAccuracy,
@@ -336,7 +372,6 @@ export default function NavigationScreen() {
                 .catch(e => console.warn('[NAVIGATION] Accuracy switch failed:', e));
             }
 
-            // Foreground Firestore write throttled to match bg task interval
             if (now - lastWriteTime >= 10000) {
               lastWriteTime = now;
               const nowIso = new Date().toISOString();
@@ -344,25 +379,16 @@ export default function NavigationScreen() {
                 const rideRef = doc(db, 'rides', ride.id);
                 await updateDoc(rideRef, {
                   currentLocation: { latitude, longitude, updatedAt: nowIso },
-                  liveLocation: {
-                    latitude, longitude,
-                    heading: heading ?? 0,
-                    speed: speed ?? 0,
-                    updatedAt: nowIso,
-                  },
+                  liveLocation: { latitude, longitude, heading: heading ?? 0, speed: speed ?? 0, updatedAt: nowIso },
                 });
-                // Cache timestamp for signal indicator
                 await AsyncStorage.setItem(BG_TASK_LAST_UPDATE_KEY, nowIso);
               } catch (fsErr) {
                 console.warn('[NAVIGATION] Foreground Firestore write failed:', fsErr);
               }
 
-              // Geofence check on each throttled write
               try {
                 const compResult = await GeofenceEngine.checkAndTriggerCompletion(
-                  ride.id,
-                  { latitude, longitude },
-                  'carpool'
+                  ride.id, { latitude, longitude }, 'carpool'
                 );
                 if (compResult.shouldComplete) {
                   await stopBackgroundTracking();
@@ -381,89 +407,58 @@ export default function NavigationScreen() {
         console.warn('[NAVIGATION] Foreground watcher error:', fgErr);
       }
 
-      // ── Step 7: Signal strength polling interval (for HUD badge) ───────────
       signalIntervalRef.current = setInterval(async () => {
         try {
           const lastUpdateStr = await AsyncStorage.getItem(BG_TASK_LAST_UPDATE_KEY);
-          if (!lastUpdateStr) {
-            setSignalStatus('offline');
-            return;
-          }
+          if (!lastUpdateStr) { setSignalStatus('offline'); return; }
           const ageMs = Date.now() - new Date(lastUpdateStr).getTime();
           if (ageMs < SIGNAL_LIVE_MS)       setSignalStatus('live');
           else if (ageMs < SIGNAL_WEAK_MS)  setSignalStatus('weak');
           else                              setSignalStatus('offline');
-        } catch {
-          setSignalStatus('offline');
-        }
+        } catch { setSignalStatus('offline'); }
       }, 5000);
     };
 
     startTracking();
 
     return () => {
-      // Cleanup when navigating away — stop foreground sub but keep BG task alive
-      // BG task stops automatically via the ride status onSnapshot listener below
-      if (fgSubRef.current) {
-        fgSubRef.current.remove();
-        fgSubRef.current = null;
-      }
-      if (signalIntervalRef.current) {
-        clearInterval(signalIntervalRef.current);
-        signalIntervalRef.current = null;
-      }
+      if (fgSubRef.current) { fgSubRef.current.remove(); fgSubRef.current = null; }
+      if (signalIntervalRef.current) { clearInterval(signalIntervalRef.current); signalIntervalRef.current = null; }
     };
   }, [ride?.id, ride?.status, isDriver, stopBackgroundTracking]);
 
-  // ─── Auto-stop tracking when ride ends (from onSnapshot) ──────────────────
+  // Auto-stop tracking when ride ends
   useEffect(() => {
     if (!ride) return;
     if ((ride.status === 'completed' || ride.status === 'cancelled') && bgTrackingActiveRef.current) {
-      console.log('[NAVIGATION] Ride ended — stopping background tracking');
       stopBackgroundTracking();
     }
   }, [ride?.status, stopBackgroundTracking]);
 
-  // Camera Auto-centering and rotation
+  // Camera Auto-centering
   useEffect(() => {
     if (!driverLocation || !autoFollow || !mapRef.current) return;
-
     mapRef.current.animateCamera({
-      center: {
-        latitude: driverLocation.latitude,
-        longitude: driverLocation.longitude,
-      },
-      pitch: isDriver ? 45 : 0,
+      center: { latitude: driverLocation.latitude, longitude: driverLocation.longitude },
+      pitch: isDriver ? 40 : 0,
       heading: isDriver && driverLocation.heading ? driverLocation.heading : 0,
       zoom: isDriver ? 18 : 16,
-    }, { duration: 1000 });
+    }, { duration: 1200 });
   }, [driverLocation, autoFollow, isDriver]);
 
-  // 4. Periodically Fetch Route & ETA (every 2 minutes)
+  // 4. Route fetch
   const refreshRouteInfo = async (currentCoords: { latitude: number; longitude: number }) => {
     if (!ride) return;
     setRefreshingRoute(true);
     try {
       const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs';
-      
-      const destination = {
-        latitude: ride.dropLocation.latitude,
-        longitude: ride.dropLocation.longitude,
-      };
-
-      const result = await fetchRoute(
-        currentCoords,
-        destination,
-        apiKey,
-        waypoints
-      );
-
+      const destination = { latitude: ride.dropLocation.latitude, longitude: ride.dropLocation.longitude };
+      const result = await fetchRoute(currentCoords, destination, apiKey, waypoints);
       if (result.success) {
         setRouteCoordinates(result.points);
         setRouteDistance(result.distance || 'N/A');
         setRouteDuration(result.duration || 'N/A');
       } else {
-        // Fallback straight line
         setRouteCoordinates(result.points);
         setRouteDistance('N/A');
         setRouteDuration('N/A');
@@ -475,66 +470,86 @@ export default function NavigationScreen() {
     }
   };
 
-  // Run initial route fetch and set up 2-minute interval
   useEffect(() => {
     if (!ride) return;
-
     const startLoc = isDriver
       ? driverLocation || ride.pickupLocation
       : driverLocation || ride.currentLocation || ride.pickupLocation;
-
-    if (startLoc) {
-      refreshRouteInfo({ latitude: startLoc.latitude, longitude: startLoc.longitude });
-    }
-
+    if (startLoc) refreshRouteInfo({ latitude: startLoc.latitude, longitude: startLoc.longitude });
     const interval = setInterval(() => {
-      const currentLoc = isDriver
-        ? driverLocation
-        : driverLocation || ride.currentLocation;
-      if (currentLoc) {
-        refreshRouteInfo({ latitude: currentLoc.latitude, longitude: currentLoc.longitude });
-      }
-    }, 120000); // 2 minutes
-
+      const currentLoc = isDriver ? driverLocation : driverLocation || ride.currentLocation;
+      if (currentLoc) refreshRouteInfo({ latitude: currentLoc.latitude, longitude: currentLoc.longitude });
+    }, 120000);
     return () => clearInterval(interval);
   }, [ride?.id, isDriver, waypoints.length]);
 
-  // Handle local Directions Refresh manually on recenter
   const handleRecenter = () => {
     setAutoFollow(true);
     const loc = isDriver ? driverLocation : driverLocation || ride?.currentLocation;
-    if (loc) {
-      refreshRouteInfo({ latitude: loc.latitude, longitude: loc.longitude });
-    }
+    if (loc) refreshRouteInfo({ latitude: loc.latitude, longitude: loc.longitude });
   };
 
-  // 5. Open in Google Maps Fallback
   const handleGoogleMapsFallback = () => {
     setMenuVisible(false);
     if (!ride) return;
-
     const destCoords = `${ride.dropLocation.latitude},${ride.dropLocation.longitude}`;
     const wps = waypoints.map(wp => `${wp.latitude},${wp.longitude}`).join('|');
     const navUrl = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destCoords)}&waypoints=${encodeURIComponent(wps)}&travelmode=driving`;
-
-    Linking.openURL(navUrl).catch((err) => {
-      Alert.alert('Error', 'Could not open external Google Maps.');
-    });
+    Linking.openURL(navUrl).catch(() => { Alert.alert('Error', 'Could not open Google Maps.'); });
   };
 
-  // 6. Complete Ride
+  // 6. Complete Ride — only allowed within 2km
   const handleCompleteRide = async () => {
     if (!ride) return;
+    if (!isWithin2km) {
+      Alert.alert(
+        'Not There Yet',
+        `You are ${distanceToDestKm.toFixed(1)} km from the destination. The ride can only be finished within 2 km of the destination.`
+      );
+      return;
+    }
+    Alert.alert(
+      'Finish Ride?',
+      'Are you sure you want to complete this ride?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Finish', style: 'default',
+          onPress: async () => {
+            try {
+              await completeRide(ride.id);
+              await stopBackgroundTracking();
+              Alert.alert('🎉 Ride Complete!', 'Great job! Payments are being processed.');
+              router.replace('/(tabs)/my-bookings');
+            } catch {
+              Alert.alert('Error', 'Failed to complete ride.');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  // Passenger confirms boarding
+  const handleConfirmBoarding = async () => {
+    if (!ride || !auth.user || confirmingPickup) return;
+    setConfirmingPickup(true);
     try {
-      await completeRide(ride.id);
-      Alert.alert('Arrived!', 'You have completed the carpool!');
-      router.replace('/(tabs)/my-bookings');
-    } catch (err) {
-      Alert.alert('Error', 'Failed to complete ride.');
+      await GeofenceEngine.confirmPassengerPickup(
+        ride.id,
+        auth.user.id,
+        auth.user.fullName || 'Passenger',
+        ride.driverId
+      );
+      setDriverArrivedModalVisible(false);
+      Alert.alert('✅ Confirmed!', 'The driver has been notified that you are on board.');
+    } catch {
+      Alert.alert('Error', 'Failed to confirm boarding. Please try again.');
+    } finally {
+      setConfirmingPickup(false);
     }
   };
 
-  // Boarding and Drop-off checklist logic
   const togglePassengerPickedUp = async (bookingId: string, currentVal: boolean) => {
     try {
       await updateDoc(doc(db, 'bookings', bookingId), {
@@ -543,7 +558,6 @@ export default function NavigationScreen() {
         updatedAt: Timestamp.now()
       });
     } catch (err) {
-      console.error('Failed to toggle picked up:', err);
       Alert.alert('Error', 'Failed to update boarding status.');
     }
   };
@@ -556,23 +570,18 @@ export default function NavigationScreen() {
         updatedAt: Timestamp.now()
       });
     } catch (err) {
-      console.error('Failed to toggle dropped off:', err);
       Alert.alert('Error', 'Failed to update drop-off status.');
     }
   };
 
-  const handleConfirmBoarding = async () => {
+  const handleConfirmBoarding2 = async () => {
     if (!ride) return;
     const unboarded = acceptedBookings.filter(b => !b.pickedUp);
     if (unboarded.length > 0) {
-      Alert.alert(
-        'Passengers Not Boarded',
-        'Warning: Some passengers have not boarded the vehicle. Do you want to proceed and start the commute?',
-        [
-          { text: 'Cancel', style: 'cancel' },
-          { text: 'Proceed', onPress: () => doStartRide() }
-        ]
-      );
+      Alert.alert('Passengers Not Boarded', `${unboarded.length} passenger(s) not yet confirmed. Proceed anyway?`, [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Proceed', onPress: () => doStartRide() }
+      ]);
     } else {
       doStartRide();
     }
@@ -587,22 +596,18 @@ export default function NavigationScreen() {
         startedAt: new Date().toISOString(),
         updatedAt: Timestamp.now()
       });
-      Alert.alert('Commute Started', 'Ride is now in transit.');
-    } catch (err) {
-      console.error('Failed to start ride:', err);
+      Alert.alert('🚀 Commute Started!', 'Ride is now in transit. Drive safe!');
+    } catch {
       Alert.alert('Error', 'Failed to start ride.');
     }
   };
 
-
-  // 7. Group Chat Integration (Modal subscription)
+  // 7. Group Chat
   useEffect(() => {
     if (!rideId || !chatVisible) return;
     const unsub = subscribeToGroupMessages(rideId, (chatMessages) => {
       setMessages(chatMessages);
-      setTimeout(() => {
-        chatListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
+      setTimeout(() => chatListRef.current?.scrollToEnd({ animated: true }), 100);
     });
     return () => unsub();
   }, [rideId, chatVisible]);
@@ -611,22 +616,13 @@ export default function NavigationScreen() {
     if (!chatText.trim() || !auth.user || sendingMessage) return;
     setSendingMessage(true);
     try {
-      await sendGroupMessage(
-        rideId,
-        auth.user.id,
-        auth.user.fullName,
-        auth.user.profileImage || '',
-        chatText
-      );
+      await sendGroupMessage(rideId, auth.user.id, auth.user.fullName, auth.user.profileImage || '', chatText);
       setChatText('');
-    } catch (err) {
-      Alert.alert('Error', 'Failed to send message.');
-    } finally {
-      setSendingMessage(false);
-    }
+    } catch { Alert.alert('Error', 'Failed to send message.'); }
+    finally { setSendingMessage(false); }
   };
 
-  // 8. SOS Action Alerts
+  // 8. SOS
   const triggerSOSAlert = async () => {
     setSosVisible(false);
     if (!auth.user) return;
@@ -634,27 +630,24 @@ export default function NavigationScreen() {
       const locStr = driverLocation
         ? ` Location: https://maps.google.com/?q=${driverLocation.latitude},${driverLocation.longitude}`
         : '';
-      await sendGroupMessage(
-        rideId,
-        'system',
-        'System',
-        '',
-        `🚨 EMERGENCY SOS from ${auth.user.fullName}! DISTRESS ALERT.${locStr}`,
-        'system',
-        { triggerUserId: auth.user.id }
-      );
-      Alert.alert('SOS Broadcasted', 'An emergency alert and location link have been sent to the group chat.');
-    } catch (err) {
-      Alert.alert('Error', 'Failed to send emergency alert.');
-    }
+      await sendGroupMessage(rideId, 'system', 'System', '', `🚨 EMERGENCY SOS from ${auth.user.fullName}!${locStr}`, 'system', { triggerUserId: auth.user.id });
+      Alert.alert('SOS Broadcasted', 'Emergency alert sent to group chat.');
+    } catch { Alert.alert('Error', 'Failed to send emergency alert.'); }
   };
 
-  const callEmergencyNumber = () => {
-    setSosVisible(false);
-    Linking.openURL('tel:112');
+  // Panel toggle
+  const togglePanel = () => {
+    const target = panelExpanded ? 0 : 1;
+    Animated.spring(panelAnim, { toValue: target, damping: 20, stiffness: 180, useNativeDriver: false }).start();
+    setPanelExpanded(!panelExpanded);
   };
 
-  // ── Shared Location View Mode (from chat live-location bubble) ────────────
+  const panelHeight = panelAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [190, 420],
+  });
+
+  // ── Shared Location View ────────────────────────────────────────────────────
   const sharedLatNum = sharedLat ? parseFloat(sharedLat) : null;
   const sharedLngNum = sharedLng ? parseFloat(sharedLng) : null;
 
@@ -675,20 +668,10 @@ export default function NavigationScreen() {
             </View>
           </View>
         </View>
-        <MapView
-          ref={mapRef}
-          provider={PROVIDER_GOOGLE}
-          style={styles.map}
-          customMapStyle={warmMapStyle}
-          initialRegion={{
-            latitude: sharedLatNum,
-            longitude: sharedLngNum,
-            latitudeDelta: 0.02,
-            longitudeDelta: 0.02,
-          }}
-        >
+        <MapView ref={mapRef} provider={PROVIDER_GOOGLE} style={styles.map} customMapStyle={warmMapStyle}
+          initialRegion={{ latitude: sharedLatNum, longitude: sharedLngNum, latitudeDelta: 0.02, longitudeDelta: 0.02 }}>
           <Marker coordinate={{ latitude: sharedLatNum, longitude: sharedLngNum }} title={senderName || 'Shared Location'}>
-            <View style={[styles.carMarker, { backgroundColor: WARM_CORE.primary, width: 36, height: 36, borderRadius: 18 }]}>
+            <View style={styles.personMarker}>
               <MaterialCommunityIcons name="account" size={20} color={WARM_CORE.white} />
             </View>
           </Marker>
@@ -701,63 +684,15 @@ export default function NavigationScreen() {
     return (
       <View style={styles.loaderContainer}>
         <ActivityIndicator size="large" color={WARM_CORE.primary} />
-        <Text style={styles.loaderText}>Initializing In-App Navigation...</Text>
+        <Text style={styles.loaderText}>Starting Navigation...</Text>
       </View>
     );
   }
 
+  // ── Main Navigation Screen ──────────────────────────────────────────────────
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
-      <StatusBar barStyle="dark-content" backgroundColor={WARM_CORE.background} translucent={true} />
-
-      {/* TOP HEADER HUD */}
-      <View style={[styles.headerHUD, { top: insets.top + 10 }]}>
-        <View style={styles.headerInfoRow}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-            <MaterialCommunityIcons name="arrow-left" size={24} color={WARM_CORE.text} />
-          </TouchableOpacity>
-          <View style={styles.headerTextContainer}>
-            <Text style={styles.headerDestination} numberOfLines={1}>
-              {ride.dropLocation.address.split(',')[0]}
-            </Text>
-            <Text style={styles.headerRouteSub}>
-              ETA: {routeDuration} · Remaining: {routeDistance}
-            </Text>
-          </View>
-          <TouchableOpacity onPress={() => setMenuVisible(true)} style={styles.menuButton}>
-            <MaterialCommunityIcons name="dots-vertical" size={24} color={WARM_CORE.text} />
-          </TouchableOpacity>
-        </View>
-        
-        {refreshingRoute && (
-          <View style={styles.refreshBadge}>
-            <ActivityIndicator size="small" color={WARM_CORE.primary} style={{ marginRight: 6 }} />
-            <Text style={styles.refreshText}>Updating route...</Text>
-          </View>
-        )}
-
-        {/* Signal Strength HUD — visible to driver while tracking */}
-        {isDriver && signalStatus !== 'idle' && (
-          <View style={[
-            styles.signalBadge,
-            signalStatus === 'live'    && styles.signalLive,
-            signalStatus === 'weak'    && styles.signalWeak,
-            signalStatus === 'offline' && styles.signalOffline,
-          ]}>
-            <View style={[
-              styles.signalDot,
-              signalStatus === 'live'    && { backgroundColor: '#16a34a' },
-              signalStatus === 'weak'    && { backgroundColor: '#ca8a04' },
-              signalStatus === 'offline' && { backgroundColor: '#dc2626' },
-            ]} />
-            <Text style={styles.signalText}>
-              {signalStatus === 'live'    && '🟢 LIVE'}
-              {signalStatus === 'weak'    && '🟡 WEAK SIGNAL'}
-              {signalStatus === 'offline' && '🔴 LOCATION OFFLINE'}
-            </Text>
-          </View>
-        )}
-      </View>
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent={true} />
 
       {/* FULL SCREEN MAP */}
       <MapView
@@ -773,114 +708,183 @@ export default function NavigationScreen() {
           longitudeDelta: 0.05,
         }}
       >
-        {/* Route Polyline */}
+        {/* Route Polyline — shadow layer + primary */}
         {routeCoordinates.length > 1 && (
           <>
-            <Polyline coordinates={routeCoordinates} strokeColor={WARM_CORE.border} strokeWidth={6} />
-            <Polyline coordinates={routeCoordinates} strokeColor={WARM_CORE.primary} strokeWidth={4} />
+            <Polyline coordinates={routeCoordinates} strokeColor="rgba(0,0,0,0.12)" strokeWidth={8} lineDashPattern={[0]} />
+            <Polyline coordinates={routeCoordinates} strokeColor={WARM_CORE.primary} strokeWidth={5} />
           </>
         )}
 
         {/* Origin Marker */}
-        <Marker coordinate={ride.pickupLocation} title="Origin">
+        <Marker coordinate={ride.pickupLocation} title="Start">
           <View style={styles.originMarker} />
         </Marker>
 
         {/* Destination Marker */}
         <Marker coordinate={ride.dropLocation} title="Destination">
-          <View style={styles.destMarker}>
-            <MaterialCommunityIcons name="flag-checkered" size={16} color={WARM_CORE.white} />
+          <View style={styles.destMarkerWrap}>
+            <MaterialCommunityIcons name="flag-checkered" size={18} color={WARM_CORE.white} />
           </View>
         </Marker>
 
-        {/* Intermediate Passenger Waypoints */}
-        {waypoints.map((wp, idx) => (
-          <Marker key={`wp-${idx}`} coordinate={wp} title={`Passenger Stop`}>
-            <View style={styles.waypointMarker}>
-              <MaterialCommunityIcons name="account" size={12} color={WARM_CORE.white} />
-            </View>
-          </Marker>
-        ))}
+        {/* Passenger Waypoint Markers */}
+        {acceptedBookings.map((booking: any, idx) => {
+          const loc = booking.passengerPickupLocation || booking.passengerDropLocation;
+          if (!loc) return null;
+          const isPickedUp = booking.pickedUp;
+          return (
+            <Marker key={`pax-${idx}`} coordinate={loc} title={booking.passengerName}>
+              <View style={[styles.passengerMarker, isPickedUp && styles.passengerMarkerDone]}>
+                <MaterialCommunityIcons
+                  name={isPickedUp ? 'account-check' : 'account-clock'}
+                  size={14}
+                  color={WARM_CORE.white}
+                />
+              </View>
+            </Marker>
+          );
+        })}
 
-        {/* Active Driver / Vehicle Marker */}
+        {/* Active Driver / Vehicle Marker — premium car icon */}
         {driverLocation && (
           <Marker
             coordinate={driverLocation}
             anchor={{ x: 0.5, y: 0.5 }}
             flat={true}
-            rotation={driverLocation.heading}
+            rotation={driverLocation.heading ?? 0}
             title={ride.driverName}
-            description={isDriver ? "You" : "Driver"}
           >
-            <View style={styles.carMarker}>
-              <MaterialCommunityIcons name="navigation" size={24} color={WARM_CORE.primary} />
+            <View style={styles.carMarkerWrap}>
+              {/* Outer glow ring */}
+              <View style={styles.carMarkerGlow} />
+              {/* Car body */}
+              <View style={styles.carMarkerBody}>
+                {driverProfileImage ? (
+                  <Image source={{ uri: driverProfileImage }} style={styles.carMarkerPhoto} />
+                ) : (
+                  <MaterialCommunityIcons name="car-sports" size={20} color={WARM_CORE.white} />
+                )}
+              </View>
+              {/* Direction arrow */}
+              <View style={styles.carMarkerArrow} />
             </View>
           </Marker>
         )}
       </MapView>
 
+      {/* TOP HEADER HUD */}
+      <View style={[styles.headerHUD, { top: insets.top + 10 }]}>
+        <View style={styles.headerInfoRow}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+            <MaterialCommunityIcons name="arrow-left" size={22} color={WARM_CORE.text} />
+          </TouchableOpacity>
+          <View style={styles.headerTextContainer}>
+            <Text style={styles.headerDestination} numberOfLines={1}>
+              → {ride.dropLocation.address.split(',')[0]}
+            </Text>
+            <Text style={styles.headerRouteSub}>
+              ETA: {routeDuration} · {routeDistance} remaining
+            </Text>
+          </View>
+          <TouchableOpacity onPress={() => setMenuVisible(true)} style={styles.menuButton}>
+            <MaterialCommunityIcons name="dots-vertical" size={22} color={WARM_CORE.text} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Signal badge + speed chip in one row */}
+        <View style={styles.hudBadgeRow}>
+          {isDriver && signalStatus !== 'idle' && (
+            <View style={[
+              styles.signalBadge,
+              signalStatus === 'live' && styles.signalLive,
+              signalStatus === 'weak' && styles.signalWeak,
+              signalStatus === 'offline' && styles.signalOffline,
+            ]}>
+              <View style={[styles.signalDot,
+                signalStatus === 'live' && { backgroundColor: '#16a34a' },
+                signalStatus === 'weak' && { backgroundColor: '#ca8a04' },
+                signalStatus === 'offline' && { backgroundColor: '#dc2626' },
+              ]} />
+              <Text style={styles.signalText}>
+                {signalStatus === 'live' ? 'LIVE' : signalStatus === 'weak' ? 'WEAK' : 'OFFLINE'}
+              </Text>
+            </View>
+          )}
+          {isDriver && currentSpeed > 0 && (
+            <View style={styles.speedChip}>
+              <Text style={styles.speedValue}>{currentSpeed}</Text>
+              <Text style={styles.speedUnit}>km/h</Text>
+            </View>
+          )}
+          {refreshingRoute && (
+            <View style={styles.refreshChip}>
+              <ActivityIndicator size="small" color={WARM_CORE.primary} style={{ marginRight: 4 }} />
+              <Text style={styles.refreshChipText}>Updating...</Text>
+            </View>
+          )}
+        </View>
+      </View>
+
       {/* FLOATING ACTION BUTTONS */}
-      <View style={styles.floatingContainer}>
-        {/* Recenter */}
+      <View style={[styles.floatingContainer, { bottom: panelExpanded ? 440 : 210 }]}>
         {!autoFollow && (
           <TouchableOpacity onPress={handleRecenter} style={styles.floatingButton}>
             <MaterialCommunityIcons name="crosshairs-gps" size={22} color={WARM_CORE.primary} />
           </TouchableOpacity>
         )}
-
-        {/* Mute GUIDANCE */}
         <TouchableOpacity onPress={() => setIsMuted(!isMuted)} style={styles.floatingButton}>
-          <MaterialCommunityIcons name={isMuted ? "volume-off" : "volume-high"} size={22} color={WARM_CORE.textSecondary} />
+          <MaterialCommunityIcons name={isMuted ? 'volume-off' : 'volume-high'} size={22} color={WARM_CORE.textSecondary} />
         </TouchableOpacity>
-
-        {/* EMERGENCY SOS */}
         <TouchableOpacity onPress={() => setSosVisible(true)} style={[styles.floatingButton, styles.sosButton]}>
           <MaterialCommunityIcons name="alert-octagon" size={24} color={WARM_CORE.white} />
         </TouchableOpacity>
-
-        {/* GROUP CHAT */}
         <TouchableOpacity onPress={() => setChatVisible(true)} style={[styles.floatingButton, styles.chatButton]}>
           <MaterialCommunityIcons name="chat-processing-outline" size={22} color={WARM_CORE.white} />
         </TouchableOpacity>
       </View>
 
-      {/* RIDE PROGRESS SUMMARY CARD */}
-      <View style={styles.summaryCard}>
-        <View style={styles.summaryRow}>
-          <View style={styles.summaryStatusBadge}>
-            <Text style={styles.summaryStatusText}>
-              {ride.status === 'in_progress' ? 'IN TRANSIT' : ride.status.toUpperCase()}
+      {/* BOTTOM PANEL */}
+      <Animated.View style={[styles.bottomPanel, { height: panelHeight }]}>
+        {/* Handle */}
+        <TouchableOpacity style={styles.panelHandle} onPress={togglePanel} activeOpacity={0.8}>
+          <View style={styles.panelHandleBar} />
+        </TouchableOpacity>
+
+        {/* Status row */}
+        <View style={styles.panelStatusRow}>
+          <View style={styles.statusBadge}>
+            <Text style={styles.statusBadgeText}>
+              {ride.status === 'in_progress' ? '🚀 IN TRANSIT' : ride.status.toUpperCase()}
             </Text>
           </View>
-          <Text style={styles.summaryEtaText}>{routeDuration} ({routeDistance})</Text>
+          <Text style={styles.etaText}>{routeDuration}</Text>
+          <Text style={styles.distText}>{routeDistance}</Text>
         </View>
 
-        <View style={styles.divider} />
-
-        <View style={styles.routeDetails}>
-          <View style={styles.routeDotLine}>
-            <View style={[styles.routeDot, { backgroundColor: WARM_CORE.success }]} />
-            <View style={styles.routeLine} />
-            <View style={[styles.routeDot, { backgroundColor: WARM_CORE.primary }]} />
-          </View>
-          <View style={styles.routeTextContainer}>
-            <Text style={styles.routeText} numberOfLines={1}>Origin: {ride.pickupLocation.address}</Text>
-            <Text style={[styles.routeText, { marginTop: 12 }]} numberOfLines={1}>Destination: {ride.dropLocation.address}</Text>
-          </View>
+        {/* Route pill */}
+        <View style={styles.routePill}>
+          <View style={styles.routePillDot} />
+          <Text style={styles.routePillText} numberOfLines={1}>
+            {ride.pickupLocation.address.split(',')[0]}
+          </Text>
+          <MaterialCommunityIcons name="arrow-right" size={14} color={WARM_CORE.textSecondary} style={{ marginHorizontal: 4 }} />
+          <Text style={styles.routePillDest} numberOfLines={1}>
+            {ride.dropLocation.address.split(',')[0]}
+          </Text>
         </View>
 
-        {/* PROGRESS TIMELINE */}
+        {/* Progress Timeline */}
         <View style={styles.timelineContainer}>
           {stages.map((stage, idx) => {
             const isCompleted = idx < currentStageIndex;
             const isActive = idx === currentStageIndex;
-            const color = isCompleted ? '#10B981' : isActive ? WARM_CORE.primary : '#6B7280';
-            
+            const color = isCompleted ? '#10B981' : isActive ? WARM_CORE.primary : '#9CA3AF';
             return (
               <React.Fragment key={stage.label}>
                 <View style={styles.timelineStep}>
-                  <View style={[styles.timelineDot, { backgroundColor: color, shadowColor: color, elevation: isActive ? 4 : 0 }]}>
-                    <MaterialCommunityIcons name={stage.icon as any} size={12} color="#FFF" />
+                  <View style={[styles.timelineDot, { backgroundColor: color }]}>
+                    <MaterialCommunityIcons name={stage.icon as any} size={10} color="#FFF" />
                   </View>
                   <Text style={[styles.timelineLabel, { color }]}>{stage.label}</Text>
                 </View>
@@ -892,51 +896,143 @@ export default function NavigationScreen() {
           })}
         </View>
 
-        {isDriver && ride && ride.pickupChecklistCompleted === true && acceptedBookings.length > 0 && (
-          <View style={{ marginBottom: 16, borderTopWidth: 1, borderTopColor: WARM_CORE.border, paddingTop: 16 }}>
-            <Text style={{ fontSize: 14, fontWeight: '700', color: WARM_CORE.text, marginBottom: 12 }}>Drop-Off Tracking</Text>
-            {acceptedBookings.map((item) => (
-              <TouchableOpacity
-                key={item.id}
-                onPress={() => togglePassengerDroppedOff(item.id, item.droppedOff)}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  paddingVertical: 8,
-                }}
-              >
-                <MaterialCommunityIcons
-                  name={item.droppedOff ? "checkbox-marked" : "checkbox-blank-outline"}
-                  size={20}
-                  color={item.droppedOff ? WARM_CORE.success : WARM_CORE.textSecondary}
-                  style={{ marginRight: 8 }}
-                />
-                <Text style={{ fontSize: 14, color: WARM_CORE.text, textDecorationLine: item.droppedOff ? 'line-through' : 'none' }}>
-                  {item.passengerName}
-                </Text>
-              </TouchableOpacity>
-            ))}
-          </View>
+        {/* Expanded content */}
+        {panelExpanded && (
+          <ScrollView style={styles.expandedContent} showsVerticalScrollIndicator={false}>
+            {/* Passenger list */}
+            {acceptedBookings.length > 0 && (
+              <View style={styles.passengerSection}>
+                <Text style={styles.sectionTitle}>Passengers</Text>
+                {acceptedBookings.map((b: any, idx: number) => (
+                  <View key={idx} style={styles.passengerRow}>
+                    <View style={[styles.passengerAvatar, b.pickedUp && { backgroundColor: '#10B981' }]}>
+                      <Text style={styles.passengerAvatarText}>{(b.passengerName || 'P')[0].toUpperCase()}</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.passengerName}>{b.passengerName}</Text>
+                      <Text style={styles.passengerStatus}>
+                        {b.droppedOff ? '✅ Dropped off' : b.pickedUp ? '🚗 On board' : b.notifiedArrived ? '🔔 Driver arrived' : b.notifiedNearby ? '📍 Driver nearby' : '⏳ Waiting'}
+                      </Text>
+                    </View>
+                    {isDriver && !b.pickedUp && (
+                      <TouchableOpacity onPress={() => togglePassengerPickedUp(b.id, b.pickedUp)} style={styles.pickupBtn}>
+                        <MaterialCommunityIcons name="check" size={16} color={WARM_CORE.primary} />
+                        <Text style={styles.pickupBtnText}>Picked up</Text>
+                      </TouchableOpacity>
+                    )}
+                    {isDriver && b.pickedUp && !b.droppedOff && (
+                      <TouchableOpacity onPress={() => togglePassengerDroppedOff(b.id, b.droppedOff)} style={[styles.pickupBtn, { borderColor: '#10B981' }]}>
+                        <MaterialCommunityIcons name="map-marker-check" size={16} color="#10B981" />
+                        <Text style={[styles.pickupBtnText, { color: '#10B981' }]}>Drop off</Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {/* Driver view — finish ride button */}
+            {isDriver && ride.status === 'in_progress' && (
+              <View style={styles.finishSection}>
+                <Animated.View style={{ transform: [{ scale: isWithin2km ? pulseAnim : 1 }] }}>
+                  <TouchableOpacity
+                    onPress={handleCompleteRide}
+                    style={[styles.finishRideBtn, !isWithin2km && styles.finishRideBtnDisabled]}
+                    activeOpacity={isWithin2km ? 0.8 : 1}
+                  >
+                    <MaterialCommunityIcons
+                      name={isWithin2km ? 'flag-checkered' : 'map-marker-distance'}
+                      size={22}
+                      color={isWithin2km ? WARM_CORE.white : '#9CA3AF'}
+                      style={{ marginRight: 8 }}
+                    />
+                    <View>
+                      <Text style={[styles.finishRideBtnText, !isWithin2km && { color: '#9CA3AF' }]}>
+                        {isWithin2km ? '🎉 Finish Ride' : 'Finish Ride'}
+                      </Text>
+                      {!isWithin2km && (
+                        <Text style={styles.finishRideSubtext}>
+                          {distanceToDestKm.toFixed(1)} km to destination
+                        </Text>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                </Animated.View>
+              </View>
+            )}
+          </ScrollView>
         )}
 
-        {isDriver && (
-          <TouchableOpacity onPress={handleCompleteRide} style={styles.actionCTA}>
-            <MaterialCommunityIcons name="checkbox-marked-circle-outline" size={20} color={WARM_CORE.white} style={{ marginRight: 8 }} />
-            <Text style={styles.actionCTAText}>Complete Ride</Text>
+        {/* Compact driver CTA (only shown in collapsed state) */}
+        {!panelExpanded && isDriver && ride.status !== 'in_progress' && ride.pickupChecklistCompleted !== true && acceptedBookings.length > 0 && (
+          <TouchableOpacity onPress={handleConfirmBoarding2} style={styles.startRideCTA}>
+            <MaterialCommunityIcons name="play-circle-outline" size={20} color={WARM_CORE.white} style={{ marginRight: 8 }} />
+            <Text style={styles.startRideCTAText}>Confirm Boarding & Start</Text>
           </TouchableOpacity>
         )}
-      </View>
+        {!panelExpanded && isDriver && ride.status === 'in_progress' && (
+          <Animated.View style={{ transform: [{ scale: isWithin2km ? pulseAnim : 1 }] }}>
+            <TouchableOpacity
+              onPress={handleCompleteRide}
+              style={[styles.startRideCTA, !isWithin2km && styles.startRideCTADisabled]}
+              activeOpacity={isWithin2km ? 0.8 : 0.9}
+            >
+              <MaterialCommunityIcons
+                name={isWithin2km ? 'flag-checkered' : 'map-marker-distance'}
+                size={20}
+                color={isWithin2km ? WARM_CORE.white : '#9CA3AF'}
+                style={{ marginRight: 8 }}
+              />
+              <Text style={[styles.startRideCTAText, !isWithin2km && { color: '#6B7280' }]}>
+                {isWithin2km ? '🎉 Finish Ride' : `Finish Ride · ${distanceToDestKm.toFixed(1)} km away`}
+              </Text>
+            </TouchableOpacity>
+          </Animated.View>
+        )}
+      </Animated.View>
 
-      {/* BACKGROUND PERMISSION EXPLANATION MODAL */}
+      {/* ─── PASSENGER: DRIVER ARRIVED MODAL ─────────────────────────────────── */}
+      <Modal visible={driverArrivedModalVisible} animationType="slide" transparent={true} onRequestClose={() => setDriverArrivedModalVisible(false)}>
+        <View style={styles.arrivedOverlay}>
+          <View style={styles.arrivedContainer}>
+            <View style={styles.arrivedIconWrap}>
+              <MaterialCommunityIcons name="car-arrow-right" size={48} color={WARM_CORE.primary} />
+            </View>
+            <Text style={styles.arrivedTitle}>Your Driver Has Arrived!</Text>
+            <Text style={styles.arrivedSubtitle}>
+              {ride.driverName} is at your pickup location. Please head out to board the vehicle.
+            </Text>
+            <TouchableOpacity
+              onPress={handleConfirmBoarding}
+              style={styles.arrivedConfirmBtn}
+              disabled={confirmingPickup}
+            >
+              {confirmingPickup ? (
+                <ActivityIndicator color={WARM_CORE.white} />
+              ) : (
+                <>
+                  <MaterialCommunityIcons name="check-circle" size={20} color={WARM_CORE.white} style={{ marginRight: 8 }} />
+                  <Text style={styles.arrivedConfirmText}>I'm in the Car</Text>
+                </>
+              )}
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setDriverArrivedModalVisible(false)} style={styles.arrivedDismiss}>
+              <Text style={styles.arrivedDismissText}>Not yet</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ─── BACKGROUND LOCATION PERMISSION MODAL ───────────────────────────── */}
       <Modal visible={bgPermModalVisible} animationType="slide" transparent={true} onRequestClose={() => setBgPermModalVisible(false)}>
         <View style={styles.bgPermOverlay}>
           <View style={styles.bgPermContainer}>
             <MaterialCommunityIcons name="map-marker-path" size={48} color={WARM_CORE.primary} />
             <Text style={styles.bgPermTitle}>Enable Background Location</Text>
             <Text style={styles.bgPermBody}>
-              {'For passengers to see your location when your screen is locked or you switch apps, PullUp needs '}
+              {'For passengers to see your location when the screen is locked, PullUp needs '}
               <Text style={{ fontWeight: '700' }}>{"\"Allow all the time\""}</Text>
-              {' location access.\n\nGo to:\nSettings \u2192 Apps \u2192 PullUp \u2192 Permissions \u2192 Location \u2192 Allow all the time'}
+              {' location access.\n\nSettings → Apps → PullUp → Permissions → Location → Allow all the time'}
             </Text>
             <TouchableOpacity style={styles.bgPermCTA} onPress={() => { Linking.openSettings(); setBgPermModalVisible(false); }}>
               <Text style={styles.bgPermCTAText}>Open Settings</Text>
@@ -948,42 +1044,39 @@ export default function NavigationScreen() {
         </View>
       </Modal>
 
-      {/* OPTIONS MENU MODAL */}
+      {/* ─── OPTIONS MENU MODAL ─────────────────────────────────────────────── */}
       <Modal visible={menuVisible} animationType="fade" transparent={true} onRequestClose={() => setMenuVisible(false)}>
         <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
           <View style={styles.menuContainer}>
             <Text style={styles.menuTitle}>Navigation Options</Text>
             <TouchableOpacity onPress={handleGoogleMapsFallback} style={styles.menuItem}>
               <MaterialCommunityIcons name="google-maps" size={22} color={WARM_CORE.primary} />
-              <Text style={styles.menuItemText}>Open in Google Maps (External)</Text>
+              <Text style={styles.menuItemText}>Open in Google Maps</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setMenuVisible(false)} style={styles.menuCancel}>
-              <Text style={styles.menuCancelText}>Close Menu</Text>
+              <Text style={styles.menuCancelText}>Close</Text>
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
       </Modal>
 
-      {/* SOS EMERGENCY ACTION MODAL */}
+      {/* ─── SOS MODAL ──────────────────────────────────────────────────────── */}
       <Modal visible={sosVisible} animationType="fade" transparent={true} onRequestClose={() => setSosVisible(false)}>
         <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={() => setSosVisible(false)}>
           <View style={styles.sosContainer}>
             <MaterialCommunityIcons name="alert-decagram" size={48} color={WARM_CORE.error} />
-            <Text style={styles.sosTitle}>Emergency SOS Actions</Text>
+            <Text style={styles.sosTitle}>Emergency SOS</Text>
             <Text style={styles.sosDescription}>
-              Triggering SOS alerts provides options to call state medical/police services or broadcast coordinates to your ride group chat.
+              Call emergency services or broadcast your location to the ride group chat.
             </Text>
-
-            <TouchableOpacity onPress={callEmergencyNumber} style={[styles.sosBtn, { backgroundColor: WARM_CORE.error }]}>
+            <TouchableOpacity onPress={() => { setSosVisible(false); Linking.openURL('tel:112'); }} style={[styles.sosBtn, { backgroundColor: WARM_CORE.error }]}>
               <MaterialCommunityIcons name="phone" size={20} color={WARM_CORE.white} style={{ marginRight: 8 }} />
               <Text style={styles.sosBtnText}>Call Emergency (112)</Text>
             </TouchableOpacity>
-
             <TouchableOpacity onPress={triggerSOSAlert} style={[styles.sosBtn, { backgroundColor: WARM_CORE.primary }]}>
               <MaterialCommunityIcons name="chat-alert-outline" size={20} color={WARM_CORE.white} style={{ marginRight: 8 }} />
-              <Text style={styles.sosBtnText}>Share Location & Alert Chat</Text>
+              <Text style={styles.sosBtnText}>Share Location & Alert</Text>
             </TouchableOpacity>
-
             <TouchableOpacity onPress={() => setSosVisible(false)} style={styles.sosClose}>
               <Text style={styles.sosCloseText}>Dismiss</Text>
             </TouchableOpacity>
@@ -991,7 +1084,7 @@ export default function NavigationScreen() {
         </TouchableOpacity>
       </Modal>
 
-      {/* GROUP CHAT MODAL OVERLAY */}
+      {/* ─── GROUP CHAT MODAL ───────────────────────────────────────────────── */}
       <Modal visible={chatVisible} animationType="slide" transparent={false} onRequestClose={() => setChatVisible(false)}>
         <SafeAreaView style={styles.chatContainer}>
           <View style={styles.chatHeader}>
@@ -1001,7 +1094,6 @@ export default function NavigationScreen() {
             <Text style={styles.chatTitle}>Ride Group Chat</Text>
             <View style={{ width: 40 }} />
           </View>
-
           <FlatList
             ref={chatListRef}
             data={messages}
@@ -1010,15 +1102,11 @@ export default function NavigationScreen() {
             renderItem={({ item }) => {
               const isMe = item.senderId === auth.user?.id;
               const isSys = item.type === 'system';
-
-              if (isSys) {
-                return (
-                  <View style={styles.systemMsgContainer}>
-                    <Text style={styles.systemMsgText}>{item.text}</Text>
-                  </View>
-                );
-              }
-
+              if (isSys) return (
+                <View style={styles.systemMsgContainer}>
+                  <Text style={styles.systemMsgText}>{item.text}</Text>
+                </View>
+              );
               return (
                 <View style={[styles.msgRow, isMe ? styles.msgRight : styles.msgLeft]}>
                   {!isMe && (
@@ -1040,14 +1128,13 @@ export default function NavigationScreen() {
               );
             }}
           />
-
           <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
             <View style={styles.chatInputRow}>
               <TextInput
                 style={styles.chatInput}
                 value={chatText}
                 onChangeText={setChatText}
-                placeholder="Type a message to the group..."
+                placeholder="Type a message..."
                 placeholderTextColor={WARM_CORE.textSecondary}
               />
               <TouchableOpacity
@@ -1062,43 +1149,45 @@ export default function NavigationScreen() {
         </SafeAreaView>
       </Modal>
 
-      {/* FULLSCREEN BOARDING CHECKLIST FOR DRIVER */}
+      {/* ─── DRIVER BOARDING CHECKLIST (fullscreen overlay before ride starts) ─ */}
       {isDriver && ride && ride.pickupChecklistCompleted !== true && (
-        <View style={[StyleSheet.absoluteFillObject, { backgroundColor: WARM_CORE.background, zIndex: 100, padding: 24, paddingTop: insets.top + 24 }]}>
-          <Text style={{ fontSize: 24, fontWeight: '800', color: WARM_CORE.text, marginBottom: 8 }}>Passenger Boarding Checklist</Text>
-          <Text style={{ fontSize: 14, color: WARM_CORE.textSecondary, marginBottom: 24 }}>Please verify all passengers have boarded the vehicle before starting transit.</Text>
+        <View style={[StyleSheet.absoluteFillObject, styles.boardingOverlay]}>
+          <View style={[styles.boardingHeader, { paddingTop: insets.top + 20 }]}>
+            <MaterialCommunityIcons name="clipboard-list-outline" size={32} color={WARM_CORE.primary} />
+            <Text style={styles.boardingTitle}>Passenger Boarding</Text>
+            <Text style={styles.boardingSubtitle}>Confirm all passengers have boarded before starting</Text>
+          </View>
           <FlatList
             data={acceptedBookings}
             keyExtractor={(item) => item.id}
+            contentContainerStyle={{ padding: 20 }}
             renderItem={({ item }) => (
               <TouchableOpacity
                 onPress={() => togglePassengerPickedUp(item.id, item.pickedUp)}
-                style={{
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  paddingVertical: 16,
-                  borderBottomWidth: 1,
-                  borderBottomColor: WARM_CORE.border,
-                }}
+                style={[styles.boardingPassengerRow, item.pickedUp && styles.boardingPassengerRowDone]}
               >
-                <MaterialCommunityIcons
-                  name={item.pickedUp ? "checkbox-marked" : "checkbox-blank-outline"}
-                  size={24}
-                  color={item.pickedUp ? WARM_CORE.success : WARM_CORE.textSecondary}
-                  style={{ marginRight: 16 }}
-                />
-                <View style={{ flex: 1 }}>
-                  <Text style={{ fontSize: 16, fontWeight: '600', color: WARM_CORE.text }}>{item.passengerName}</Text>
-                  <Text style={{ fontSize: 13, color: WARM_CORE.textSecondary }}>Seats: {item.seatsBooked}</Text>
+                <View style={[styles.boardingCheckbox, item.pickedUp && styles.boardingCheckboxDone]}>
+                  {item.pickedUp && <MaterialCommunityIcons name="check" size={16} color={WARM_CORE.white} />}
                 </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.boardingPassengerName}>{item.passengerName}</Text>
+                  <Text style={styles.boardingPassengerSub}>{item.seatsBooked} seat{item.seatsBooked > 1 ? 's' : ''}</Text>
+                </View>
+                {item.pickedUp && (
+                  <View style={styles.boardingOnboard}>
+                    <Text style={styles.boardingOnboardText}>On board ✓</Text>
+                  </View>
+                )}
               </TouchableOpacity>
             )}
-            style={{ flex: 1, marginBottom: 24 }}
+            style={{ flex: 1 }}
           />
-          <TouchableOpacity onPress={handleConfirmBoarding} style={styles.actionCTA}>
-            <MaterialCommunityIcons name="play-circle-outline" size={22} color={WARM_CORE.white} style={{ marginRight: 8 }} />
-            <Text style={styles.actionCTAText}>Confirm Boarding & Start Commute</Text>
-          </TouchableOpacity>
+          <View style={{ padding: 20, paddingBottom: insets.bottom + 20 }}>
+            <TouchableOpacity onPress={handleConfirmBoarding2} style={styles.startRideCTA}>
+              <MaterialCommunityIcons name="play-circle-outline" size={22} color={WARM_CORE.white} style={{ marginRight: 8 }} />
+              <Text style={styles.startRideCTAText}>Confirm Boarding & Start Commute</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       )}
     </SafeAreaView>
@@ -1107,570 +1196,307 @@ export default function NavigationScreen() {
 
 // Custom map styling
 const warmMapStyle = [
-  { elementType: 'geometry', stylers: [{ color: '#FFF8F0' }] },
+  { elementType: 'geometry', stylers: [{ color: '#F8F4EF' }] },
   { elementType: 'labels.text.fill', stylers: [{ color: '#6E5650' }] },
   { elementType: 'labels.text.stroke', stylers: [{ color: '#FFF8F0' }] },
-  { featureType: 'landscape.natural', elementType: 'geometry', stylers: [{ color: '#F4E9D9' }] },
+  { featureType: 'landscape.natural', elementType: 'geometry', stylers: [{ color: '#F0E8D8' }] },
   { featureType: 'road', elementType: 'geometry', stylers: [{ color: '#FFFFFF' }] },
-  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#E8DCCB' }] },
+  { featureType: 'road', elementType: 'geometry.stroke', stylers: [{ color: '#E0D0BC' }] },
+  { featureType: 'road.arterial', elementType: 'geometry', stylers: [{ color: '#FFF0E0' }] },
+  { featureType: 'road.highway', elementType: 'geometry', stylers: [{ color: '#FFE5C8' }] },
   { featureType: 'road', elementType: 'labels.text.fill', stylers: [{ color: '#1E120D' }] },
-  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#D4E8FC' }] },
+  { featureType: 'water', elementType: 'geometry', stylers: [{ color: '#C8DEFA' }] },
   { featureType: 'water', elementType: 'labels.text.fill', stylers: [{ color: '#6E5650' }] },
+  { featureType: 'poi', elementType: 'geometry', stylers: [{ color: '#E8DFD0' }] },
+  { featureType: 'poi.park', elementType: 'geometry', stylers: [{ color: '#D8EDD0' }] },
 ];
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: WARM_CORE.background,
-  },
-  loaderContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: WARM_CORE.background,
-  },
-  loaderText: {
-    marginTop: 12,
-    fontSize: 14,
-    color: WARM_CORE.textSecondary,
-    fontWeight: '600',
-  },
-  map: {
-    width: Dimensions.get('window').width,
-    height: Dimensions.get('window').height,
-  },
-  headerHUD: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    zIndex: 10,
-    backgroundColor: 'rgba(255, 248, 240, 0.95)',
-    borderRadius: 16,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: WARM_CORE.border,
-    shadowColor: WARM_CORE.text,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
-    elevation: 5,
-  },
-  headerInfoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  backButton: {
-    padding: 6,
-    marginRight: 6,
-  },
-  headerTextContainer: {
-    flex: 1,
-  },
-  headerDestination: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: WARM_CORE.text,
-  },
-  headerRouteSub: {
-    fontSize: 12,
-    color: WARM_CORE.textSecondary,
-    marginTop: 2,
-    fontWeight: '500',
-  },
-  menuButton: {
-    padding: 6,
-  },
-  refreshBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginTop: 8,
-    borderTopWidth: 1,
-    borderTopColor: WARM_CORE.border,
-    paddingTop: 6,
-  },
-  refreshText: {
-    fontSize: 11,
-    color: WARM_CORE.primary,
-    fontWeight: '600',
-  },
+  container: { flex: 1, backgroundColor: WARM_CORE.background },
+  loaderContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: WARM_CORE.background },
+  loaderText: { marginTop: 12, fontSize: 14, color: WARM_CORE.textSecondary, fontWeight: '600' },
+  map: { width: SCREEN_W, height: SCREEN_H },
+
+  // ─── Markers ───────────────────────────────────────────────────────────────
   originMarker: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: WARM_CORE.success,
-    borderWidth: 2,
-    borderColor: WARM_CORE.white,
+    width: 14, height: 14, borderRadius: 7,
+    backgroundColor: '#10B981', borderWidth: 3, borderColor: WARM_CORE.white,
+    shadowColor: '#10B981', shadowOpacity: 0.5, shadowRadius: 4, elevation: 4,
   },
-  destMarker: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
-    backgroundColor: WARM_CORE.primary,
-    borderWidth: 2,
-    borderColor: WARM_CORE.white,
-    justifyContent: 'center',
-    alignItems: 'center',
+  destMarkerWrap: {
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: WARM_CORE.primary, borderWidth: 3, borderColor: WARM_CORE.white,
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: WARM_CORE.primary, shadowOpacity: 0.4, shadowRadius: 6, elevation: 6,
   },
-  waypointMarker: {
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#7C3AED',
-    borderWidth: 2,
-    borderColor: WARM_CORE.white,
-    justifyContent: 'center',
-    alignItems: 'center',
+  passengerMarker: {
+    width: 26, height: 26, borderRadius: 13,
+    backgroundColor: '#7C3AED', borderWidth: 2, borderColor: WARM_CORE.white,
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: '#7C3AED', shadowOpacity: 0.4, shadowRadius: 4, elevation: 4,
   },
-  carMarker: {
-    justifyContent: 'center',
-    alignItems: 'center',
+  passengerMarkerDone: { backgroundColor: '#10B981' },
+  personMarker: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: WARM_CORE.primary, justifyContent: 'center', alignItems: 'center',
+    borderWidth: 2, borderColor: WARM_CORE.white,
   },
-  floatingContainer: {
-    position: 'absolute',
-    right: 16,
-    bottom: 250,
-    zIndex: 5,
-    gap: 12,
+  // Premium car marker
+  carMarkerWrap: { alignItems: 'center', justifyContent: 'center', position: 'relative' },
+  carMarkerGlow: {
+    position: 'absolute', width: 52, height: 52, borderRadius: 26,
+    backgroundColor: `${WARM_CORE.primary}30`,
+    borderWidth: 2, borderColor: `${WARM_CORE.primary}60`,
   },
-  floatingButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: WARM_CORE.background,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: WARM_CORE.border,
-    shadowColor: WARM_CORE.text,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.15,
-    shadowRadius: 5,
-    elevation: 3,
-  },
-  sosButton: {
-    backgroundColor: WARM_CORE.error,
-    borderColor: WARM_CORE.error,
-  },
-  chatButton: {
-    backgroundColor: WARM_CORE.primary,
-    borderColor: WARM_CORE.primary,
-  },
-  summaryCard: {
-    position: 'absolute',
-    left: 16,
-    right: 16,
-    bottom: 30,
-    backgroundColor: WARM_CORE.background,
-    borderRadius: 20,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: WARM_CORE.border,
-    shadowColor: WARM_CORE.text,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 6,
-  },
-  summaryRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  summaryStatusBadge: {
-    backgroundColor: 'rgba(255, 122, 51, 0.15)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  summaryStatusText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: WARM_CORE.primary,
-    letterSpacing: 1,
-  },
-  summaryEtaText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: WARM_CORE.text,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: WARM_CORE.border,
-    marginVertical: 12,
-  },
-  routeDetails: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  routeDotLine: {
-    alignItems: 'center',
-    marginRight: 12,
-  },
-  routeDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  routeLine: {
-    width: 2,
-    height: 18,
-    backgroundColor: WARM_CORE.border,
-    marginVertical: 2,
-  },
-  routeTextContainer: {
-    flex: 1,
-  },
-  routeText: {
-    fontSize: 13,
-    color: WARM_CORE.textSecondary,
-    fontWeight: '500',
-  },
-  actionCTA: {
-    backgroundColor: WARM_CORE.success,
-    borderRadius: 12,
-    height: 48,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  actionCTAText: {
-    color: WARM_CORE.white,
-    fontWeight: '700',
-    fontSize: 14,
-  },
-  timelineContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-    marginTop: 6,
-    marginBottom: 12,
-  },
-  timelineStep: {
-    alignItems: 'center',
-    width: 50,
-  },
-  timelineDot: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    justifyContent: 'center',
-    alignItems: 'center',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 3,
-  },
-  timelineLabel: {
-    fontSize: 9,
-    fontWeight: '800',
-    marginTop: 4,
-    textAlign: 'center',
-  },
-  timelineLink: {
-    height: 2,
-    flex: 1,
-    alignSelf: 'center',
-    marginTop: -14, // align with center of the dots
-  },
-  overlay: {
-    flex: 1,
-    backgroundColor: 'rgba(30, 18, 13, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  menuContainer: {
-    width: '100%',
-    backgroundColor: WARM_CORE.background,
-    borderRadius: 16,
-    padding: 18,
-    alignItems: 'center',
-  },
-  menuTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: WARM_CORE.text,
-    marginBottom: 16,
-  },
-  menuItem: {
-    width: '100%',
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: WARM_CORE.card,
-    marginBottom: 12,
-  },
-  menuItemText: {
-    fontSize: 14,
-    color: WARM_CORE.text,
-    fontWeight: '600',
-    marginLeft: 10,
-  },
-  menuCancel: {
-    paddingVertical: 12,
-  },
-  menuCancelText: {
-    fontSize: 13,
-    color: WARM_CORE.textSecondary,
-    fontWeight: '700',
-  },
-  sosContainer: {
-    width: '100%',
-    backgroundColor: WARM_CORE.background,
-    borderRadius: 20,
-    padding: 20,
-    alignItems: 'center',
-  },
-  sosTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: WARM_CORE.error,
-    marginTop: 10,
-    marginBottom: 6,
-  },
-  sosDescription: {
-    fontSize: 13,
-    color: WARM_CORE.textSecondary,
-    textAlign: 'center',
-    lineHeight: 18,
-    marginBottom: 20,
-  },
-  sosBtn: {
-    width: '100%',
-    height: 48,
-    borderRadius: 12,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  sosBtnText: {
-    color: WARM_CORE.white,
-    fontWeight: '700',
-    fontSize: 14,
-  },
-  sosClose: {
-    paddingVertical: 10,
-  },
-  sosCloseText: {
-    fontSize: 13,
-    color: WARM_CORE.textSecondary,
-    fontWeight: '700',
-  },
-  chatContainer: {
-    flex: 1,
-    backgroundColor: WARM_CORE.background,
-  },
-  chatHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: WARM_CORE.border,
-  },
-  chatCloseBtn: {
-    padding: 8,
-  },
-  chatTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: WARM_CORE.text,
-  },
-  chatFeed: {
-    padding: 16,
-  },
-  systemMsgContainer: {
-    alignItems: 'center',
-    marginVertical: 10,
-  },
-  systemMsgText: {
-    fontSize: 11,
-    color: WARM_CORE.textSecondary,
-    backgroundColor: WARM_CORE.card,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 8,
+  carMarkerBody: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: WARM_CORE.primary, borderWidth: 3, borderColor: WARM_CORE.white,
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: WARM_CORE.primary, shadowOpacity: 0.6, shadowRadius: 8, elevation: 8,
     overflow: 'hidden',
   },
-  msgRow: {
-    flexDirection: 'row',
-    marginBottom: 16,
-    maxWidth: '80%',
-  },
-  msgLeft: {
-    alignSelf: 'flex-start',
-  },
-  msgRight: {
-    alignSelf: 'flex-end',
-    flexDirection: 'row-reverse',
-  },
-  chatAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: WARM_CORE.card,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: 8,
-  },
-  avatarImg: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-  },
-  chatAvatarText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: WARM_CORE.primary,
-  },
-  msgBubbleContainer: {
-    flexDirection: 'column',
-  },
-  msgSenderName: {
-    fontSize: 10,
-    color: WARM_CORE.textSecondary,
-    marginBottom: 2,
-    marginLeft: 4,
-  },
-  msgBubble: {
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
-  bubbleMe: {
-    backgroundColor: WARM_CORE.primary,
-    borderTopRightRadius: 2,
-  },
-  bubbleOther: {
-    backgroundColor: WARM_CORE.card,
-    borderTopLeftRadius: 2,
-  },
-  msgText: {
-    fontSize: 13,
-    lineHeight: 18,
-  },
-  textMe: {
-    color: WARM_CORE.white,
-  },
-  textOther: {
-    color: WARM_CORE.text,
-  },
-  chatInputRow: {
-    flexDirection: 'row',
-    padding: 12,
-    borderTopWidth: 1,
-    borderTopColor: WARM_CORE.border,
-    backgroundColor: WARM_CORE.background,
-    alignItems: 'center',
-  },
-  chatInput: {
-    flex: 1,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: WARM_CORE.card,
-    paddingHorizontal: 16,
-    color: WARM_CORE.text,
-    fontSize: 14,
-    marginRight: 10,
-  },
-  chatSendBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: WARM_CORE.primary,
-    justifyContent: 'center',
-    alignItems: 'center',
+  carMarkerPhoto: { width: 40, height: 40, borderRadius: 20 },
+  carMarkerArrow: {
+    width: 0, height: 0, position: 'absolute', top: -8,
+    borderLeftWidth: 6, borderRightWidth: 6, borderBottomWidth: 10,
+    borderLeftColor: 'transparent', borderRightColor: 'transparent',
+    borderBottomColor: WARM_CORE.primary,
   },
 
-  // ─── Signal Strength HUD ─────────────────────────────────────────────────
-  signalBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    marginTop: 6,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 20,
-    gap: 6,
+  // ─── Header HUD ────────────────────────────────────────────────────────────
+  headerHUD: {
+    position: 'absolute', left: 16, right: 16, zIndex: 10,
+    backgroundColor: 'rgba(255, 252, 248, 0.97)',
+    borderRadius: 18, padding: 14,
+    borderWidth: 1, borderColor: WARM_CORE.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12, shadowRadius: 12, elevation: 6,
   },
-  signalLive: {
-    backgroundColor: '#dcfce7',
-    borderWidth: 1,
-    borderColor: '#86efac',
-  },
-  signalWeak: {
-    backgroundColor: '#fef9c3',
-    borderWidth: 1,
-    borderColor: '#fde047',
-  },
-  signalOffline: {
-    backgroundColor: '#fee2e2',
-    borderWidth: 1,
-    borderColor: '#fca5a5',
-  },
-  signalDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  signalText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#1e293b',
-    letterSpacing: 0.3,
-  },
+  headerInfoRow: { flexDirection: 'row', alignItems: 'center' },
+  backButton: { padding: 6, marginRight: 6 },
+  headerTextContainer: { flex: 1 },
+  headerDestination: { fontSize: 16, fontWeight: '800', color: WARM_CORE.text },
+  headerRouteSub: { fontSize: 11, color: WARM_CORE.textSecondary, marginTop: 2, fontWeight: '500' },
+  menuButton: { padding: 6 },
+  hudBadgeRow: { flexDirection: 'row', alignItems: 'center', marginTop: 8, gap: 8, flexWrap: 'wrap' },
+  signalBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, gap: 5 },
+  signalLive: { backgroundColor: '#dcfce7', borderWidth: 1, borderColor: '#86efac' },
+  signalWeak: { backgroundColor: '#fef9c3', borderWidth: 1, borderColor: '#fde047' },
+  signalOffline: { backgroundColor: '#fee2e2', borderWidth: 1, borderColor: '#fca5a5' },
+  signalDot: { width: 7, height: 7, borderRadius: 4 },
+  signalText: { fontSize: 10, fontWeight: '800', color: '#1e293b', letterSpacing: 0.5 },
+  speedChip: { flexDirection: 'row', alignItems: 'baseline', backgroundColor: WARM_CORE.primary + '15', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20, gap: 2 },
+  speedValue: { fontSize: 14, fontWeight: '800', color: WARM_CORE.primary },
+  speedUnit: { fontSize: 9, fontWeight: '700', color: WARM_CORE.primary, letterSpacing: 0.5 },
+  refreshChip: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 20, backgroundColor: WARM_CORE.card },
+  refreshChipText: { fontSize: 10, color: WARM_CORE.primary, fontWeight: '600' },
 
-  // ─── Background Permission Modal ──────────────────────────────────────────
-  bgPermOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.55)',
-    justifyContent: 'flex-end',
+  // ─── Floating Buttons ──────────────────────────────────────────────────────
+  floatingContainer: { position: 'absolute', right: 16, zIndex: 5, gap: 12 },
+  floatingButton: {
+    width: 48, height: 48, borderRadius: 24,
+    backgroundColor: WARM_CORE.background, justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: WARM_CORE.border,
+    shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15, shadowRadius: 5, elevation: 3,
   },
-  bgPermContainer: {
+  sosButton: { backgroundColor: WARM_CORE.error, borderColor: WARM_CORE.error },
+  chatButton: { backgroundColor: WARM_CORE.primary, borderColor: WARM_CORE.primary },
+
+  // ─── Bottom Panel ──────────────────────────────────────────────────────────
+  bottomPanel: {
+    position: 'absolute', left: 0, right: 0, bottom: 0,
     backgroundColor: WARM_CORE.background,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 28,
-    alignItems: 'center',
-    gap: 12,
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 16, paddingBottom: 20,
+    shadowColor: '#000', shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.12, shadowRadius: 16, elevation: 10,
+    borderTopWidth: 1, borderTopColor: WARM_CORE.border,
+    overflow: 'hidden',
   },
-  bgPermTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: WARM_CORE.text,
-    textAlign: 'center',
+  panelHandle: { alignItems: 'center', paddingTop: 10, paddingBottom: 6 },
+  panelHandleBar: { width: 40, height: 4, borderRadius: 2, backgroundColor: WARM_CORE.border },
+  panelStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10 },
+  statusBadge: { backgroundColor: `${WARM_CORE.primary}20`, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  statusBadgeText: { fontSize: 10, fontWeight: '800', color: WARM_CORE.primary, letterSpacing: 0.8 },
+  etaText: { fontSize: 18, fontWeight: '800', color: WARM_CORE.text },
+  distText: { fontSize: 13, fontWeight: '600', color: WARM_CORE.textSecondary },
+  routePill: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: WARM_CORE.card,
+    borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, marginBottom: 10,
   },
-  bgPermBody: {
-    fontSize: 14,
-    color: WARM_CORE.textSecondary,
-    textAlign: 'center',
-    lineHeight: 22,
+  routePillDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: '#10B981', marginRight: 8 },
+  routePillText: { fontSize: 12, color: WARM_CORE.textSecondary, fontWeight: '600', flex: 1 },
+  routePillDest: { fontSize: 12, color: WARM_CORE.text, fontWeight: '700', flex: 1 },
+  // Timeline
+  timelineContainer: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 8 },
+  timelineStep: { alignItems: 'center', width: 48 },
+  timelineDot: { width: 22, height: 22, borderRadius: 11, justifyContent: 'center', alignItems: 'center' },
+  timelineLabel: { fontSize: 8, fontWeight: '800', marginTop: 4, textAlign: 'center', letterSpacing: 0.3 },
+  timelineLink: { height: 2, flex: 1, alignSelf: 'center', marginTop: -12 },
+  // Expanded
+  expandedContent: { flex: 1, marginTop: 8 },
+  passengerSection: { marginBottom: 16 },
+  sectionTitle: { fontSize: 13, fontWeight: '800', color: WARM_CORE.text, marginBottom: 10, letterSpacing: 0.3 },
+  passengerRow: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 10,
+    borderBottomWidth: 1, borderBottomColor: WARM_CORE.border, gap: 12,
   },
-  bgPermCTA: {
-    backgroundColor: WARM_CORE.primary,
-    paddingHorizontal: 32,
-    paddingVertical: 14,
-    borderRadius: 14,
-    width: '100%',
-    alignItems: 'center',
+  passengerAvatar: {
+    width: 36, height: 36, borderRadius: 18,
+    backgroundColor: `${WARM_CORE.primary}20`, justifyContent: 'center', alignItems: 'center',
+  },
+  passengerAvatarText: { fontSize: 15, fontWeight: '800', color: WARM_CORE.primary },
+  passengerName: { fontSize: 14, fontWeight: '700', color: WARM_CORE.text },
+  passengerStatus: { fontSize: 11, color: WARM_CORE.textSecondary, marginTop: 2 },
+  pickupBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 4,
+    borderWidth: 1, borderColor: WARM_CORE.primary,
+    borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5,
+  },
+  pickupBtnText: { fontSize: 11, fontWeight: '700', color: WARM_CORE.primary },
+  finishSection: { marginBottom: 16 },
+  finishRideBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#10B981', borderRadius: 14, paddingVertical: 16,
+    shadowColor: '#10B981', shadowOpacity: 0.35, shadowRadius: 8, elevation: 5,
+  },
+  finishRideBtnDisabled: { backgroundColor: WARM_CORE.card, shadowOpacity: 0 },
+  finishRideBtnText: { fontSize: 17, fontWeight: '800', color: WARM_CORE.white },
+  finishRideSubtext: { fontSize: 11, color: '#9CA3AF', fontWeight: '500', textAlign: 'center', marginTop: 2 },
+  // CTA buttons
+  startRideCTA: {
+    backgroundColor: WARM_CORE.success, borderRadius: 14, height: 50,
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
+    shadowColor: WARM_CORE.success, shadowOpacity: 0.3, shadowRadius: 6, elevation: 4,
     marginTop: 8,
   },
-  bgPermCTAText: {
-    color: WARM_CORE.white,
-    fontWeight: '700',
-    fontSize: 15,
+  startRideCTADisabled: { backgroundColor: WARM_CORE.card },
+  startRideCTAText: { color: WARM_CORE.white, fontWeight: '800', fontSize: 14 },
+
+  // ─── Driver Arrived Modal ──────────────────────────────────────────────────
+  arrivedOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  arrivedContainer: {
+    backgroundColor: WARM_CORE.background, borderTopLeftRadius: 28, borderTopRightRadius: 28,
+    padding: 28, alignItems: 'center', paddingBottom: 40,
   },
-  bgPermDismiss: {
-    paddingVertical: 10,
+  arrivedIconWrap: {
+    width: 80, height: 80, borderRadius: 40,
+    backgroundColor: `${WARM_CORE.primary}15`, justifyContent: 'center', alignItems: 'center',
+    marginBottom: 16,
   },
-  bgPermDismissText: {
-    fontSize: 12,
-    color: WARM_CORE.textSecondary,
+  arrivedTitle: { fontSize: 22, fontWeight: '800', color: WARM_CORE.text, marginBottom: 8, textAlign: 'center' },
+  arrivedSubtitle: { fontSize: 14, color: WARM_CORE.textSecondary, textAlign: 'center', lineHeight: 22, marginBottom: 24 },
+  arrivedConfirmBtn: {
+    width: '100%', backgroundColor: WARM_CORE.primary,
+    borderRadius: 14, paddingVertical: 16,
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
+    shadowColor: WARM_CORE.primary, shadowOpacity: 0.4, shadowRadius: 8, elevation: 6,
+    marginBottom: 12,
   },
+  arrivedConfirmText: { fontSize: 16, fontWeight: '800', color: WARM_CORE.white },
+  arrivedDismiss: { paddingVertical: 10 },
+  arrivedDismissText: { fontSize: 13, color: WARM_CORE.textSecondary, fontWeight: '600' },
+
+  // ─── Boarding Overlay ──────────────────────────────────────────────────────
+  boardingOverlay: {
+    backgroundColor: WARM_CORE.background, zIndex: 100,
+    flexDirection: 'column',
+  },
+  boardingHeader: { padding: 24, alignItems: 'center', borderBottomWidth: 1, borderBottomColor: WARM_CORE.border },
+  boardingTitle: { fontSize: 22, fontWeight: '800', color: WARM_CORE.text, marginTop: 8 },
+  boardingSubtitle: { fontSize: 13, color: WARM_CORE.textSecondary, marginTop: 4, textAlign: 'center' },
+  boardingPassengerRow: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 16,
+    borderBottomWidth: 1, borderBottomColor: WARM_CORE.border, gap: 14,
+    borderRadius: 12, paddingHorizontal: 4,
+  },
+  boardingPassengerRowDone: { opacity: 0.7 },
+  boardingCheckbox: {
+    width: 28, height: 28, borderRadius: 8, borderWidth: 2,
+    borderColor: WARM_CORE.border, justifyContent: 'center', alignItems: 'center',
+  },
+  boardingCheckboxDone: { backgroundColor: '#10B981', borderColor: '#10B981' },
+  boardingPassengerName: { fontSize: 16, fontWeight: '700', color: WARM_CORE.text },
+  boardingPassengerSub: { fontSize: 12, color: WARM_CORE.textSecondary, marginTop: 2 },
+  boardingOnboard: { backgroundColor: '#dcfce7', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
+  boardingOnboardText: { fontSize: 11, fontWeight: '700', color: '#16a34a' },
+
+  // ─── Bg Perm Modal ─────────────────────────────────────────────────────────
+  bgPermOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.55)', justifyContent: 'flex-end' },
+  bgPermContainer: {
+    backgroundColor: WARM_CORE.background, borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    padding: 28, alignItems: 'center', gap: 12,
+  },
+  bgPermTitle: { fontSize: 20, fontWeight: '800', color: WARM_CORE.text, textAlign: 'center' },
+  bgPermBody: { fontSize: 14, color: WARM_CORE.textSecondary, textAlign: 'center', lineHeight: 22 },
+  bgPermCTA: {
+    backgroundColor: WARM_CORE.primary, paddingHorizontal: 32, paddingVertical: 14,
+    borderRadius: 14, width: '100%', alignItems: 'center', marginTop: 8,
+  },
+  bgPermCTAText: { color: WARM_CORE.white, fontWeight: '700', fontSize: 15 },
+  bgPermDismiss: { paddingVertical: 10 },
+  bgPermDismissText: { fontSize: 12, color: WARM_CORE.textSecondary },
+
+  // ─── Menu Modal ────────────────────────────────────────────────────────────
+  overlay: { flex: 1, backgroundColor: 'rgba(30, 18, 13, 0.5)', justifyContent: 'center', alignItems: 'center', padding: 24 },
+  menuContainer: { width: '100%', backgroundColor: WARM_CORE.background, borderRadius: 16, padding: 18, alignItems: 'center' },
+  menuTitle: { fontSize: 16, fontWeight: '700', color: WARM_CORE.text, marginBottom: 16 },
+  menuItem: {
+    width: '100%', flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 14, paddingHorizontal: 12, borderRadius: 12,
+    backgroundColor: WARM_CORE.card, marginBottom: 12,
+  },
+  menuItemText: { fontSize: 14, color: WARM_CORE.text, fontWeight: '600', marginLeft: 10 },
+  menuCancel: { paddingVertical: 12 },
+  menuCancelText: { fontSize: 13, color: WARM_CORE.textSecondary, fontWeight: '700' },
+
+  // ─── SOS Modal ─────────────────────────────────────────────────────────────
+  sosContainer: { width: '100%', backgroundColor: WARM_CORE.background, borderRadius: 20, padding: 20, alignItems: 'center' },
+  sosTitle: { fontSize: 18, fontWeight: '700', color: WARM_CORE.error, marginTop: 10, marginBottom: 6 },
+  sosDescription: { fontSize: 13, color: WARM_CORE.textSecondary, textAlign: 'center', lineHeight: 18, marginBottom: 20 },
+  sosBtn: { width: '100%', height: 48, borderRadius: 12, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
+  sosBtnText: { color: WARM_CORE.white, fontWeight: '700', fontSize: 14 },
+  sosClose: { paddingVertical: 10 },
+  sosCloseText: { fontSize: 13, color: WARM_CORE.textSecondary, fontWeight: '700' },
+
+  // ─── Chat Modal ────────────────────────────────────────────────────────────
+  chatContainer: { flex: 1, backgroundColor: WARM_CORE.background },
+  chatHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingVertical: 12,
+    borderBottomWidth: 1, borderBottomColor: WARM_CORE.border,
+  },
+  chatCloseBtn: { padding: 8 },
+  chatTitle: { fontSize: 16, fontWeight: '700', color: WARM_CORE.text },
+  chatFeed: { padding: 16 },
+  systemMsgContainer: { alignItems: 'center', marginVertical: 10 },
+  systemMsgText: {
+    fontSize: 11, color: WARM_CORE.textSecondary, backgroundColor: WARM_CORE.card,
+    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, overflow: 'hidden',
+  },
+  msgRow: { flexDirection: 'row', marginBottom: 16, maxWidth: '80%' },
+  msgLeft: { alignSelf: 'flex-start' },
+  msgRight: { alignSelf: 'flex-end', flexDirection: 'row-reverse' },
+  chatAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: WARM_CORE.card, justifyContent: 'center', alignItems: 'center', marginRight: 8 },
+  avatarImg: { width: 32, height: 32, borderRadius: 16 },
+  chatAvatarText: { fontSize: 14, fontWeight: '700', color: WARM_CORE.primary },
+  msgBubbleContainer: { flexDirection: 'column' },
+  msgSenderName: { fontSize: 10, color: WARM_CORE.textSecondary, marginBottom: 2, marginLeft: 4 },
+  msgBubble: { borderRadius: 14, paddingHorizontal: 12, paddingVertical: 8 },
+  bubbleMe: { backgroundColor: WARM_CORE.primary, borderTopRightRadius: 2 },
+  bubbleOther: { backgroundColor: WARM_CORE.card, borderTopLeftRadius: 2 },
+  msgText: { fontSize: 13, lineHeight: 18 },
+  textMe: { color: WARM_CORE.white },
+  textOther: { color: WARM_CORE.text },
+  chatInputRow: {
+    flexDirection: 'row', padding: 12,
+    borderTopWidth: 1, borderTopColor: WARM_CORE.border,
+    backgroundColor: WARM_CORE.background, alignItems: 'center',
+  },
+  chatInput: {
+    flex: 1, height: 40, borderRadius: 20, backgroundColor: WARM_CORE.card,
+    paddingHorizontal: 16, color: WARM_CORE.text, fontSize: 14, marginRight: 10,
+  },
+  chatSendBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: WARM_CORE.primary, justifyContent: 'center', alignItems: 'center' },
 });

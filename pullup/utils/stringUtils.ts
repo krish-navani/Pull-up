@@ -46,10 +46,8 @@ export const getTimeBasedGreeting = (firstName?: string): string => {
     return `Good morning${nameString}`;
   } else if (hour >= 12 && hour < 17) {
     return `Good afternoon${nameString}`;
-  } else if (hour >= 17 && hour < 21) {
-    return `Good evening${nameString}`;
   } else {
-    return `Hello${nameString}`;
+    return `Good evening${nameString}`;
   }
 };
 
@@ -71,15 +69,8 @@ export const getGreetingContent = (firstName?: string) => {
     };
   }
 
-  if (hour >= 17 && hour < 21) {
-    return {
-      title: `🌇 Good Evening, ${name}!`,
-      subtitle: 'Heading home from Atlas?',
-    };
-  }
-
   return {
-    title: `🌙 Good Night, ${name}!`,
+    title: `🌇 Good Evening, ${name}!`,
     subtitle: 'Traveling late? Stay safe.',
   };
 };

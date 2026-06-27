@@ -1,5 +1,6 @@
 import { ThemeProvider } from '@react-navigation/native';
 import * as Location from 'expo-location';
+import * as Notifications from 'expo-notifications';
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Stack, useRouter, useSegments } from 'expo-router';
@@ -103,6 +104,9 @@ function RootLayoutContent() {
             resolvedScreen = 'wallet';
           } else if (type === 'marketing') {
             resolvedScreen = 'notifications';
+          } else if (['driver_arrived', 'passenger_confirmed_pickup', 'ride_started'].includes(type)) {
+            // Live tracking events — open the navigation screen directly
+            resolvedScreen = 'navigation';
           }
         }
 
@@ -112,6 +116,9 @@ function RootLayoutContent() {
 
         if (resolvedScreen === 'group-chat') {
           router.push({ pathname: '/group-chat', params: { rideId: resolvedRideId, rideType: rideType || 'carpool' } } as any);
+        } else if (resolvedScreen === 'navigation') {
+          // Live tracking — open the navigation screen directly
+          router.push({ pathname: '/navigation', params: { rideId: resolvedRideId } } as any);
         } else if (resolvedScreen === 'ride-details') {
           router.push({ pathname: '/ride-details', params: { rideId: resolvedRideId } } as any);
         } else if (resolvedScreen === 'taxi-pool-details') {
@@ -149,6 +156,26 @@ function RootLayoutContent() {
     };
   }, [router]);
 
+  // Handle taps on local expo-notifications (foreground notifications we schedule ourselves)
+  useEffect(() => {
+    const sub = Notifications.addNotificationResponseReceivedListener((response) => {
+      try {
+        const data = response.notification.request.content.data as any;
+        if (!data) return;
+        const { type, rideId, targetScreen, targetId } = data;
+        const resolvedRideId = rideId || targetId;
+        console.log('[LOCAL NOTIF TAP] type:', type, 'rideId:', resolvedRideId);
+        if (['driver_arrived', 'passenger_confirmed_pickup', 'ride_started'].includes(type) && resolvedRideId) {
+          router.push({ pathname: '/navigation', params: { rideId: resolvedRideId } } as any);
+        } else if (resolvedRideId) {
+          router.push({ pathname: '/ride-details', params: { rideId: resolvedRideId } } as any);
+        }
+      } catch (err) {
+        console.error('[LOCAL NOTIF TAP] Error:', err);
+      }
+    });
+    return () => sub.remove();
+  }, [router]);
 
   // Request location permission on app launch
   useEffect(() => {

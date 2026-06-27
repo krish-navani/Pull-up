@@ -52,19 +52,20 @@ export default function GreetingBanner({ firstName, style }: GreetingBannerProps
 
 const styles = StyleSheet.create({
   container: {
-    paddingHorizontal: 20,
-    paddingVertical: 10,
+    paddingHorizontal: 0,
+    paddingVertical: 4,
   },
   title: {
-    fontSize: 28,
+    fontSize: 20,
     fontWeight: '700',
     color: WARM_CORE.text,
-    lineHeight: 34,
+    lineHeight: 26,
+    letterSpacing: -0.3,
   },
   subtitle: {
-    fontSize: 15,
+    fontSize: 13,
     fontWeight: '500',
-    color: WARM_CORE.textSecondary, // WARM_CORE uses textSecondary for labels/subtitles
-    marginTop: 4,
+    color: WARM_CORE.textSecondary,
+    marginTop: 2,
   },
 });

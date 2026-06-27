@@ -6,8 +6,9 @@ import { sendNotification } from './notificationService';
 import { completeTaxiPoolRide } from './taxiPoolService';
 
 export const GEOFENCE_RADIUS_METERS = {
-  PICKUP: 200,      // 200m for passenger pickup geofence
-  COMPLETION: 2000,  // 2km for ride completion geofence
+  PICKUP: 200,          // 200m — driver nearby, show "be ready" notification
+  DRIVER_ARRIVED: 50,   // 50m — driver arrived, show "I'm here" + ask passenger to confirm
+  COMPLETION: 2000,     // 2km — auto-complete ride
 };
 
 export class GeofenceEngine {
@@ -171,7 +172,9 @@ export class GeofenceEngine {
   }
 
   /**
-   * Check and notify passengers when driver is nearby their pickup location (200m).
+   * Check and notify passengers when driver is nearby their pickup location.
+   * - 200m → "be ready" notification (once)
+   * - 50m  → "driver arrived" notification (once), triggers in-app confirmation modal
    */
   static async checkAndNotifyNearbyPickups(
     rideId: string,
@@ -197,8 +200,8 @@ export class GeofenceEngine {
         if (!bookingSnap.exists()) continue;
         const booking = bookingSnap.data();
 
-        // Skip if already picked up or notified
-        if (booking.pickedUp || booking.notifiedNearby) continue;
+        // Skip if already picked up
+        if (booking.pickedUp) continue;
 
         const pickupLoc = booking.passengerPickupLocation;
         if (!pickupLoc) continue;
@@ -211,19 +214,40 @@ export class GeofenceEngine {
         );
 
         const nearbyThresholdKM = GEOFENCE_RADIUS_METERS.PICKUP / 1000; // 0.2 km = 200m
+        const arrivedThresholdKM = GEOFENCE_RADIUS_METERS.DRIVER_ARRIVED / 1000; // 0.05 km = 50m
 
-        if (distanceToPickup <= nearbyThresholdKM) {
-          console.log(`[GEOFENCE ENGINE] Driver is nearby pickup for booking ${bookingId} (${distanceToPickup.toFixed(3)} km)`);
+        // ── 50m: Driver has ARRIVED at pickup ────────────────────────────────
+        if (distanceToPickup <= arrivedThresholdKM && !booking.notifiedArrived) {
+          console.log(`[GEOFENCE ENGINE] Driver ARRIVED at pickup for booking ${bookingId} (${(distanceToPickup * 1000).toFixed(0)}m)`);
 
-          // Update booking document in Firestore to prevent double notifications
+          await updateDoc(bookingRef, {
+            notifiedArrived: true,
+            driverArrivedAt: new Date().toISOString(),
+            notifiedNearby: true, // also mark nearby so we don't double-notify
+          });
+
+          // Send strong "driver arrived" push notification to passenger
+          await sendNotification(
+            booking.passengerId,
+            'driver_arrived',
+            '🚗 Driver Has Arrived!',
+            `${ride.driverName || 'Your driver'} is at your pickup point. Please come out now!`,
+            rideId,
+            bookingId
+          );
+
+        // ── 200m: Driver is NEARBY pickup ─────────────────────────────────────
+        } else if (distanceToPickup <= nearbyThresholdKM && !booking.notifiedNearby) {
+          console.log(`[GEOFENCE ENGINE] Driver nearby pickup for booking ${bookingId} (${(distanceToPickup * 1000).toFixed(0)}m)`);
+
           await updateDoc(bookingRef, { notifiedNearby: true });
 
-          // Send notification to passenger
+          // Send "be ready" notification to passenger
           await sendNotification(
             booking.passengerId,
             'booking_accepted',
-            'Driver is nearby!',
-            `Your driver is within 200m of your pickup location. Please be ready.`,
+            '🚗 Driver is Nearby!',
+            `Your driver is within 200m of your pickup location. Please be ready to board.`,
             rideId,
             bookingId
           );
@@ -233,4 +257,41 @@ export class GeofenceEngine {
       console.error('[GEOFENCE ENGINE] Error in checkAndNotifyNearbyPickups:', error);
     }
   }
+
+  /**
+   * Called by passenger to confirm they have boarded the vehicle.
+   * Updates booking.pickedUp = true and notifies the driver.
+   */
+  static async confirmPassengerPickup(
+    rideId: string,
+    passengerId: string,
+    passengerName: string,
+    driverId: string
+  ): Promise<void> {
+    try {
+      const bookingId = `${rideId}_${passengerId}`;
+      const bookingRef = doc(db, 'bookings', bookingId);
+      await updateDoc(bookingRef, {
+        pickedUp: true,
+        pickedUpAt: new Date().toISOString(),
+        pickedUpByPassenger: true,
+      });
+
+      // Notify driver that passenger has boarded
+      await sendNotification(
+        driverId,
+        'passenger_confirmed_pickup',
+        '✅ Passenger Boarded!',
+        `${passengerName} has confirmed they are in the car.`,
+        rideId,
+        bookingId
+      );
+
+      console.log(`[GEOFENCE ENGINE] ✅ Passenger ${passengerName} confirmed pickup for ride ${rideId}`);
+    } catch (error) {
+      console.error('[GEOFENCE ENGINE] Error confirming passenger pickup:', error);
+      throw error;
+    }
+  }
 }
+

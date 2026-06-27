@@ -6,6 +6,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { WARM_CORE } from '@/constants/theme';
 import { useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
+import UserAvatar from '@/components/UserAvatar';
 import {
   Animated,
   Easing,
@@ -175,9 +176,7 @@ export default function AllRidesScreen() {
                   <View style={styles.divider} />
                   <View style={styles.cardFooter}>
                     <View style={styles.driverSection}>
-                      <View style={styles.driverAvatar}>
-                        <Text style={styles.driverInitial}>{ride.driverName.charAt(0)}</Text>
-                      </View>
+                      <UserAvatar imageUrl={(ride as any).driverImage || (ride as any).driverProfileImage} name={ride.driverName} size={34} />
                       <View>
                         <Text style={styles.driverName} numberOfLines={1}>{ride.driverName}</Text>
                         <View style={styles.metaRow}>

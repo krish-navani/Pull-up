@@ -3017,7 +3017,7 @@ export async function triggerNotification(
     // Use fcmToken (new) with fallback to expoPushToken for migration compatibility
     const fcmToken = userData.fcmToken || userData.expoPushToken;
 
-    if (isAllowed && fcmToken && !fcmToken.startsWith('ExponentPushToken')) {
+    if (isAllowed && fcmToken && !fcmToken.startsWith('ExponentPushToken') && !fcmToken.startsWith('ExpoPushToken')) {
       try {
         // Calculate unread count for badge
         let unreadCount = 1;
@@ -3077,7 +3077,7 @@ export async function triggerNotification(
           console.error('[FCM] Push send error:', err.code, err.message);
         }
       }
-    } else if (isAllowed && fcmToken && fcmToken.startsWith('ExponentPushToken')) {
+    } else if (isAllowed && fcmToken && (fcmToken.startsWith('ExponentPushToken') || fcmToken.startsWith('ExpoPushToken'))) {
       // Legacy Expo push path for devices not yet updated to FCM token
       try {
         const fetchFn = (globalThis as any).fetch;

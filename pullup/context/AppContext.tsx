@@ -869,7 +869,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
         });
 
-        // Handle foreground FCM messages (show Toast banner)
+        // Handle foreground FCM messages — show a real local OS notification
+        // (FCM does NOT show the notification tray banner by itself when the app is open)
         messaging().onMessage(async (remoteMessage: any) => {
           if (!isMounted) return;
           try {
@@ -877,14 +878,31 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             const title = notification?.title || data?.title || 'New Notification';
             const body = notification?.body || data?.message || '';
             console.log('[FCM] Foreground message received:', title);
-            const Toast = require('react-native-toast-message').default;
-            if (Toast) {
-              Toast.show({
-                type: 'info',
-                text1: title,
-                text2: body,
-              });
-            }
+
+            // Present as a real local notification so it shows in the notification tray/banner
+            await Notifications.scheduleNotificationAsync({
+              content: {
+                title,
+                body,
+                sound: 'default',
+                data: data || {},
+                badge: 1,
+              },
+              trigger: null, // show immediately
+            });
+
+            // Also show in-app toast for UX continuity
+            try {
+              const Toast = require('react-native-toast-message').default;
+              if (Toast) {
+                Toast.show({
+                  type: 'info',
+                  text1: title,
+                  text2: body,
+                  visibilityTime: 4000,
+                });
+              }
+            } catch (_) {}
           } catch (err) {
             console.error('[FCM] Error handling foreground message:', err);
           }

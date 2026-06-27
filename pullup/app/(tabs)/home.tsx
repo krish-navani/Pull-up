@@ -145,9 +145,12 @@ function UnifiedFeedCard({ item, onPress }: { item: any; onPress: () => void }) 
 
       {/* Footer Info Row */}
       <View style={styles.cardFooterRow}>
-        <Text style={styles.cardUserText}>
-          {item.creatorName}  ·  ★ {item.creatorRating}
-        </Text>
+        <View style={styles.cardCreatorInfo}>
+          <UserAvatar imageUrl={item.creatorImage} name={item.creatorName} size={26} />
+          <Text style={styles.cardUserText} numberOfLines={1}>
+            {item.creatorName}  ·  ★ {item.creatorRating}
+          </Text>
+        </View>
         <Text style={styles.cardSeatsText}>
           {item.seatsLeft} {item.seatsLeft === 1 ? 'seat' : 'seats'} left →
         </Text>
@@ -251,6 +254,7 @@ export default function HomeScreen() {
           seatsLeft: ride.availableSeats,
           totalSeats: ride.totalSeats,
           creatorName: ride.driverName,
+          creatorImage: (ride as any).driverImage || (ride as any).driverProfileImage || null,
           creatorRating: '4.9',
           rawItem: ride,
           distance: distanceVal,
@@ -1912,10 +1916,18 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   } as ViewStyle,
+  cardCreatorInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    flex: 1,
+    marginRight: 10,
+  } as ViewStyle,
   cardUserText: {
     fontSize: 12,
     fontWeight: '700',
     color: WARM_CORE.textSecondary,
+    flex: 1,
   } as TextStyle,
   cardSeatsText: {
     fontSize: 12,

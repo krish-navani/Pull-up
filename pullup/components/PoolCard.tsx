@@ -12,6 +12,7 @@ import {
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { WARM_CORE } from '@/constants/theme';
 import { createFloatAnimation, createSpringPressAnimation } from '@/utils/animationConfig';
+import UserAvatar from '@/components/UserAvatar';
 
 export interface PoolCardProps {
   destination: string;
@@ -128,15 +129,7 @@ export default function PoolCard({
         {/* Top Header Row: Creator Info + Status Badge */}
         <View style={styles.topRow}>
           <View style={styles.creatorContainer}>
-            <View style={styles.avatar}>
-              {creatorImage ? (
-                <Image source={{ uri: creatorImage }} style={styles.avatarImg} />
-              ) : (
-                <Text style={styles.avatarInitial}>
-                  {creatorName.charAt(0).toUpperCase()}
-                </Text>
-              )}
-            </View>
+            <UserAvatar imageUrl={creatorImage} name={creatorName} size={36} style={{ marginRight: 10 }} />
             <View style={styles.creatorDetails}>
               <Text style={styles.creatorName} numberOfLines={1}>{creatorName}</Text>
               <Text style={styles.creatorMeta} numberOfLines={1}>
