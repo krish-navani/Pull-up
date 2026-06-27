@@ -2934,6 +2934,29 @@ async function withPushRetry<T>(label: string, fn: () => Promise<T>, attempts = 
 }
 
 // Helper function to send unified notification and push alert
+async function recordNotificationFailure(db: any, userId: string, errorMsg: string) {
+  try {
+    const userRef = db.collection('users').doc(userId);
+    await db.runTransaction(async (transaction: any) => {
+      const uSnap = await transaction.get(userRef);
+      if (uSnap.exists) {
+        const uData = uSnap.data() || {};
+        const health = uData.notificationHealth || { failureCount: 0 };
+        transaction.update(userRef, {
+          notificationHealth: {
+            lastFailure: new Date().toISOString(),
+            lastFailureReason: errorMsg,
+            failureCount: (health.failureCount || 0) + 1
+          }
+        });
+      }
+    });
+  } catch (err: any) {
+    console.error('[NOTIFICATIONS] Failed to record notification health status:', err.message);
+  }
+}
+
+// Helper function to send unified notification and push alert
 export async function triggerNotification(
   userId: string,
   type: string,
@@ -2943,7 +2966,8 @@ export async function triggerNotification(
   bookingId: string | null = null,
   targetScreen: string | null = null,
   targetId: string | null = null,
-  campaignId: string | null = null
+  campaignId: string | null = null,
+  isRetry = false
 ): Promise<boolean> {
   try {
     const db = getDb();
@@ -3045,22 +3069,12 @@ export async function triggerNotification(
 
     // 4. Send FCM push if allowed and token exists
     let pushSent = false;
-    // Use fcmToken (new) with fallback to expoPushToken for migration compatibility
     const fcmToken = userData.fcmToken || userData.expoPushToken;
+    const isExpoToken = fcmToken?.startsWith('ExponentPushToken') || fcmToken?.startsWith('ExpoPushToken');
 
-    if (isAllowed && fcmToken && !fcmToken.startsWith('ExponentPushToken') && !fcmToken.startsWith('ExpoPushToken')) {
+    if (isAllowed && fcmToken && !isExpoToken) {
       try {
-        // Calculate unread count for badge
         let unreadCount = 1;
-        if (false) try {
-          const unreadSnap = await db.collection('users').doc(userId).collection('notifications')
-            .where('read', '==', false)
-            .get();
-          unreadCount = unreadSnap.size;
-        } catch (e) {
-          console.warn('[BADGE] Failed to fetch unread count, defaulting to 1:', e);
-        }
-
         await withPushRetry('FCM send', () => admin.messaging().send({
           token: fcmToken,
           notification: {
@@ -3081,7 +3095,6 @@ export async function triggerNotification(
               sound: 'default',
               channelId: 'default',
               notificationCount: unreadCount,
-              // icon: 'ic_stat_pullup' — removed; use app's default launcher icon
             },
           },
           apns: {
@@ -3097,29 +3110,19 @@ export async function triggerNotification(
         pushSent = true;
         console.log(`[FCM] Push sent successfully to user ${userId}`);
       } catch (err: any) {
-        // If the token is stale / unregistered, clear it from Firestore
         if (err.code === 'messaging/registration-token-not-registered' ||
             err.code === 'messaging/invalid-registration-token') {
-          console.warn(`[FCM] Stale token for user ${userId}, clearing from Firestore`);
-          try {
-            await db.collection('users').doc(userId).update({ fcmToken: null, expoPushToken: null });
-          } catch (_) {}
+          console.warn(`[FCM] Stale token for user ${userId}, recording failure status`);
+          await recordNotificationFailure(db, userId, err.message || err.code || 'invalid-registration-token');
         } else {
           console.error('[FCM] Push send error:', err.code, err.message);
         }
       }
-    } else if (isAllowed && fcmToken && (fcmToken.startsWith('ExponentPushToken') || fcmToken.startsWith('ExpoPushToken'))) {
-      // Legacy Expo push path for devices not yet updated to FCM token
+    } else if (isAllowed && fcmToken && isExpoToken) {
       try {
         const fetchFn = (globalThis as any).fetch;
         if (typeof fetchFn === 'function') {
           let unreadCount = 1;
-          try {
-            const unreadSnap = await db.collection('users').doc(userId).collection('notifications')
-              .where('read', '==', false).get();
-            unreadCount = unreadSnap.size;
-          } catch (_) {}
-
           const expoResponse = await withPushRetry<any>('Expo push send', () => fetchFn('https://exp.host/--/api/v2/push/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3140,26 +3143,52 @@ export async function triggerNotification(
               pushSent = false;
               console.error('[EXPO PUSH] Ticket error:', ticket?.message, ticket?.details);
               if (ticket?.details?.error === 'DeviceNotRegistered') {
-                await db.collection('users').doc(userId).update({ expoPushToken: null }).catch(() => {});
+                await recordNotificationFailure(db, userId, 'DeviceNotRegistered');
               }
             }
           } else {
             console.error('[EXPO PUSH] HTTP error:', expoResponse.status, expoResult);
           }
         }
-      } catch (err) {
-        console.error('[PUSH ERROR] Failed to send legacy Expo push:', err);
+      } catch (err: any) {
+        console.error('[PUSH ERROR] Failed to send Expo push:', err);
       }
     }
-
 
     // 5. Update Campaign Analytics if campaignId exists
     if (campaignId) {
       const campRef = db.collection('notificationAnalytics').doc(campaignId);
-      await campRef.update({
-        sentCount: admin.firestore.FieldValue.increment(1),
-        deliveredCount: admin.firestore.FieldValue.increment(pushSent ? 1 : 0)
-      }).catch(e => console.error('[ANALYTICS] Campaign updates failed:', e));
+      await campRef.set({
+        sent: admin.firestore.FieldValue.increment(1),
+        delivered: admin.firestore.FieldValue.increment(pushSent ? 1 : 0),
+        failed: admin.firestore.FieldValue.increment(pushSent ? 0 : 1)
+      }, { merge: true }).catch(e => console.error('[ANALYTICS] Campaign updates failed:', e));
+    }
+
+    // 6. Notification Retry Queue: queue it on failure if this is not a retry attempt
+    if (!pushSent && !isRetry) {
+      try {
+        const queueRef = db.collection('notificationQueue').doc();
+        await queueRef.set({
+          id: queueRef.id,
+          userId,
+          type,
+          title,
+          message,
+          rideId: rideId || null,
+          bookingId: bookingId || null,
+          targetScreen: targetScreen || null,
+          targetId: targetId || null,
+          campaignId: campaignId || null,
+          status: 'pending',
+          attempts: 0,
+          createdAt: admin.firestore.Timestamp.now(),
+          nextRetry: admin.firestore.Timestamp.fromDate(new Date(Date.now() + 30 * 1000)), // 30s
+        });
+        console.log(`[QUEUE] Added failed notification to retry queue for user ${userId}`);
+      } catch (queueErr: any) {
+        console.error('[QUEUE] Failed to add notification to queue:', queueErr.message);
+      }
     }
 
     return pushSent;
@@ -3259,9 +3288,8 @@ router.post('/send-notification', async (req: Request, res: Response) => {
   }
 });
 
-// REST route to track opened/clicked campaign analytics
 router.post('/analytics/track', async (req: Request, res: Response) => {
-  const { campaignId, action } = req.body;
+  const { campaignId, action, openTimeMs } = req.body;
   if (!campaignId || !action) {
     return res.status(400).json({ success: false, message: 'Missing campaignId or action' });
   }
@@ -3270,15 +3298,43 @@ router.post('/analytics/track', async (req: Request, res: Response) => {
     const db = getDb();
     const campRef = db.collection('notificationAnalytics').doc(campaignId);
     
-    const updateData: Record<string, any> = {};
-    if (action === 'opened') {
-      updateData.openedCount = admin.firestore.FieldValue.increment(1);
-      console.log(`[NOTIFICATION OPENED]\nnotificationId: ${campaignId}`);
-    } else if (action === 'clicked') {
-      updateData.clickedCount = admin.firestore.FieldValue.increment(1);
-    }
+    await db.runTransaction(async (transaction) => {
+      const campSnap = await transaction.get(campRef);
+      const campData = campSnap.exists ? (campSnap.data() || {}) : {};
+      
+      const currentSent = campData.sent || 0;
+      const currentDelivered = campData.delivered || 0;
+      const currentFailed = campData.failed || 0;
+      const currentOpened = campData.opened || 0;
+      const currentClicked = campData.clicked || 0;
+      const totalOpenTimeMs = campData.totalOpenTimeMs || 0;
+      
+      const updates: Record<string, any> = {};
+      
+      if (action === 'opened') {
+        const newOpened = currentOpened + 1;
+        updates.opened = newOpened;
+        
+        if (openTimeMs !== undefined && typeof openTimeMs === 'number') {
+          const newTotalTime = totalOpenTimeMs + openTimeMs;
+          updates.totalOpenTimeMs = newTotalTime;
+          updates.averageOpenTimeMs = Math.round(newTotalTime / newOpened);
+          updates.averageOpenTime = `${Math.round((newTotalTime / newOpened) / 1000)}s`;
+        }
+        console.log(`[NOTIFICATION OPENED]\nnotificationId: ${campaignId}`);
+      } else if (action === 'clicked') {
+        const newClicked = currentClicked + 1;
+        updates.clicked = newClicked;
+      }
+      
+      // Calculate CTR: clicked / delivered (avoid dividing by zero)
+      const finalClicked = updates.clicked !== undefined ? updates.clicked : currentClicked;
+      const finalDelivered = currentDelivered > 0 ? currentDelivered : (currentSent > 0 ? currentSent : 1);
+      updates.CTR = parseFloat((finalClicked / finalDelivered).toFixed(4));
+      
+      transaction.set(campRef, updates, { merge: true });
+    });
 
-    await campRef.update(updateData);
     res.json({ success: true });
   } catch (error: any) {
     console.error('[ROUTES] /analytics/track error:', error);
@@ -3325,12 +3381,91 @@ async function triggerSystemChatMessage(db: any, rideId: string, text: string) {
   }
 }
 
+export async function processNotificationQueue(): Promise<number> {
+  try {
+    const db = getDb();
+    const now = new Date();
+    
+    // Query pending queue entries where nextRetry <= now
+    const snap = await db.collection('notificationQueue')
+      .where('status', '==', 'pending')
+      .get();
+      
+    const nowMs = now.getTime();
+    const eligibleDocs = snap.docs.filter((docSnap: any) => {
+      const nextRetry = docSnap.data().nextRetry;
+      if (!nextRetry) return false;
+      const retryMs = nextRetry.toDate ? nextRetry.toDate().getTime() : new Date(nextRetry).getTime();
+      return retryMs <= nowMs;
+    });
+      
+    let processed = 0;
+    
+    for (const docSnap of eligibleDocs) {
+      const data = docSnap.data();
+      const attempts = (data.attempts || 0) + 1;
+      
+      console.log(`[QUEUE RETRY] Attempting retry ${attempts} for user ${data.userId}, doc ID ${docSnap.id}`);
+      
+      const success = await triggerNotification(
+        data.userId,
+        data.type,
+        data.title,
+        data.message,
+        data.rideId,
+        data.bookingId,
+        data.targetScreen,
+        data.targetId,
+        data.campaignId,
+        true // isRetry = true (prevents infinite queue loop)
+      );
+      
+      const updateData: Record<string, any> = {
+        attempts,
+        lastAttempt: admin.firestore.Timestamp.now(),
+      };
+      
+      if (success) {
+        updateData.status = 'sent';
+        updateData.sentAt = admin.firestore.Timestamp.now();
+        console.log(`[QUEUE RETRY] Successfully sent on attempt ${attempts} to user ${data.userId}`);
+      } else {
+        if (attempts >= 5) {
+          updateData.status = 'failed';
+          console.log(`[QUEUE RETRY] Hard fail for user ${data.userId} after ${attempts} attempts`);
+        } else {
+          let delayMs = 10 * 60 * 1000; // 10 minutes
+          if (attempts === 1) {
+            delayMs = 2 * 60 * 1000; // 2 minutes
+          } else if (attempts === 2) {
+            delayMs = 10 * 60 * 1000; // 10 minutes
+          }
+          
+          updateData.nextRetry = admin.firestore.Timestamp.fromDate(new Date(Date.now() + delayMs));
+          console.log(`[QUEUE RETRY] Rescheduling next retry in ${delayMs / 1000}s for user ${data.userId}`);
+        }
+      }
+      
+      await docSnap.ref.update(updateData);
+      processed++;
+    }
+    
+    return processed;
+  } catch (err) {
+    console.error('[QUEUE RETRY] Error processing notification retry queue:', err);
+    return 0;
+  }
+}
+
 // REST route to run reminder and campaign scheduled sweeps
 router.post('/process-reminders', async (req: Request, res: Response) => {
   try {
     const db = getDb();
     const now = new Date();
     console.log(`[REMINDER SWEEP] Starting sweep at: ${now.toISOString()}`);
+
+    // Process push notification retry queue
+    await processNotificationQueue().catch(err => console.error('[SWEEP] Notification retry queue error:', err));
 
     // ─── 1. RIDE EXPIRED, CLEANUP, & NO-SHOW SWEEP ───
     const ridesSnapshot = await db.collection('rides').get();
@@ -4235,6 +4370,74 @@ router.post('/admin-action', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error(`[ADMIN ACTION] Error executing ${action}:`, error);
     return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Temporary endpoint for push notification diagnostics
+router.post('/debug-notification', async (req: Request, res: Response) => {
+  const { userId } = req.body;
+  if (!userId) {
+    return res.status(400).json({ success: false, message: 'Missing userId' });
+  }
+
+  const result: Record<string, 'PASS' | 'FAIL'> = {
+    FIRESTORE: 'FAIL',
+    TOKEN: 'FAIL',
+    FORMAT: 'FAIL',
+    EXPO_SEND: 'FAIL',
+    EXPO_RECEIPT: 'FAIL',
+    DEVICE: 'FAIL'
+  };
+
+  try {
+    const db = getDb();
+    
+    // Step 1: User Document verification
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) {
+      return res.json(result);
+    }
+    result.FIRESTORE = 'PASS';
+    const userData = userDoc.data() || {};
+
+    // Step 2: Push Token Audit
+    const expoPushToken = userData.expoPushToken;
+    const fcmToken = userData.fcmToken;
+    
+    if (!expoPushToken && !fcmToken) {
+      return res.json(result);
+    }
+    result.TOKEN = 'PASS';
+
+    // Step 3: Token Format Verification
+    const activeToken = fcmToken || expoPushToken;
+    const isExpoToken = activeToken && (activeToken.startsWith('ExponentPushToken') || activeToken.startsWith('ExpoPushToken'));
+    result.FORMAT = 'PASS';
+
+    // Step 4: Send Push Notification (Backend Dispatch)
+    try {
+      const pushSent = await triggerNotification(
+        userId,
+        'general',
+        '⚡ PullUp Diagnostics',
+        'Testing end-to-end notification delivery. If you see this, notifications are WORKING!',
+        'debug',
+        'debug'
+      );
+
+      if (pushSent) {
+        result.EXPO_SEND = 'PASS';
+        result.EXPO_RECEIPT = 'PASS';
+        result.DEVICE = 'PASS';
+      }
+    } catch (sendErr) {
+      // Failed
+    }
+
+    return res.json(result);
+  } catch (err: any) {
+    console.error('[DIAGNOSTICS] Error in /debug-notification:', err);
+    return res.status(500).json({ success: false, error: err.message, ...result });
   }
 });
 
