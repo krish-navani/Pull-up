@@ -4792,6 +4792,17 @@ async function triggerBackgroundRouteOptimization(rideId: string) {
   });
 }
 
+interface GoogleDirectionsResponse {
+  status: string;
+  routes: any;
+  error_message?: string;
+}
+
+interface GoogleGeocodeResponse {
+  status: string;
+  results: any;
+}
+
 // Helper: Get optimized directions with cache layer (TTL: 24h)
 async function getDirections(
   origin: { latitude: number; longitude: number },
@@ -4842,7 +4853,7 @@ async function getDirections(
 
     try {
       const response = await fetch(url);
-      const data = await response.json();
+      const data = (await response.json()) as GoogleDirectionsResponse;
 
       if (data.status === 'OK' && data.routes?.length > 0) {
         const route = data.routes[0];
@@ -4898,7 +4909,7 @@ async function reverseGeocode(lat: number, lng: number): Promise<string> {
   const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${apiKey}`;
   try {
     const response = await fetch(url);
-    const data = await response.json();
+    const data = (await response.json()) as GoogleGeocodeResponse;
     if (data.status === 'OK' && data.results?.length > 0) {
       const result = data.results[0];
       const parts = result.formatted_address.split(',');
