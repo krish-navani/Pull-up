@@ -7,6 +7,7 @@ import { getDb } from './firebase.js';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import admin from 'firebase-admin';
+import { getHaversineDistance, getDistanceToPolyline, decodePolyline, simplifyDouglasPeucker } from './routeMatching.js';
 
 const router = Router();
 
@@ -1431,6 +1432,187 @@ router.post('/cancel-pending-booking', async (req: Request, res: Response) => {
 });
 
 // SAFE RIDE COMPLETION (Wallet Credit & Commissions)
+export async function executeInternalCompleteRide(
+  db: admin.firestore.Firestore,
+  rideId: string,
+  bypassTimeLock = false
+): Promise<{ success: boolean; payout?: number; driverId?: string; passengerIds?: string[] }> {
+  const result = await db.runTransaction(async (transaction) => {
+    const rideRef = db.collection('rides').doc(rideId);
+    const rideSnap = await transaction.get(rideRef);
+
+    if (!rideSnap.exists) {
+      throw new Error('RIDE_NOT_FOUND');
+    }
+
+    const rideData = rideSnap.data()!;
+
+    if (rideData.status === 'completed') {
+      return { alreadyProcessed: true };
+    }
+
+    if (rideData.status !== 'in_progress') {
+      throw new Error('RIDE_NOT_IN_PROGRESS');
+    }
+
+    if (!bypassTimeLock) {
+      const departureTime = new Date(rideData.departureTime).getTime();
+      const tenMinsLater = departureTime + 10 * 60 * 1000;
+      if (Date.now() < tenMinsLater) {
+        throw new Error('TIME_LOCK_ACTIVE');
+      }
+    }
+
+    const driverId = rideData.driverId;
+
+    transaction.update(rideRef, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+      updatedAt: admin.firestore.Timestamp.now(),
+    });
+
+    const bookingsRef = db.collection('bookings');
+    const bookingsQuery = await bookingsRef
+      .where('rideId', '==', rideId)
+      .where('status', 'in', ['accepted', 'confirmed'])
+      .get();
+
+    let totalGrossEarnings = 0;
+    let totalDriverPayout = 0;
+    let totalCommissions = 0;
+    const passengerIds: string[] = [];
+
+    const creditingActions: Array<{ bookingId: string, gross: number, payout: number, commission: number }> = [];
+
+    for (const doc of bookingsQuery.docs) {
+      const bData = doc.data();
+      if (bData.paymentStatus === 'paid') {
+        passengerIds.push(bData.passengerId);
+        const gross = bData.totalPrice || 0;
+        const commission = parseFloat(((gross * config.commissionPercentage) / 100).toFixed(2));
+        const payout = parseFloat((gross - commission).toFixed(2));
+
+        totalGrossEarnings += gross;
+        totalDriverPayout += payout;
+        totalCommissions += commission;
+
+        creditingActions.push({
+          bookingId: doc.id,
+          gross,
+          payout,
+          commission
+        });
+      }
+    }
+
+    if (totalDriverPayout > 0) {
+      const walletRef = db.collection('wallets').doc(driverId);
+      const walletSnap = await transaction.get(walletRef);
+      let walletBalance = 0;
+      let pendingBalance = 0;
+      let lifetimeEarnings = 0;
+
+      if (walletSnap.exists) {
+        const wData = walletSnap.data()!;
+        walletBalance = wData.walletBalance || 0;
+        pendingBalance = wData.pendingBalance || 0;
+        lifetimeEarnings = wData.lifetimeEarnings || 0;
+
+        const cleanPending = Math.max(0, pendingBalance - totalCommissions);
+
+        transaction.update(walletRef, {
+          pendingBalance: cleanPending,
+          updatedAt: admin.firestore.Timestamp.now(),
+        });
+      } else {
+        transaction.set(walletRef, {
+          userId: driverId,
+          walletBalance: 0,
+          pendingBalance: totalDriverPayout,
+          lockedBalance: 0,
+          lifetimeEarnings: 0,
+          lifetimeWithdrawals: 0,
+          updatedAt: admin.firestore.Timestamp.now(),
+        });
+      }
+
+      for (const action of creditingActions) {
+        const txRef = db.collection('walletTransactions').doc();
+        const clearingAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + 24 * 60 * 60 * 1000));
+        
+        transaction.set(txRef, {
+          userId: driverId,
+          rideId,
+          bookingId: action.bookingId,
+          amount: action.payout,
+          grossAmount: action.gross,
+          commissionAmount: action.commission,
+          commissionPercentage: config.commissionPercentage,
+          type: 'ride_earning',
+          status: 'pending', // Pending 24h clearance
+          referenceType: 'ride',
+          referenceId: rideId,
+          clearingAt,
+          createdAt: admin.firestore.Timestamp.now(),
+        });
+      }
+
+      const statsRef = db.collection('system').doc('stats');
+      const statsDoc = await transaction.get(statsRef);
+      if (statsDoc.exists) {
+        const statsData = statsDoc.data()!;
+        transaction.update(statsRef, {
+          totalCommissions: (statsData.totalCommissions || 0) + totalCommissions,
+          updatedAt: admin.firestore.Timestamp.now(),
+        });
+      }
+    }
+
+    return { alreadyProcessed: false, driverId, totalDriverPayout, rideId, passengerIds };
+  });
+
+  if (result.alreadyProcessed) {
+    return { success: true };
+  }
+
+  const payout = result.totalDriverPayout ?? 0;
+  if (payout > 0 && result.driverId && result.rideId) {
+    await logAuditEvent(result.driverId, 'ride_completed_earnings', payout, { rideId: result.rideId });
+  }
+
+  // Notify the driver
+  await triggerNotification(
+    result.driverId,
+    'ride_completed',
+    'Ride Completed! 🏁',
+    payout > 0 
+      ? `Earnings of ₹${payout} will credit in 24h.`
+      : 'Your ride has been marked as completed.',
+    result.rideId,
+    null,
+    'ride-details',
+    result.rideId
+  ).catch(e => console.error('[COMPLETE_RIDE_NOTIF] Driver notification error:', e));
+
+  // Notify confirmed passengers
+  if (result.passengerIds && result.passengerIds.length > 0) {
+    for (const passengerId of result.passengerIds) {
+      await triggerNotification(
+        passengerId,
+        'ride_completed',
+        'Ride Completed! 🏁',
+        'Your ride has been completed. Thanks for riding with PullUp!',
+        result.rideId,
+        null,
+        'ride-details',
+        result.rideId
+      ).catch(e => console.error('[COMPLETE_RIDE_NOTIF] Passenger notification error:', e));
+    }
+  }
+
+  return { success: true, payout, driverId: result.driverId, passengerIds: result.passengerIds };
+}
+
 router.post('/complete-ride', async (req: Request, res: Response) => {
   try {
     const { rideId } = req.body;
@@ -1440,180 +1622,9 @@ router.post('/complete-ride', async (req: Request, res: Response) => {
     }
 
     const db = getDb();
-
-    const result = await db.runTransaction(async (transaction) => {
-      const rideRef = db.collection('rides').doc(rideId);
-      const rideSnap = await transaction.get(rideRef);
-
-      if (!rideSnap.exists) {
-        throw new Error('RIDE_NOT_FOUND');
-      }
-
-      const rideData = rideSnap.data()!;
-
-      if (rideData.status === 'completed') {
-        return { alreadyProcessed: true };
-      }
-
-      if (rideData.status !== 'in_progress') {
-        throw new Error('RIDE_NOT_IN_PROGRESS');
-      }
-
-      const departureTime = new Date(rideData.departureTime).getTime();
-      const tenMinsLater = departureTime + 10 * 60 * 1000;
-      
-      if (Date.now() < tenMinsLater) {
-        throw new Error('TIME_LOCK_ACTIVE');
-      }
-
-      const driverId = rideData.driverId;
-
-      transaction.update(rideRef, {
-        status: 'completed',
-        completedAt: new Date().toISOString(),
-        updatedAt: admin.firestore.Timestamp.now(),
-      });
-
-      const bookingsRef = db.collection('bookings');
-      const bookingsQuery = await bookingsRef
-        .where('rideId', '==', rideId)
-        .where('status', 'in', ['accepted', 'confirmed'])
-        .get();
-
-      let totalGrossEarnings = 0;
-      let totalDriverPayout = 0;
-      let totalCommissions = 0;
-      const passengerIds: string[] = [];
-
-      const creditingActions: Array<{ bookingId: string, gross: number, payout: number, commission: number }> = [];
-
-      for (const doc of bookingsQuery.docs) {
-        const bData = doc.data();
-        if (bData.paymentStatus === 'paid') {
-          passengerIds.push(bData.passengerId);
-          const gross = bData.totalPrice || 0;
-          const commission = parseFloat(((gross * config.commissionPercentage) / 100).toFixed(2));
-          const payout = parseFloat((gross - commission).toFixed(2));
-
-          totalGrossEarnings += gross;
-          totalDriverPayout += payout;
-          totalCommissions += commission;
-
-          creditingActions.push({
-            bookingId: doc.id,
-            gross,
-            payout,
-            commission
-          });
-        }
-      }
-
-      if (totalDriverPayout > 0) {
-        const walletRef = db.collection('wallets').doc(driverId);
-        const walletSnap = await transaction.get(walletRef);
-        let walletBalance = 0;
-        let pendingBalance = 0;
-        let lifetimeEarnings = 0;
-
-        if (walletSnap.exists) {
-          const wData = walletSnap.data()!;
-          walletBalance = wData.walletBalance || 0;
-          pendingBalance = wData.pendingBalance || 0;
-          lifetimeEarnings = wData.lifetimeEarnings || 0;
-
-          // Deduct only platform commission from pendingBalance immediately.
-          // The remaining payout stays in pendingBalance until cleared.
-          const cleanPending = Math.max(0, pendingBalance - totalCommissions);
-
-          transaction.update(walletRef, {
-            pendingBalance: cleanPending,
-            updatedAt: admin.firestore.Timestamp.now(),
-          });
-        } else {
-          transaction.set(walletRef, {
-            userId: driverId,
-            walletBalance: 0,
-            pendingBalance: totalDriverPayout,
-            lockedBalance: 0,
-            lifetimeEarnings: 0,
-            lifetimeWithdrawals: 0,
-            updatedAt: admin.firestore.Timestamp.now(),
-          });
-        }
-
-        for (const action of creditingActions) {
-          const txRef = db.collection('walletTransactions').doc();
-          const clearingAt = admin.firestore.Timestamp.fromDate(new Date(Date.now() + 24 * 60 * 60 * 1000));
-          
-          transaction.set(txRef, {
-            userId: driverId,
-            rideId,
-            bookingId: action.bookingId,
-            amount: action.payout,
-            grossAmount: action.gross,
-            commissionAmount: action.commission,
-            commissionPercentage: config.commissionPercentage,
-            type: 'ride_earning',
-            status: 'pending', // Pending 24h clearance
-            referenceType: 'ride',
-            referenceId: rideId,
-            clearingAt,
-            createdAt: admin.firestore.Timestamp.now(),
-          });
-        }
-
-        const statsRef = db.collection('system').doc('stats');
-        const statsDoc = await transaction.get(statsRef);
-        if (statsDoc.exists) {
-          const statsData = statsDoc.data()!;
-          transaction.update(statsRef, {
-            totalCommissions: (statsData.totalCommissions || 0) + totalCommissions,
-            updatedAt: admin.firestore.Timestamp.now(),
-          });
-        }
-      }
-
-      return { alreadyProcessed: false, driverId, totalDriverPayout, rideId, passengerIds };
-    });
-
-    if (!result.alreadyProcessed) {
-      const payout = result.totalDriverPayout ?? 0;
-      if (payout > 0 && result.driverId && result.rideId) {
-        await logAuditEvent(result.driverId, 'ride_completed_earnings', payout, { rideId: result.rideId });
-      }
-
-      // Notify the driver
-      await triggerNotification(
-        result.driverId,
-        'ride_completed',
-        'Ride Completed! 🏁',
-        payout > 0 
-          ? `Earnings of ₹${payout} will credit in 24h.`
-          : 'Your ride has been marked as completed.',
-        result.rideId,
-        null,
-        'ride-details',
-        result.rideId
-      ).catch(e => console.error('[COMPLETE_RIDE_NOTIF] Driver notification error:', e));
-
-      // Notify confirmed passengers
-      if (result.passengerIds && result.passengerIds.length > 0) {
-        for (const passengerId of result.passengerIds) {
-          await triggerNotification(
-            passengerId,
-            'ride_completed',
-            'Ride Completed! 🏁',
-            'Your ride has been completed. Thanks for riding with PullUp!',
-            result.rideId,
-            null,
-            'ride-details',
-            result.rideId
-          ).catch(e => console.error('[COMPLETE_RIDE_NOTIF] Passenger notification error:', e));
-        }
-      }
-    }
-
-    res.json({ success: true, message: 'Ride completed successfully and driver wallet credited' });
+    const result = await executeInternalCompleteRide(db, rideId, false);
+    
+    return res.json({ success: true, message: 'Ride completed successfully and driver wallet credited' });
 
   } catch (error: any) {
     console.error('[API] /complete-ride error:', error);
@@ -1849,6 +1860,15 @@ router.post('/accept-booking', async (req: Request, res: Response) => {
       if (!rideSnap.exists) throw new Error('RIDE_NOT_FOUND');
       const rideData = rideSnap.data()!;
 
+      // Verification 1: Race Condition detour check inside transaction
+      const detourRadius = rideData.detourRadiusMeters || 0;
+      const remainingDetour = rideData.remainingDetourBudgetMeters !== undefined ? rideData.remainingDetourBudgetMeters : detourRadius;
+      const extraDistance = bookingData.extraDistanceMeters || 0;
+
+      if (detourRadius > 0 && extraDistance > remainingDetour) {
+        throw new Error('DETOUR_BUDGET_EXCEEDED');
+      }
+
       const chatRef = db.collection('rideChats').doc(bookingData.rideId);
       const chatDoc = await transaction.get(chatRef);
 
@@ -1867,8 +1887,14 @@ router.post('/accept-booking', async (req: Request, res: Response) => {
         }
         return b;
       });
+
+      const nextRemainingDetour = detourRadius > 0
+        ? Math.max(0, remainingDetour - extraDistance)
+        : remainingDetour;
+
       transaction.update(rideRef, {
         bookedSeats: updatedBookedSeats,
+        remainingDetourBudgetMeters: nextRemainingDetour,
         updatedAt: admin.firestore.Timestamp.now()
       });
 
@@ -1952,6 +1978,9 @@ router.post('/accept-booking', async (req: Request, res: Response) => {
       };
     });
 
+    // Queue background route re-optimization asynchronously (Verification 4)
+    triggerBackgroundRouteOptimization(result.rideId);
+
     // Send notifications & log analytics
     await triggerNotification(
       result.passengerId,
@@ -1977,6 +2006,9 @@ router.post('/accept-booking', async (req: Request, res: Response) => {
     res.json({ success: true, message: 'Booking accepted and driver wallet credited (pending clearance)' });
   } catch (error: any) {
     console.error('[API] /accept-booking error:', error);
+    if (error.message === 'DETOUR_BUDGET_EXCEEDED') {
+      return res.status(400).json({ success: false, code: 'DETOUR_BUDGET_EXCEEDED', message: 'Detour budget exceeded.' });
+    }
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -1997,7 +2029,7 @@ router.post('/reject-booking', async (req: Request, res: Response) => {
       if (!bookingSnap.exists) throw new Error('BOOKING_NOT_FOUND');
       const bookingData = bookingSnap.data()!;
 
-      if (bookingData.status !== 'pending' && bookingData.status !== 'accepted') {
+      if (bookingData.status !== 'pending' && bookingData.status !== 'accepted' && bookingData.status !== 'confirmed') {
         throw new Error('INVALID_BOOKING_STATUS');
       }
 
@@ -2086,9 +2118,65 @@ router.post('/reject-booking', async (req: Request, res: Response) => {
     // Waitlist promotion trigger
     await promoteWaitlist(db, result.rideId);
 
+    // Queue background route re-optimization asynchronously (Verification 4)
+    triggerBackgroundRouteOptimization(result.rideId);
+
     res.json({ success: true, message: 'Booking rejected and passenger refunded successfully' });
   } catch (error: any) {
     console.error('[API] /reject-booking error:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// POST /trigger-reoptimization - Enqueue background route optimization queue (Verification 4)
+router.post('/trigger-reoptimization', async (req: Request, res: Response) => {
+  const { rideId } = req.body;
+  if (!rideId) {
+    return res.status(400).json({ success: false, message: 'Missing rideId' });
+  }
+  triggerBackgroundRouteOptimization(rideId);
+  res.json({ success: true, message: 'Re-optimization queued in background' });
+});
+
+// POST /update-ride-detour - Edit ride detour preference with lock check (Verification 2)
+router.post('/update-ride-detour', async (req: Request, res: Response) => {
+  const { rideId, detourRadiusMeters } = req.body;
+  if (!rideId || detourRadiusMeters === undefined) {
+    return res.status(400).json({ success: false, message: 'Missing rideId or detourRadiusMeters' });
+  }
+
+  const db = getDb();
+  try {
+    const result = await db.runTransaction(async (transaction) => {
+      const rideRef = db.collection('rides').doc(rideId);
+      const rideSnap = await transaction.get(rideRef);
+      if (!rideSnap.exists) throw new Error('RIDE_NOT_FOUND');
+      const rideData = rideSnap.data()!;
+
+      // Enforce lock rule: Once first passenger joins (accepted/confirmed), detour settings are locked!
+      const bookingsSnap = await db.collection('bookings')
+        .where('rideId', '==', rideId)
+        .where('status', 'in', ['accepted', 'confirmed'])
+        .get();
+
+      if (!bookingsSnap.empty) {
+        throw new Error('DETOUR_SETTINGS_LOCKED');
+      }
+
+      transaction.update(rideRef, {
+        detourRadiusMeters,
+        remainingDetourBudgetMeters: detourRadiusMeters,
+        updatedAt: admin.firestore.Timestamp.now()
+      });
+      return { success: true };
+    });
+
+    res.json({ success: true, message: 'Detour settings updated successfully' });
+  } catch (error: any) {
+    console.error('[API] /update-ride-detour error:', error);
+    if (error.message === 'DETOUR_SETTINGS_LOCKED') {
+      return res.status(400).json({ success: false, code: 'DETOUR_SETTINGS_LOCKED', message: 'Detour settings are locked because passengers have already joined this ride.' });
+    }
     res.status(500).json({ success: false, message: error.message });
   }
 });
@@ -3322,6 +3410,97 @@ router.post('/update-location', async (req: Request, res: Response) => {
     });
 
     console.log(`[BG LOCATION] Updated ride ${rideId}: ${latitude.toFixed(5)},${longitude.toFixed(5)} speed=${speed?.toFixed(1)}m/s`);
+
+    // Background Geofencing Checks (Run asynchronously without blocking the location write response)
+    (async () => {
+      try {
+        const currentCoords = { latitude, longitude };
+        
+        // 1. Completion check (2km to destination)
+        const ATLAS_LAT = 19.0707255;
+        const ATLAS_LNG = 72.8752988;
+        const ATLAS_RADIUS_METERS = 2000;
+        
+        const isWithinAtlas = (lat: number, lng: number) => {
+          return calculateDistance(lat, lng, ATLAS_LAT, ATLAS_LNG) <= ATLAS_RADIUS_METERS;
+        };
+
+        const pickupIsAtlas = isWithinAtlas(rideData.pickupLocation.latitude, rideData.pickupLocation.longitude);
+        const direction = !pickupIsAtlas ? 'home-to-atlas' : 'atlas-to-home';
+
+        let distanceToDestination = 0;
+        if (direction === 'home-to-atlas') {
+          distanceToDestination = calculateDistance(latitude, longitude, ATLAS_LAT, ATLAS_LNG);
+        } else if (direction === 'atlas-to-home' && rideData.dropLocation) {
+          distanceToDestination = calculateDistance(latitude, longitude, rideData.dropLocation.latitude, rideData.dropLocation.longitude);
+        }
+
+        if (distanceToDestination > 0 && distanceToDestination <= ATLAS_RADIUS_METERS) {
+          console.log(`[BG GEOFENCE] Auto-completing ride ${rideId} via background geofence (dist=${distanceToDestination.toFixed(0)}m)`);
+          await executeInternalCompleteRide(db, rideId, true);
+        }
+
+        // 2. Passenger Pickups check (nearby 200m / arrived 50m)
+        const activeSeats = (rideData.bookedSeats || []).filter(
+          (seat: any) => seat.status === 'accepted' || seat.status === 'confirmed'
+        );
+
+        for (const seat of activeSeats) {
+          const bookingId = `${rideId}_${seat.passengerId}`;
+          const bookingRef = db.collection('bookings').doc(bookingId);
+          const bookingSnap = await bookingRef.get();
+          if (!bookingSnap.exists) continue;
+          const booking = bookingSnap.data() || {};
+
+          if (booking.pickedUp) continue;
+
+          const pickupLoc = booking.passengerPickupLocation;
+          if (!pickupLoc) continue;
+
+          const distanceToPickup = calculateDistance(latitude, longitude, pickupLoc.latitude, pickupLoc.longitude);
+
+          // 50m: Arrived
+          if (distanceToPickup <= 50 && !booking.notifiedArrived) {
+            console.log(`[BG GEOFENCE] Driver ARRIVED at pickup for ${bookingId} (${distanceToPickup.toFixed(0)}m)`);
+            await bookingRef.update({
+              notifiedArrived: true,
+              driverArrivedAt: now,
+              notifiedNearby: true,
+            });
+
+            await triggerNotification(
+              booking.passengerId,
+              'driver_arrived',
+              '🚗 Driver Has Arrived!',
+              `${rideData.driverName || 'Your driver'} is at your pickup point. Please come out now!`,
+              rideId,
+              bookingId,
+              'navigation',
+              rideId
+            );
+          }
+          // 200m: Nearby
+          else if (distanceToPickup <= 200 && !booking.notifiedNearby) {
+            console.log(`[BG GEOFENCE] Driver NEARBY pickup for ${bookingId} (${distanceToPickup.toFixed(0)}m)`);
+            await bookingRef.update({ notifiedNearby: true });
+
+            await triggerNotification(
+              booking.passengerId,
+              'booking_accepted',
+              '🚗 Driver is Nearby!',
+              `Your driver is within 200m of your pickup location. Please be ready to board.`,
+              rideId,
+              bookingId,
+              'navigation',
+              rideId
+            );
+          }
+        }
+      } catch (geofenceErr) {
+        console.error('[BG GEOFENCE] Error running background geofence check:', geofenceErr);
+      }
+    })();
+
     return res.json({ success: true });
   } catch (error: any) {
     console.error('[BG LOCATION] Error updating location:', error);
@@ -4518,6 +4697,436 @@ router.post('/debug-notification', async (req: Request, res: Response) => {
   } catch (err: any) {
     console.error('[DIAGNOSTICS] Error in /debug-notification:', err);
     return res.status(500).json({ success: false, error: err.message, ...result });
+  }
+});
+
+// Helper: Trigger background route optimization queue (Verification 4)
+async function triggerBackgroundRouteOptimization(rideId: string) {
+  console.log(`[BACKGROUND OPTIMIZATION] Queued optimization for ride: ${rideId}`);
+  
+  // Execute asynchronously
+  setImmediate(async () => {
+    try {
+      const db = getDb();
+      const rideRef = db.collection('rides').doc(rideId);
+      const rideSnap = await rideRef.get();
+      if (!rideSnap.exists) return;
+      const rideData = rideSnap.data()!;
+
+      // Update optimization state
+      const currentVersion = (rideData.routeVersion || 1) + 1;
+      await rideRef.update({
+        optimizationStatus: 'optimizing',
+        lastOptimizedAt: new Date().toISOString(),
+      });
+
+      // 1. Fetch all currently accepted or confirmed bookings
+      const bookingsSnap = await db.collection('bookings')
+        .where('rideId', '==', rideId)
+        .where('status', 'in', ['accepted', 'confirmed'])
+        .get();
+
+      const acceptedWaypoints: any[] = [];
+      bookingsSnap.docs.forEach((d: any) => {
+        const bData = d.data();
+        if (bData.passengerSelectedPickup) {
+          acceptedWaypoints.push(bData.passengerSelectedPickup);
+        } else if (bData.pickupLocation) {
+          acceptedWaypoints.push(bData.pickupLocation);
+        }
+      });
+
+      // 2. Fetch Directions API
+      const origin = rideData.pickupLocation;
+      const destination = rideData.dropLocation;
+
+      let res;
+      let source: 'google' | 'cache' | 'fallback' = 'google';
+      try {
+        res = await getDirections(origin, destination, acceptedWaypoints, db);
+        source = res.source;
+      } catch (directionsErr) {
+        console.error('[BACKGROUND OPTIMIZATION] Directions query failed, using fallback:', directionsErr);
+        res = {
+          distanceMeters: rideData.baselineDistanceMeters || 8000,
+          durationSeconds: rideData.baselineDurationSeconds || 1200,
+          polyline: rideData.routePolyline || '',
+        };
+        source = 'fallback';
+      }
+
+      // Calculate detour values
+      const detourLimit = rideData.detourRadiusMeters || 0;
+      const extraDistance = Math.max(0, res.distanceMeters - (rideData.baselineDistanceMeters || 0));
+      const remainingBudget = Math.max(0, detourLimit - extraDistance);
+
+      let points: any[] = [];
+      if (res.polyline) {
+        try {
+          points = decodePolyline(res.polyline);
+        } catch (e) {
+          console.warn('[BACKGROUND OPTIMIZATION] Failed to decode polyline:', e);
+        }
+      }
+      const simplified = points.length > 0
+        ? simplifyDouglasPeucker(points, 100)
+        : (rideData.simplifiedCoordinates || []);
+
+      // Update ride with optimized data
+      await rideRef.update({
+        routeVersion: currentVersion,
+        optimizationStatus: 'completed',
+        lastOptimizedAt: new Date().toISOString(),
+        optimizationSource: source,
+        remainingDetourBudgetMeters: remainingBudget,
+        currentDistanceMeters: res.distanceMeters,
+        currentDurationSeconds: res.durationSeconds,
+        simplifiedCoordinates: simplified,
+        routePolyline: res.polyline || '',
+      });
+
+      console.log(`[BACKGROUND OPTIMIZATION] Optimization complete for ride ${rideId}. Version: ${currentVersion}. Source: ${source}. Remaining Budget: ${remainingBudget}m.`);
+    } catch (err) {
+      console.error(`[BACKGROUND OPTIMIZATION] Critical error re-optimizing ride ${rideId}:`, err);
+    }
+  });
+}
+
+// Helper: Get optimized directions with cache layer (TTL: 24h)
+async function getDirections(
+  origin: { latitude: number; longitude: number },
+  destination: { latitude: number; longitude: number },
+  waypoints: Array<{ latitude: number; longitude: number }>,
+  db: admin.firestore.Firestore
+): Promise<{ distanceMeters: number; durationSeconds: number; polyline: string; source: 'google' | 'cache' | 'fallback' }> {
+  const waypointsHash = waypoints
+    .map(w => `${w.latitude.toFixed(5)},${w.longitude.toFixed(5)}`)
+    .join('|');
+  const cacheKey = `${origin.latitude.toFixed(5)},${origin.longitude.toFixed(5)}_${destination.latitude.toFixed(5)},${destination.longitude.toFixed(5)}_${waypointsHash}`;
+
+  try {
+    const cacheDoc = await db.collection('routeCache').doc(cacheKey).get();
+    if (cacheDoc.exists) {
+      const cacheData = cacheDoc.data();
+      if (cacheData && Date.now() - new Date(cacheData.createdAt).getTime() < 24 * 60 * 60 * 1000) {
+        console.log('[CACHE HIT] Returning route directions from cache');
+        return {
+          distanceMeters: cacheData.distanceMeters,
+          durationSeconds: cacheData.durationSeconds,
+          polyline: cacheData.polyline,
+          source: 'cache',
+        };
+      }
+    }
+  } catch (cacheErr) {
+    console.warn('[ROUTE CACHE] Cache read error:', cacheErr);
+  }
+
+  // Cache Miss - Call Google Directions API
+  const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs';
+  
+  // Simulated Quota Exceeded Trigger
+  if (apiKey === 'MOCK_429_LIMIT') {
+    console.warn('[GOOGLE ROUTES] Simulating quota limit (429) fallback');
+  } else {
+    const originStr = `${origin.latitude},${origin.longitude}`;
+    const destStr = `${destination.latitude},${destination.longitude}`;
+
+    let url = `https://maps.googleapis.com/maps/api/directions/json?origin=${originStr}&destination=${destStr}&mode=driving&key=${apiKey}`;
+    if (waypoints.length > 0) {
+      const wps = 'optimize:true|' + waypoints.map(w => `${w.latitude},${w.longitude}`).join('|');
+      url += `&waypoints=${encodeURIComponent(wps)}`;
+    }
+
+    console.log('[GOOGLE ROUTES] Requesting routes optimization:', { waypointsCount: waypoints.length });
+
+    try {
+      const response = await fetch(url);
+      const data = await response.json();
+
+      if (data.status === 'OK' && data.routes?.length > 0) {
+        const route = data.routes[0];
+        let distanceMeters = 0;
+        let durationSeconds = 0;
+        route.legs.forEach((leg: any) => {
+          distanceMeters += leg.distance?.value || 0;
+          durationSeconds += leg.duration?.value || 0;
+        });
+        const polyline = route.overview_polyline.points;
+
+        // Write to Cache
+        try {
+          await db.collection('routeCache').doc(cacheKey).set({
+            polyline,
+            distanceMeters,
+            durationSeconds,
+            createdAt: new Date().toISOString(),
+          });
+        } catch (cacheSetErr) {
+          console.warn('[ROUTE CACHE] Cache write error:', cacheSetErr);
+        }
+
+        return { distanceMeters, durationSeconds, polyline, source: 'google' };
+      } else {
+        console.warn('[GOOGLE ROUTES] Failed with status:', data.status, data.error_message);
+      }
+    } catch (fetchErr) {
+      console.error('[GOOGLE ROUTES] Fetch error:', fetchErr);
+    }
+  }
+
+  // Fallback to straight line if API fails or quota limit simulated
+  let distanceMeters = getHaversineDistance(origin, destination);
+  waypoints.forEach((wp, idx) => {
+    if (idx === 0) {
+      distanceMeters += getHaversineDistance(origin, wp);
+    } else {
+      distanceMeters += getHaversineDistance(waypoints[idx - 1], wp);
+    }
+  });
+  if (waypoints.length > 0) {
+    distanceMeters += getHaversineDistance(waypoints[waypoints.length - 1], destination);
+  }
+  const durationSeconds = Math.round(distanceMeters / 13.88); // 50 km/h avg
+
+  return { distanceMeters, durationSeconds, polyline: '', source: 'fallback' };
+}
+
+// Helper: Reverse geocode coordinate to clean name
+async function reverseGeocode(lat: number, lng: number): Promise<string> {
+  const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs';
+  const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${apiKey}`;
+  try {
+    const response = await fetch(url);
+    const data = await response.json();
+    if (data.status === 'OK' && data.results?.length > 0) {
+      const result = data.results[0];
+      const parts = result.formatted_address.split(',');
+      if (parts.length > 1) {
+        return parts.slice(0, 2).join(',').trim();
+      }
+      return result.formatted_address;
+    }
+  } catch (err) {
+    console.warn('Geocoding call failed:', err);
+  }
+  return `Route Point (${lat.toFixed(4)}, ${lng.toFixed(4)})`;
+}
+
+// POST /evaluate-detour — Real detour validation and recommended point selection
+router.post('/evaluate-detour', async (req: Request, res: Response) => {
+  const { rideId, passengerPickup, passengerId } = req.body;
+  if (!rideId || !passengerPickup) {
+    return res.status(400).json({ success: false, message: 'Missing rideId or passengerPickup' });
+  }
+
+  const db = getDb();
+  try {
+    // 1. Fetch Ride
+    const rideDoc = await db.collection('rides').doc(rideId).get();
+    if (!rideDoc.exists) {
+      return res.status(404).json({ success: false, message: 'Ride not found' });
+    }
+    const ride = rideDoc.data();
+    if (!ride) return res.status(404).json({ success: false, message: 'Ride data is empty' });
+
+    const detourLimit = ride.detourRadiusMeters || 0;
+    const remainingBudget = ride.remainingDetourBudgetMeters !== undefined ? ride.remainingDetourBudgetMeters : detourLimit;
+    const isNoDetour = detourLimit === 0;
+
+    // 2. Local Corridor filter (Stage 1)
+    let points: any[] = ride.simplifiedCoordinates || [];
+    if (points.length === 0 && ride.routePolyline) {
+      points = decodePolyline(ride.routePolyline);
+    }
+
+    const corridorRes = getDistanceToPolyline(passengerPickup, points);
+    const distanceToCorridor = corridorRes.distance;
+
+    const generateRecommendations = async () => {
+      const coordA = corridorRes.coordinate;
+      const walkDistA = corridorRes.distance;
+      const nameA = await reverseGeocode(coordA.latitude, coordA.longitude);
+
+      const recommendations: any[] = [];
+
+      // Recommendation A: Always the direct corridor projection (0m detour, safe for any driver budget)
+      recommendations.push({
+        name: `${nameA} (On Route)`,
+        latitude: coordA.latitude,
+        longitude: coordA.longitude,
+        walkingDistanceMeters: Math.round(walkDistA),
+        detourDistanceMeters: 0,
+      });
+
+      // Calculate maximum feasible detour ratio based on driver's remaining budget
+      const maxAllowedDetour = isNoDetour ? 200 : remainingBudget;
+      const maxT = walkDistA > 0 ? Math.min(1.0, maxAllowedDetour / walkDistA) : 0;
+
+      if (maxT > 0.05) {
+        // Point B: Midpoint of the feasible detour budget (detour ≈ 50% of budget)
+        const tB = maxT * 0.5;
+        const coordB = {
+          latitude: tB * passengerPickup.latitude + (1 - tB) * coordA.latitude,
+          longitude: tB * passengerPickup.longitude + (1 - tB) * coordA.longitude,
+        };
+        const walkDistB = walkDistA * (1 - tB);
+        const nameB = (await reverseGeocode(coordB.latitude, coordB.longitude)) + " Junction";
+        recommendations.push({
+          name: nameB,
+          latitude: coordB.latitude,
+          longitude: coordB.longitude,
+          walkingDistanceMeters: Math.round(walkDistB),
+          detourDistanceMeters: Math.round(tB * walkDistA),
+        });
+
+        // Point C: Closest feasible point (detour ≈ 90% of budget)
+        const tC = maxT * 0.9;
+        const coordC = {
+          latitude: tC * passengerPickup.latitude + (1 - tC) * coordA.latitude,
+          longitude: tC * passengerPickup.longitude + (1 - tC) * coordA.longitude,
+        };
+        const walkDistC = walkDistA * (1 - tC);
+        const nameC = (await reverseGeocode(coordC.latitude, coordC.longitude)) + " Landmark";
+        recommendations.push({
+          name: nameC,
+          latitude: coordC.latitude,
+          longitude: coordC.longitude,
+          walkingDistanceMeters: Math.round(walkDistC),
+          detourDistanceMeters: Math.round(tC * walkDistA),
+        });
+      }
+
+      // Fallback/Safety Check: Ensure we always present 3 recommendations
+      if (recommendations.length < 3) {
+        // Recommend minor corridor-safe variations closer to coordA (t = 0.1 and t = 0.2)
+        const tB = Math.min(0.1, maxT);
+        if (tB > 0) {
+          const coordB = {
+            latitude: tB * passengerPickup.latitude + (1 - tB) * coordA.latitude,
+            longitude: tB * passengerPickup.longitude + (1 - tB) * coordA.longitude,
+          };
+          const walkDistB = walkDistA * (1 - tB);
+          const nameB = (await reverseGeocode(coordB.latitude, coordB.longitude)) + " Spot";
+          recommendations.push({
+            name: nameB,
+            latitude: coordB.latitude,
+            longitude: coordB.longitude,
+            walkingDistanceMeters: Math.round(walkDistB),
+            detourDistanceMeters: Math.round(tB * walkDistA),
+          });
+        }
+
+        const tC = Math.min(0.2, maxT);
+        if (tC > 0 && recommendations.length < 3) {
+          const coordC = {
+            latitude: tC * passengerPickup.latitude + (1 - tC) * coordA.latitude,
+            longitude: tC * passengerPickup.longitude + (1 - tC) * coordA.longitude,
+          };
+          const walkDistC = walkDistA * (1 - tC);
+          const nameC = (await reverseGeocode(coordC.latitude, coordC.longitude)) + " Point";
+          recommendations.push({
+            name: nameC,
+            latitude: coordC.latitude,
+            longitude: coordC.longitude,
+            walkingDistanceMeters: Math.round(walkDistC),
+            detourDistanceMeters: Math.round(tC * walkDistA),
+          });
+        }
+      }
+
+      // Final fallback to fill list to 3 items
+      while (recommendations.length < 3) {
+        recommendations.push({
+          name: `${nameA} Alternative`,
+          latitude: coordA.latitude + (Math.random() - 0.5) * 0.0005,
+          longitude: coordA.longitude + (Math.random() - 0.5) * 0.0005,
+          walkingDistanceMeters: Math.round(walkDistA),
+          detourDistanceMeters: 0,
+        });
+      }
+
+      return recommendations;
+    };
+
+    // Fast reject if completely outside limits
+    const filterLimit = isNoDetour ? 1000 : detourLimit * 2;
+    if (distanceToCorridor > filterLimit) {
+      const recommendations = await generateRecommendations();
+      return res.json({
+        success: true,
+        status: 'rejected',
+        reason: 'outside_fast_corridor',
+        distanceToPolyline: distanceToCorridor,
+        limit: detourLimit,
+        recommendations,
+      });
+    }
+
+    // 3. Stage 2 Detour Math
+    const origin = ride.pickupLocation;
+    const destination = ride.dropLocation;
+
+    // Fetch accepted waypoints
+    const bookingsSnap = await db.collection('bookings')
+      .where('rideId', '==', rideId)
+      .where('status', 'in', ['accepted', 'confirmed'])
+      .get();
+
+    const acceptedWaypoints: any[] = [];
+    bookingsSnap.docs.forEach((d: any) => {
+      const bData = d.data();
+      if (passengerId && bData.passengerId === passengerId) return;
+      if (bData.passengerSelectedPickup) {
+        acceptedWaypoints.push(bData.passengerSelectedPickup);
+      } else if (bData.pickupLocation) {
+        acceptedWaypoints.push(bData.pickupLocation);
+      }
+    });
+
+    const baselineRes = await getDirections(origin, destination, acceptedWaypoints, db);
+    const newWaypoints = [...acceptedWaypoints, passengerPickup];
+    const newRes = await getDirections(origin, destination, newWaypoints, db);
+
+    const extraDistance = Math.max(0, newRes.distanceMeters - baselineRes.distanceMeters);
+    const extraDuration = Math.max(0, newRes.durationSeconds - baselineRes.durationSeconds);
+
+    let approved = false;
+    if (isNoDetour) {
+      approved = distanceToCorridor <= 200 && extraDistance <= 300 && extraDuration <= 120;
+    } else {
+      const globalDetour = Math.max(0, newRes.distanceMeters - (ride.baselineDistanceMeters || 0));
+      approved = extraDistance <= remainingBudget && globalDetour <= detourLimit;
+    }
+
+    if (approved) {
+      return res.json({
+        success: true,
+        status: 'approved',
+        extraDistanceMeters: extraDistance,
+        extraDurationSeconds: extraDuration,
+        distanceToPolyline: distanceToCorridor,
+        newPolyline: newRes.polyline,
+        optimizationSource: newRes.source,
+        congestionMode: newRes.source === 'fallback',
+      });
+    } else {
+      const recommendations = await generateRecommendations();
+      return res.json({
+        success: true,
+        status: 'rejected',
+        reason: 'detour_limit_exceeded',
+        extraDistanceMeters: extraDistance,
+        extraDurationSeconds: extraDuration,
+        distanceToPolyline: distanceToCorridor,
+        recommendations,
+        optimizationSource: newRes.source,
+        congestionMode: newRes.source === 'fallback',
+      });
+    }
+  } catch (err: any) {
+    console.error('[DETOUR] Error in evaluate-detour:', err);
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 

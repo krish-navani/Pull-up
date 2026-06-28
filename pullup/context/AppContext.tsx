@@ -1479,7 +1479,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   );
 
   const requestRide = useCallback(
-    async (rideId: string, seatsBooked: number, pickupLocation?: any, dropLocation?: any) => {
+    async (
+      rideId: string,
+      seatsBooked: number,
+      pickupLocation?: any,
+      dropLocation?: any,
+      detourMeta?: {
+        passengerOriginalLocation?: any;
+        passengerSelectedPickup?: any;
+        extraDistanceMeters?: number;
+        extraDurationSeconds?: number;
+        walkingDistanceMeters?: number;
+      }
+    ) => {
       if (!state.auth.user) {
         console.error('[CONTEXT] requestRide: No authenticated user');
         throw new Error('No authenticated user');
@@ -1503,7 +1515,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           seatsBooked,
           ride.price,
           pickupLocation,
-          dropLocation
+          dropLocation,
+          detourMeta
         );
 
         // Create local booking object
@@ -1518,6 +1531,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           bookedAt: new Date().toISOString(),
           passengerPickupLocation: pickupLocation,
           passengerDropLocation: dropLocation,
+          passengerOriginalLocation: detourMeta?.passengerOriginalLocation || null,
+          passengerSelectedPickup: detourMeta?.passengerSelectedPickup || null,
+          extraDistanceMeters: detourMeta?.extraDistanceMeters || 0,
+          extraDurationSeconds: detourMeta?.extraDurationSeconds || 0,
+          walkingDistanceMeters: detourMeta?.walkingDistanceMeters || 0,
         };
 
         console.log('[CONTEXT] ✅ Booking created locally and in Firestore');

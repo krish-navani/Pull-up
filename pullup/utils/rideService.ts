@@ -35,6 +35,10 @@ export const createRideInFirestore = async (
     carColor?: string;
     description?: string;
     detourRadiusMeters?: number;
+    routePolyline?: string;
+    simplifiedCoordinates?: Array<{ latitude: number; longitude: number }>;
+    baselineDistanceMeters?: number;
+    baselineDurationSeconds?: number;
   }
 ): Promise<string> => {
   try {
@@ -56,6 +60,18 @@ export const createRideInFirestore = async (
       status: 'active',
       bookedSeats: [],
       detourRadiusMeters: rideData.detourRadiusMeters ?? 0,
+      remainingDetourBudgetMeters: rideData.detourRadiusMeters ?? 0,
+      routePolyline: rideData.routePolyline || '',
+      simplifiedCoordinates: rideData.simplifiedCoordinates || [],
+      baselineDistanceMeters: rideData.baselineDistanceMeters || 0,
+      baselineDurationSeconds: rideData.baselineDurationSeconds || 0,
+      currentDistanceMeters: rideData.baselineDistanceMeters || 0,
+      currentDurationSeconds: rideData.baselineDurationSeconds || 0,
+      acceptedWaypoints: [],
+      routeVersion: 1,
+      optimizationStatus: 'completed',
+      lastOptimizedAt: new Date().toISOString(),
+      optimizationSource: 'google',
     };
 
     console.log('[RIDE SERVICE] Ride data to save:', firebaseRideData);

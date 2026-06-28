@@ -70,18 +70,34 @@ export interface GroupChatRoom {
  */
 export const isUserAuthorizedForChat = async (rideId: string, userId: string): Promise<boolean> => {
   try {
+    // Resolve persistent userId if userId is a session ID
+    let persistentUserId = userId;
+    try {
+      const sessionRef = doc(db, 'userSessions', userId);
+      const sessionSnap = await getDoc(sessionRef);
+      if (sessionSnap.exists()) {
+        const sessionData = sessionSnap.data();
+        if (sessionData.userId) {
+          persistentUserId = sessionData.userId;
+          console.log(`[GROUP CHAT SERVICE] Resolved session UID ${userId} -> persistent user ID ${persistentUserId}`);
+        }
+      }
+    } catch (sessionErr) {
+      console.warn('[GROUP CHAT SERVICE] Failed to check userSessions mapping:', sessionErr);
+    }
+
     // 1. Check if user is the driver/host of the ride
     const rideRef = doc(db, 'rides', rideId);
     const rideSnap = await getDoc(rideRef);
     if (rideSnap.exists()) {
       const rideData = rideSnap.data();
-      if (rideData.driverId === userId) {
+      if (rideData.driverId === persistentUserId) {
         return true;
       }
     }
 
     // 2. Check if user has a confirmed and paid booking
-    const bookingId = `${rideId}_${userId}`;
+    const bookingId = `${rideId}_${persistentUserId}`;
     const bookingRef = doc(db, 'bookings', bookingId);
     const bookingSnap = await getDoc(bookingRef);
     if (bookingSnap.exists()) {
@@ -96,7 +112,7 @@ export const isUserAuthorizedForChat = async (rideId: string, userId: string): P
     const taxiPoolSnap = await getDoc(taxiPoolRef);
     if (taxiPoolSnap.exists()) {
       // Check if they are in poolMembers collection
-      const memberRef = doc(db, 'poolMembers', `${rideId}_${userId}`);
+      const memberRef = doc(db, 'poolMembers', `${rideId}_${persistentUserId}`);
       const memberSnap = await getDoc(memberRef);
       if (memberSnap.exists()) {
         return true;
@@ -104,7 +120,7 @@ export const isUserAuthorizedForChat = async (rideId: string, userId: string): P
       
       // Or check if they are the creator
       const taxiPoolData = taxiPoolSnap.data();
-      if (taxiPoolData.creatorId === userId) {
+      if (taxiPoolData.creatorId === persistentUserId) {
         return true;
       }
     }
@@ -114,7 +130,7 @@ export const isUserAuthorizedForChat = async (rideId: string, userId: string): P
     const chatSnap = await getDoc(chatRef);
     if (chatSnap.exists()) {
       const chatData = chatSnap.data();
-      if (chatData.participants && chatData.participants.includes(userId)) {
+      if (chatData.participants && (chatData.participants.includes(persistentUserId) || chatData.participants.includes(userId))) {
         return true;
       }
     }

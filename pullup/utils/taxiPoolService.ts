@@ -751,6 +751,37 @@ export const startTaxiPoolRide = async (poolId: string): Promise<void> => {
       startedAt: new Date().toISOString(),
     });
     console.log('[TAXI POOL SERVICE] ✅ Taxi pool started');
+
+    // Notify all accepted members of this taxi pool
+    try {
+      const poolSnap = await getDoc(poolRef);
+      const poolData = poolSnap.exists() ? poolSnap.data() : null;
+      const creatorName = poolData?.creatorName || 'Creator';
+      const creatorId = poolData?.creatorId || '';
+
+      const membersRef = collection(db, 'poolMembers');
+      const qMembers = query(membersRef, where('poolId', '==', poolId));
+      const membersSnap = await getDocs(qMembers);
+
+      for (const memberDoc of membersSnap.docs) {
+        const memberData = memberDoc.data();
+        if (memberData.passengerId !== creatorId) {
+          await sendNotification(
+            memberData.passengerId,
+            'ride_started',
+            '🚕 Taxi Pool Started!',
+            `${creatorName} started the Taxi Pool ride. You can track their location in real-time.`,
+            poolId,
+            undefined,
+            creatorId,
+            creatorName,
+            '/taxi-pool-details'
+          );
+        }
+      }
+    } catch (notifErr) {
+      console.warn('[TAXI POOL SERVICE] Failed to notify members of started pool:', notifErr);
+    }
   } catch (error) {
     console.error('[TAXI POOL SERVICE] Error starting taxi pool ride:', error);
     throw error;

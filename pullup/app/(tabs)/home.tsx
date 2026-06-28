@@ -27,6 +27,7 @@ import { WARM_CORE } from '@/constants/theme';
 import { subscribeToActivePools, subscribeToPassengerRequests, TaxiPool, PoolRequest } from '@/utils/taxiPoolService';
 import PoolCard from '@/components/PoolCard';
 import { TouchableOpacity } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import GreetingBanner from '@/components/GreetingBanner';
 import UserAvatar from '@/components/UserAvatar';
 
@@ -94,14 +95,22 @@ function UnifiedFeedCard({ item, onPress }: { item: any; onPress: () => void }) 
       onPress={onPress}
       activeOpacity={0.9}
     >
-      {/* Gradient overlay — top-left to bottom-right tint */}
-      <View
-        style={[
-          styles.cardGradientOverlay,
-          isTaxi ? styles.cardGradientOverlayTaxi : styles.cardGradientOverlayCar,
-        ]}
-        pointerEvents="none"
-      />
+      {isTaxi ? (
+        <LinearGradient
+          colors={['#FFF2E6', '#FED8B1']}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 1 }}
+          style={StyleSheet.absoluteFillObject}
+        />
+      ) : (
+        <View
+          style={[
+            styles.cardGradientOverlay,
+            styles.cardGradientOverlayCar,
+          ]}
+          pointerEvents="none"
+        />
+      )}
 
       {/* Top Header Row */}
       <View style={styles.cardHeaderRow}>

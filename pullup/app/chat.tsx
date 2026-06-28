@@ -201,7 +201,7 @@ export default function ChatScreen() {
     ride.status === 'completed' ||
     ride.status === 'expired' ||
     ride.status === 'no_show' ||
-    (ride.status === 'active' && booking && booking.status === 'accepted')
+    (ride.status === 'active' && booking && (booking.status === 'accepted' || booking.status === 'confirmed'))
   );
 
   const isChatWritable = ride && (
@@ -278,14 +278,14 @@ export default function ChatScreen() {
 
     const isDriver = ride.driverId === auth.user.id;
     const recipientId = isDriver
-      ? (booking?.passengerId || ride.bookedSeats?.find(b => b.status === 'accepted')?.passengerId)
+      ? (booking?.passengerId || ride.bookedSeats?.find(b => b.status === 'accepted' || b.status === 'confirmed')?.passengerId)
       : ride.driverId;
 
     if (!recipientId) return;
 
     // Set initial fallback name before firebase snapshot returns
     if (isDriver) {
-      const acceptedBooking = ride.bookedSeats?.find(b => b.status === 'accepted');
+      const acceptedBooking = ride.bookedSeats?.find(b => b.status === 'accepted' || b.status === 'confirmed');
       setRecipientName(acceptedBooking?.passengerName || 'Passenger');
     } else {
       setRecipientName(ride.driverName || 'Car Owner');
@@ -394,8 +394,8 @@ export default function ChatScreen() {
       
       let recipientId: string;
       if (isDriver) {
-        // Driver: get passenger from ride's booked seats (accepted booking)
-        const acceptedBooking = ride.bookedSeats?.find(b => b.status === 'accepted');
+        // Driver: get passenger from ride's booked seats (accepted or confirmed booking)
+        const acceptedBooking = ride.bookedSeats?.find(b => b.status === 'accepted' || b.status === 'confirmed');
         recipientId = acceptedBooking?.passengerId || '';
         
         if (!recipientId) {

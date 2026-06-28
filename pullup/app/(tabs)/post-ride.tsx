@@ -8,6 +8,7 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchRoute } from '@/utils/routeUtils';
+import { simplifyDouglasPeucker } from '@/utils/routeMatching';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import {
     ActivityIndicator,
@@ -841,6 +842,8 @@ function PostRideScreenInner() {
       }
 
       let lastRideData: any = null;
+      const simplifiedCoords = routeInfo ? simplifyDouglasPeucker(routeInfo.points, 20) : [];
+      
       for (const date of weekdayDates) {
         const rideData = {
           pickupLocation: formData.pickupLocation,
@@ -851,6 +854,10 @@ function PostRideScreenInner() {
           totalSeats: formData.availableSeats,
           carModel: formData.carModel,
           detourRadiusMeters: formData.detourRadiusMeters,
+          routePolyline: routeInfo?.polyline || '',
+          simplifiedCoordinates: simplifiedCoords,
+          baselineDistanceMeters: routeInfo?.distanceMeters || 0,
+          baselineDurationSeconds: routeInfo?.durationSeconds || 0,
         };
         await createRide(rideData);
         lastRideData = rideData;

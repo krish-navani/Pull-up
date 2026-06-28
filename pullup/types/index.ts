@@ -95,6 +95,18 @@ export interface Ride {
     updatedAt: string;
   };
   detourRadiusMeters?: number;
+  routePolyline?: string;
+  simplifiedCoordinates?: Array<{ latitude: number; longitude: number }>;
+  baselineDistanceMeters?: number;
+  baselineDurationSeconds?: number;
+  remainingDetourBudgetMeters?: number;
+  currentDistanceMeters?: number;
+  currentDurationSeconds?: number;
+  acceptedWaypoints?: Array<{ latitude: number; longitude: number; passengerId: string; address: string }>;
+  routeVersion?: number;
+  optimizationStatus?: 'idle' | 'optimizing' | 'completed';
+  lastOptimizedAt?: string;
+  optimizationSource?: 'google' | 'cache' | 'fallback';
 }
 
 /**
@@ -127,6 +139,11 @@ export interface Booking {
   penaltyApplied?: number;
   passengerPickupLocation?: Location;
   passengerDropLocation?: Location;
+  passengerOriginalLocation?: Location;
+  passengerSelectedPickup?: Location;
+  extraDistanceMeters?: number;
+  extraDurationSeconds?: number;
+  walkingDistanceMeters?: number;
   pickedUp?: boolean;
   droppedOff?: boolean;
   paymentStatus?: 'pending' | 'paid' | 'failed' | 'expired' | 'refunded';

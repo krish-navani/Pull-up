@@ -7,6 +7,9 @@ import { useEffect, useRef, useState } from 'react';
 import LocationSearchInput from '@/components/LocationSearchInput';
 import { getRideDirectionType } from '@/utils/atlasLocationUtils';
 import { calculateDistance } from '@/utils/locationUtils';
+import apiClient from '@/utils/backendApiClient';
+import { doc, updateDoc } from 'firebase/firestore';
+import { db } from '@/utils/firebase';
 import {
     Animated,
     Easing,
@@ -285,6 +288,7 @@ export default function BookingConfirmationScreen() {
 
   const ride          = getRideById(rideId as string);
   const seatsSelected = 1;
+  const detourLimit   = ride?.detourRadiusMeters ?? 0;
 
   const direction = ride ? getRideDirectionType(
     ride.pickupLocation.latitude,
@@ -296,28 +300,74 @@ export default function BookingConfirmationScreen() {
   const [selectedPickup, setSelectedPickup] = useState<any>(null);
   const [selectedDrop, setSelectedDrop] = useState<any>(null);
   const [acknowledged, setAcknowledged] = useState(false);
+  const [boardingChoice, setBoardingChoice] = useState<'home' | 'saved_pickup' | 'custom'>('home');
+  const [detourData, setDetourData] = useState<any>({
+    status: 'pending',
+    extraDistanceMeters: 0,
+    extraDurationSeconds: 0,
+    distanceToPolyline: 0,
+    recommendations: null,
+  });
+  const [isLoadingDetour, setIsLoadingDetour] = useState(false);
 
-  const detourDistance = ride
-    ? (direction === 'home-to-atlas' && selectedPickup
-        ? calculateDistance(
-            selectedPickup.latitude,
-            selectedPickup.longitude,
-            ride.pickupLocation.latitude,
-            ride.pickupLocation.longitude
-          )
-        : (direction === 'atlas-to-home' && selectedDrop
-            ? calculateDistance(
-                selectedDrop.latitude,
-                selectedDrop.longitude,
-                ride.dropLocation.latitude,
-                ride.dropLocation.longitude
-              )
-            : 0))
-    : 0;
+  const evaluateDetourOnBackend = async (location: any) => {
+    if (!ride || !location) return;
+    setIsLoadingDetour(true);
+    try {
+      const response = await apiClient.post('/evaluate-detour', {
+        rideId: ride.id,
+        passengerPickup: {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          address: location.address,
+        },
+        passengerId: auth.user?.id,
+      });
 
-  const detourDistanceMeters = detourDistance * 1000;
-  const detourLimit = ride?.detourRadiusMeters ?? 0;
-  const isDetourValid = detourDistanceMeters <= detourLimit;
+      if (response.data && response.data.success) {
+        setDetourData({
+          status: response.data.status,
+          extraDistanceMeters: response.data.extraDistanceMeters || 0,
+          extraDurationSeconds: response.data.extraDurationSeconds || 0,
+          distanceToPolyline: response.data.distanceToPolyline || 0,
+          recommendations: response.data.recommendations || null,
+          congestionMode: response.data.congestionMode || false,
+        });
+      }
+    } catch (err: any) {
+      console.warn('[DETOUR EVALUATION] Failed:', err);
+    } finally {
+      setIsLoadingDetour(false);
+    }
+  };
+
+  const handleBoardingChoiceChange = (choice: 'home' | 'saved_pickup' | 'custom') => {
+    setBoardingChoice(choice);
+    setErrorMessage(null);
+    if (ride) {
+      if (choice === 'home') {
+        const homeLoc = auth.user?.homeAddress;
+        if (homeLoc) {
+          if (direction === 'home-to-atlas') setSelectedPickup(homeLoc);
+          else setSelectedDrop(homeLoc);
+        } else {
+          Alert.alert('No Home Address', 'Please edit your profile to add a home address, or choose a custom location.');
+          setBoardingChoice('custom');
+        }
+      } else if (choice === 'saved_pickup') {
+        const savedLoc = (auth.user as any)?.preferredPickupLocation || auth.user?.homeAddress;
+        if (savedLoc) {
+          if (direction === 'home-to-atlas') setSelectedPickup(savedLoc);
+          else setSelectedDrop(savedLoc);
+        } else {
+          Alert.alert('No Saved Location', 'Please edit your profile to add a saved pickup location, or choose a custom location.');
+          setBoardingChoice('custom');
+        }
+      } else {
+        // Custom selection
+      }
+    }
+  };
 
   useEffect(() => {
     if (ride) {
@@ -326,6 +376,13 @@ export default function BookingConfirmationScreen() {
       setSelectedDrop(direction === 'atlas-to-home' && homeAddress ? homeAddress : ride.dropLocation);
     }
   }, [ride, direction, auth.user?.homeAddress]);
+
+  useEffect(() => {
+    const targetLoc = direction === 'home-to-atlas' ? selectedPickup : selectedDrop;
+    if (targetLoc) {
+      evaluateDetourOnBackend(targetLoc);
+    }
+  }, [selectedPickup, selectedDrop, direction]);
 
   // Staggered entrance
   const headerAnim = useFadeSlideIn(0,   14);
@@ -405,11 +462,13 @@ export default function BookingConfirmationScreen() {
       return;
     }
 
-    if (detourLimit > 0) {
-      if (!isDetourValid) {
-        setErrorMessage(`Detour distance (${detourDistance.toFixed(1)} km) exceeds the driver's limit of ${(detourLimit / 1000).toFixed(1)} km.`);
-        return;
-      }
+    if (detourData.status !== 'approved') {
+      setErrorMessage(
+        detourLimit === 0
+          ? 'This ride follows a fixed route. You must choose a location within 200m of the corridor.'
+          : 'Detour distance exceeds the remaining budget of this ride. Please choose a recommended pickup point.'
+      );
+      return;
     }
 
     if (!acknowledged) {
@@ -422,8 +481,33 @@ export default function BookingConfirmationScreen() {
     try {
       const pickupLocation = selectedPickup;
       const dropLocation = selectedDrop;
+      const detourMeta = {
+        passengerOriginalLocation: boardingChoice === 'custom' ? auth.user?.homeAddress || selectedPickup : selectedPickup,
+        passengerSelectedPickup: direction === 'home-to-atlas' ? selectedPickup : selectedDrop,
+        extraDistanceMeters: detourData.extraDistanceMeters || 0,
+        extraDurationSeconds: detourData.extraDurationSeconds || 0,
+        walkingDistanceMeters: detourData.distanceToPolyline || 0,
+      };
 
-      await requestRide(ride.id, seatsSelected, pickupLocation, dropLocation);
+      await requestRide(ride.id, seatsSelected, pickupLocation, dropLocation, detourMeta);
+
+      // Save custom location to passenger's preferred location for future bookings
+      if (boardingChoice === 'custom' && auth.user) {
+        try {
+          const locToSave = direction === 'home-to-atlas' ? selectedPickup : selectedDrop;
+          if (locToSave) {
+            const userRef = doc(db, 'users', auth.user.id);
+            await updateDoc(userRef, {
+              preferredPickupLocation: locToSave,
+              updatedAt: new Date().toISOString()
+            });
+            console.log('[BOOKING] Saved custom location to preferredPickupLocation');
+          }
+        } catch (saveErr) {
+          console.warn('[BOOKING] Failed to save preferred location:', saveErr);
+        }
+      }
+
       setShowSuccess(true);
       setIsConfirming(false);
     } catch (err: any) {
@@ -542,10 +626,36 @@ export default function BookingConfirmationScreen() {
           transform: [{ translateY: card2Anim.translateY }],
           zIndex: 999,
         }]}>
-          <Text style={st.sectionLabel}>YOUR JOURNEY POINTS</Text>
+          <Text style={st.sectionLabel}>YOUR BOARDING POINT</Text>
           <Text style={{ fontSize: 12, color: WARM_CORE.textSecondary, marginBottom: 12 }}>
-            Review or customize your pickup and drop-off points.
+            Where are you boarding from?
           </Text>
+
+          {/* Boarding Choice Selector */}
+          <View style={st.boardingChoiceRow}>
+            <TouchableOpacity
+              style={[st.boardingChoiceBtn, boardingChoice === 'home' && st.boardingChoiceBtnActive]}
+              onPress={() => handleBoardingChoiceChange('home')}
+            >
+              <Text style={[st.boardingChoiceText, boardingChoice === 'home' && st.boardingChoiceTextActive]}>Home</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[st.boardingChoiceBtn, boardingChoice === 'saved_pickup' && st.boardingChoiceBtnActive]}
+              onPress={() => handleBoardingChoiceChange('saved_pickup')}
+            >
+              <Text style={[st.boardingChoiceText, boardingChoice === 'saved_pickup' && st.boardingChoiceTextActive]}>Saved Pickup</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[st.boardingChoiceBtn, boardingChoice === 'custom' && st.boardingChoiceBtnActive]}
+              onPress={() => handleBoardingChoiceChange('custom')}
+            >
+              <Text style={[st.boardingChoiceText, boardingChoice === 'custom' && st.boardingChoiceTextActive]}>Custom</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={{ height: 16 }} />
+
+          {/* Location inputs */}
           <LocationSearchInput
             label="Pickup Location"
             value={selectedPickup?.address || ''}
@@ -554,7 +664,7 @@ export default function BookingConfirmationScreen() {
               setErrorMessage(null);
             }}
             placeholder="Search pickup address..."
-            readOnly={detourLimit === 0 || direction !== 'home-to-atlas'}
+            readOnly={boardingChoice !== 'custom' || detourLimit === 0 || direction !== 'home-to-atlas'}
           />
 
           <View style={{ height: 12 }} />
@@ -567,42 +677,115 @@ export default function BookingConfirmationScreen() {
               setErrorMessage(null);
             }}
             placeholder="Search drop-off address..."
-            readOnly={detourLimit === 0 || direction !== 'atlas-to-home'}
+            readOnly={boardingChoice !== 'custom' || detourLimit === 0 || direction !== 'atlas-to-home'}
           />
 
-          {detourLimit > 0 ? (
+          <View style={{ height: 16 }} />
+
+          {/* Dynamic detour check output */}
+          {isLoadingDetour ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, padding: 12, backgroundColor: WARM_CORE.border, borderRadius: 12 }}>
+              <ActivityIndicator size="small" color={WARM_CORE.primary} />
+              <Text style={{ fontSize: 13, color: WARM_CORE.textSecondary }}>Evaluating driving detour...</Text>
+            </View>
+          ) : detourData.congestionMode ? (
+            <View style={[st.detourInfoCard, { backgroundColor: 'rgba(245, 158, 11, 0.08)', borderColor: 'rgba(245, 158, 11, 0.18)' }]}>
+              <MaterialCommunityIcons name="alert" size={16} color="#F59E0B" />
+              <View style={{ flex: 1 }}>
+                <Text style={[st.detourInfoTitle, { color: '#F59E0B' }]}>
+                  Estimated route due to service congestion
+                </Text>
+                <Text style={st.detourInfoText}>
+                  Google Maps is currently congested. Route detour budget has been estimated using mathematical projection.
+                </Text>
+              </View>
+            </View>
+          ) : detourLimit > 0 ? (
             <View style={[
               st.detourInfoCard,
-              isDetourValid ? st.detourValidCard : st.detourInvalidCard
+              detourData.status === 'approved' ? st.detourValidCard : st.detourInvalidCard
             ]}>
               <MaterialCommunityIcons 
-                name={isDetourValid ? "check-circle" : "alert-circle"} 
+                name={detourData.status === 'approved' ? "check-circle" : "alert-circle"} 
                 size={16} 
-                color={isDetourValid ? WARM_CORE.success : "#EF4444"} 
+                color={detourData.status === 'approved' ? WARM_CORE.success : "#EF4444"} 
               />
               <View style={{ flex: 1 }}>
                 <Text style={[
                   st.detourInfoTitle,
-                  { color: isDetourValid ? WARM_CORE.success : "#EF4444" }
+                  { color: detourData.status === 'approved' ? WARM_CORE.success : "#EF4444" }
                 ]}>
-                  {isDetourValid ? "Detour is within limit" : "Detour exceeds driver limit"}
+                  {detourData.status === 'approved' ? "Detour is within limit ✓" : "Detour exceeds driver limit ⚠️"}
                 </Text>
                 <Text style={st.detourInfoText}>
-                  Your detour point is {detourDistance.toFixed(1)} km away. Driver limit: {(detourLimit / 1000).toFixed(1)} km.
+                  Adds +{(detourData.extraDistanceMeters / 1000).toFixed(1)} km & +{Math.round(detourData.extraDurationSeconds / 60)} min.
+                  Driver Limit: {(detourLimit / 1000).toFixed(0)} km.
                 </Text>
               </View>
             </View>
           ) : (
-            <View style={[st.detourInfoCard, st.detourFixedCard]}>
-              <MaterialCommunityIcons name="lock" size={16} color={WARM_CORE.textSecondary} />
+            <View style={[
+              st.detourInfoCard,
+              detourData.status === 'approved' ? st.detourValidCard : st.detourInvalidCard
+            ]}>
+              <MaterialCommunityIcons 
+                name={detourData.status === 'approved' ? "check-circle" : "lock"} 
+                size={16} 
+                color={detourData.status === 'approved' ? WARM_CORE.success : WARM_CORE.textSecondary} 
+              />
               <View style={{ flex: 1 }}>
-                <Text style={[st.detourInfoTitle, { color: WARM_CORE.textSecondary }]}>
-                  Fixed Route
+                <Text style={[
+                  st.detourInfoTitle,
+                  { color: detourData.status === 'approved' ? WARM_CORE.success : WARM_CORE.textSecondary }
+                ]}>
+                  {detourData.status === 'approved' ? "Fixed Route Corridor Approved ✓" : "Fixed Route (No Detour) ⚠️"}
                 </Text>
                 <Text style={st.detourInfoText}>
-                  This ride follows a fixed route. Custom pickup/dropoff points are locked.
+                  {detourData.status === 'approved' 
+                    ? `Within 200m of route (Detour: ${(detourData.extraDistanceMeters / 1000).toFixed(2)} km).`
+                    : 'Must lie directly on driver route (within 200m corridor, <=300m detour).'}
                 </Text>
               </View>
+            </View>
+          )}
+
+          {/* Recommendations Render */}
+          {detourData.status === 'rejected' && detourData.recommendations && (
+            <View style={st.recommendationsContainer}>
+              <Text style={st.recommendationsLabel}>Choose a recommended pickup point near driver's route:</Text>
+              {detourData.recommendations.map((rec: any, idx: number) => (
+                <TouchableOpacity
+                  key={idx}
+                  style={st.recommendationCard}
+                  onPress={() => {
+                    const newLoc = {
+                      latitude: rec.latitude,
+                      longitude: rec.longitude,
+                      address: rec.name,
+                      city: '',
+                    };
+                    if (direction === 'home-to-atlas') setSelectedPickup(newLoc);
+                    else setSelectedDrop(newLoc);
+                    setBoardingChoice('custom');
+                    setDetourData({
+                      status: 'approved',
+                      extraDistanceMeters: rec.detourDistanceMeters,
+                      extraDurationSeconds: Math.round(rec.detourDistanceMeters / 13.88),
+                      distanceToPolyline: rec.walkingDistanceMeters,
+                    });
+                  }}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={st.recName}>{rec.name}</Text>
+                    <View style={{ flexDirection: 'row', gap: 10, marginTop: 4 }}>
+                      <Text style={st.recDetail}>Walk: {rec.walkingDistanceMeters}m</Text>
+                      <Text style={st.recDetail}>•</Text>
+                      <Text style={st.recDetail}>Driver Detour: {rec.detourDistanceMeters === 0 ? '0km' : `${(rec.detourDistanceMeters / 1000).toFixed(1)}km`}</Text>
+                    </View>
+                  </View>
+                  <MaterialCommunityIcons name="chevron-right" size={18} color={WARM_CORE.primary} />
+                </TouchableOpacity>
+              ))}
             </View>
           )}
         </Animated.View>
@@ -811,6 +994,63 @@ const st = StyleSheet.create({
   detourFixedCard: {
     backgroundColor: 'rgba(107, 114, 128, 0.06)',
     borderColor: 'rgba(107, 114, 128, 0.15)',
+  },
+  boardingChoiceRow: {
+    flexDirection: 'row',
+    backgroundColor: WARM_CORE.border,
+    borderRadius: 12,
+    padding: 3,
+    gap: 3,
+  },
+  boardingChoiceBtn: {
+    flex: 1,
+    paddingVertical: 10,
+    alignItems: 'center',
+    borderRadius: 9,
+  },
+  boardingChoiceBtnActive: {
+    backgroundColor: WARM_CORE.primary,
+  },
+  boardingChoiceText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: WARM_CORE.textSecondary,
+  },
+  boardingChoiceTextActive: {
+    color: WARM_CORE.white,
+  },
+  recommendationsContainer: {
+    marginTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: WARM_CORE.border,
+    paddingTop: 16,
+  },
+  recommendationsLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: WARM_CORE.textSecondary,
+    marginBottom: 10,
+    lineHeight: 16,
+  },
+  recommendationCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: WARM_CORE.card,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 8,
+  },
+  recName: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  },
+  recDetail: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: WARM_CORE.primary,
   },
   detourInfoTitle: {
     fontSize: 13,

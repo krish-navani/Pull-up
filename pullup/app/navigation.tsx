@@ -32,6 +32,7 @@ import { WARM_CORE } from '@/constants/theme';
 import { fetchRoute } from '@/utils/routeUtils';
 import { calculateDistance, getRideDirectionType } from '@/utils/atlasLocationUtils';
 import { GeofenceEngine } from '@/utils/geofenceEngine';
+import { sendNotification } from '@/utils/notificationService';
 import {
   subscribeToGroupMessages,
   sendGroupMessage,
@@ -76,7 +77,6 @@ export default function NavigationScreen() {
   const [currentSpeed, setCurrentSpeed] = useState<number>(0);
 
   // Modals & Menu
-  const [menuVisible, setMenuVisible] = useState(false);
   const [sosVisible, setSosVisible] = useState(false);
   const [chatVisible, setChatVisible] = useState(false);
   const [bgPermModalVisible, setBgPermModalVisible] = useState(false);
@@ -596,6 +596,23 @@ export default function NavigationScreen() {
         startedAt: new Date().toISOString(),
         updatedAt: Timestamp.now()
       });
+
+      // Send push notification to all accepted/confirmed passengers
+      try {
+        const passengerIds = acceptedBookings.map((b: any) => b.passengerId);
+        for (const passengerId of passengerIds) {
+          await sendNotification(
+            passengerId,
+            'ride_started',
+            '🚀 Ride Started!',
+            `Your ride with ${ride.driverName} has started. You can track their location in real-time.`,
+            ride.id
+          );
+        }
+      } catch (notifyErr) {
+        console.warn('[NAVIGATION] Failed to send ride_started notifications:', notifyErr);
+      }
+
       Alert.alert('🚀 Commute Started!', 'Ride is now in transit. Drive safe!');
     } catch {
       Alert.alert('Error', 'Failed to start ride.');
@@ -787,8 +804,8 @@ export default function NavigationScreen() {
               ETA: {routeDuration} · {routeDistance} remaining
             </Text>
           </View>
-          <TouchableOpacity onPress={() => setMenuVisible(true)} style={styles.menuButton}>
-            <MaterialCommunityIcons name="dots-vertical" size={22} color={WARM_CORE.text} />
+          <TouchableOpacity onPress={handleGoogleMapsFallback} style={styles.menuButton}>
+            <MaterialCommunityIcons name="google-maps" size={24} color={WARM_CORE.primary} />
           </TouchableOpacity>
         </View>
 
@@ -1044,21 +1061,7 @@ export default function NavigationScreen() {
         </View>
       </Modal>
 
-      {/* ─── OPTIONS MENU MODAL ─────────────────────────────────────────────── */}
-      <Modal visible={menuVisible} animationType="fade" transparent={true} onRequestClose={() => setMenuVisible(false)}>
-        <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={() => setMenuVisible(false)}>
-          <View style={styles.menuContainer}>
-            <Text style={styles.menuTitle}>Navigation Options</Text>
-            <TouchableOpacity onPress={handleGoogleMapsFallback} style={styles.menuItem}>
-              <MaterialCommunityIcons name="google-maps" size={22} color={WARM_CORE.primary} />
-              <Text style={styles.menuItemText}>Open in Google Maps</Text>
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setMenuVisible(false)} style={styles.menuCancel}>
-              <Text style={styles.menuCancelText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </TouchableOpacity>
-      </Modal>
+
 
       {/* ─── SOS MODAL ──────────────────────────────────────────────────────── */}
       <Modal visible={sosVisible} animationType="fade" transparent={true} onRequestClose={() => setSosVisible(false)}>

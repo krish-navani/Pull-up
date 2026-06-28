@@ -17,6 +17,7 @@ import { db } from './firebase';
 import { addBookingToRide, updateAvailableSeats, updateBookingStatusInRide } from './rideService';
 import { sendNotification } from './notificationService';
 import { addParticipantToGroupChat, removeParticipantFromGroupChat } from './rideGroupChatService';
+import apiClient from './backendApiClient';
 
 /**
  * Create a new booking in Firestore
@@ -31,7 +32,14 @@ export const createBookingInFirestore = async (
   seatsBooked: number,
   pricePerSeat: number,
   passengerPickupLocation?: any,
-  passengerDropLocation?: any
+  passengerDropLocation?: any,
+  detourMeta?: {
+    passengerOriginalLocation?: any;
+    passengerSelectedPickup?: any;
+    extraDistanceMeters?: number;
+    extraDurationSeconds?: number;
+    walkingDistanceMeters?: number;
+  }
 ): Promise<string> => {
   try {
     console.log('[BOOKING SERVICE] Creating booking for ride in transaction:', rideId);
@@ -94,6 +102,11 @@ export const createBookingInFirestore = async (
         updatedAt: Timestamp.now(),
         passengerPickupLocation: passengerPickupLocation || null,
         passengerDropLocation: passengerDropLocation || null,
+        passengerOriginalLocation: detourMeta?.passengerOriginalLocation || null,
+        passengerSelectedPickup: detourMeta?.passengerSelectedPickup || null,
+        extraDistanceMeters: detourMeta?.extraDistanceMeters || 0,
+        extraDurationSeconds: detourMeta?.extraDurationSeconds || 0,
+        walkingDistanceMeters: detourMeta?.walkingDistanceMeters || 0,
         expiresAt: Timestamp.fromDate(expiresAt),
       };
 
@@ -429,6 +442,13 @@ export const cancelBookingWithPenalty = async (
 
     // Also update the booking status in the ride's bookedSeats array
     await updateBookingStatusInRide(rideId, passengerId, 'cancelled');
+
+    // Trigger background route re-optimization asynchronously (Verification 4)
+    try {
+      await apiClient.post('/trigger-reoptimization', { rideId });
+    } catch (reoptErr) {
+      console.warn('[BOOKING SERVICE] Failed to trigger background re-optimization:', reoptErr);
+    }
 
     // If booking was paid, restore seat capacity on the ride document!
     if (isPaid) {

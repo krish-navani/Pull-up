@@ -103,6 +103,7 @@ export const fetchRoute = async (
       return {
         success: true,
         points,
+        polyline: route.overview_polyline.points,
         distance: distanceText,
         duration: durationText,
         distanceMeters: totalDistanceMeters,

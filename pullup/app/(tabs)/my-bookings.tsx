@@ -1610,68 +1610,18 @@ function PassengerProfileRow({
   const fetchDetourDetails = async () => {
     setIsLoadingDetour(true);
     try {
-      const direction = getRideDirectionType(
-        ride.pickupLocation.latitude,
-        ride.pickupLocation.longitude,
-        ride.dropLocation.latitude,
-        ride.dropLocation.longitude
-      );
+      const passengerLoc = booking.passengerSelectedPickup || booking.passengerPickupLocation || null;
+      const originalLoc = booking.passengerOriginalLocation || passengerLoc;
 
-      const passengerLoc = direction === 'home-to-atlas'
-        ? booking.passengerPickupLocation
-        : booking.passengerDropLocation;
-
-      if (!passengerLoc) {
-        console.warn('[DETOUR] Booking custom coordinates are missing');
-        setIsLoadingDetour(false);
-        return;
-      }
-
-      const acceptedBookings = allBookings.filter(b => b.status === 'accepted' || b.status === 'confirmed');
-      const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs';
-
-      // Map accepted bookings to their waypoint coordinates
-      const baselineWaypoints = acceptedBookings.map(b => {
-        return direction === 'home-to-atlas' ? b.passengerPickupLocation : b.passengerDropLocation;
-      }).filter(Boolean);
-
-      // Proposed waypoints includes baseline waypoints PLUS the pending passenger waypoint
-      const proposedWaypoints = [...baselineWaypoints, passengerLoc];
-
-      // Fetch baseline route (current accepted passengers only)
-      const baselineRes = await fetchRoute(
-        ride.pickupLocation,
-        ride.dropLocation,
-        apiKey,
-        baselineWaypoints
-      );
-
-      // Fetch proposed route (accepted + pending passenger)
-      const proposedRes = await fetchRoute(
-        ride.pickupLocation,
-        ride.dropLocation,
-        apiKey,
-        proposedWaypoints
-      );
-
-      if (proposedRes.success) {
-        const baselineDist = baselineRes.distanceMeters ?? 0;
-        const baselineDur = baselineRes.durationSeconds ?? 0;
-        const proposedDist = proposedRes.distanceMeters ?? 0;
-        const proposedDur = proposedRes.durationSeconds ?? 0;
-
-        const detourDistMeters = Math.max(0, proposedDist - baselineDist);
-        const detourDurSeconds = Math.max(0, proposedDur - baselineDur);
-
-        setDetourInfo({
-          detourDistanceKm: Math.round((detourDistMeters / 1000) * 10) / 10,
-          detourDurationMin: Math.round(detourDurSeconds / 60),
-          proposedRoutePoints: proposedRes.points,
-          passengerLocation: passengerLoc,
-        });
-      }
+      setDetourInfo({
+        detourDistanceKm: Math.round(((booking.extraDistanceMeters || 0) / 1000) * 10) / 10,
+        detourDurationMin: Math.round((booking.extraDurationSeconds || 0) / 60),
+        proposedRoutePoints: ride.simplifiedCoordinates || [],
+        passengerLocation: passengerLoc,
+        originalLocation: originalLoc,
+      });
     } catch (err) {
-      console.error('[DETOUR] Error calculating detour:', err);
+      console.error('[DETOUR] Error loading detour info:', err);
     } finally {
       setIsLoadingDetour(false);
     }
@@ -1791,8 +1741,8 @@ function PassengerProfileRow({
                   initialRegion={{
                     latitude: (ride.pickupLocation.latitude + ride.dropLocation.latitude) / 2,
                     longitude: (ride.pickupLocation.longitude + ride.dropLocation.longitude) / 2,
-                    latitudeDelta: 0.1,
-                    longitudeDelta: 0.1,
+                    latitudeDelta: Math.max(Math.abs(ride.pickupLocation.latitude - ride.dropLocation.latitude) * 1.5, 0.05),
+                    longitudeDelta: Math.max(Math.abs(ride.pickupLocation.longitude - ride.dropLocation.longitude) * 1.5, 0.05),
                   }}
                   scrollEnabled={false}
                   zoomEnabled={false}
@@ -1823,31 +1773,73 @@ function PassengerProfileRow({
                     <View style={styles.miniMarkerEnd} />
                   </Marker>
                   
-                  {/* Passenger location marker */}
-                  <Marker
-                    coordinate={detourInfo.passengerLocation}
-                    title={`${displayName}'s Point`}
-                  >
-                    <View style={styles.miniMarkerPassenger}>
-                      <MaterialCommunityIcons name="account" size={10} color={WARM_CORE.white} />
-                    </View>
-                  </Marker>
+                  {/* Passenger original location (Home) */}
+                  {detourInfo.originalLocation && (
+                    <Marker
+                      coordinate={detourInfo.originalLocation}
+                      title="Passenger Home"
+                    >
+                      <View style={[styles.miniMarkerPassenger, { backgroundColor: '#3B82F6' }]}>
+                        <MaterialCommunityIcons name="home" size={8} color={WARM_CORE.white} />
+                      </View>
+                    </Marker>
+                  )}
+
+                  {/* Passenger selected pickup point */}
+                  {detourInfo.passengerLocation && (
+                    <Marker
+                      coordinate={detourInfo.passengerLocation}
+                      title="Selected Pickup"
+                    >
+                      <View style={styles.miniMarkerPassenger}>
+                        <MaterialCommunityIcons name="map-marker-check" size={8} color={WARM_CORE.white} />
+                      </View>
+                    </Marker>
+                  )}
                 </MapView>
+              </View>
+
+              {/* Detailed metrics requested by Correction 8 */}
+              <View style={{ gap: 6, marginVertical: 12 }}>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: WARM_CORE.textSecondary }}>PASSENGER HOME:</Text>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: WARM_CORE.text, flex: 1, textAlign: 'right', marginLeft: 8 }} numberOfLines={1}>
+                    {booking.passengerOriginalLocation?.address || 'N/A'}
+                  </Text>
+                </View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: WARM_CORE.textSecondary }}>SELECTED PICKUP:</Text>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: WARM_CORE.primary, flex: 1, textAlign: 'right', marginLeft: 8 }} numberOfLines={1}>
+                    {booking.passengerSelectedPickup?.address || 'N/A'}
+                  </Text>
+                </View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: WARM_CORE.textSecondary }}>WALKING DISTANCE:</Text>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: WARM_CORE.text }}>
+                    {booking.walkingDistanceMeters || 0} meters
+                  </Text>
+                </View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: WARM_CORE.textSecondary }}>REMAINING BUDGET:</Text>
+                  <Text style={{ fontSize: 11, fontWeight: '700', color: WARM_CORE.text }}>
+                    {((ride.remainingDetourBudgetMeters !== undefined ? ride.remainingDetourBudgetMeters : ride.detourRadiusMeters || 0) / 1000).toFixed(1)} km
+                  </Text>
+                </View>
               </View>
 
               <View style={styles.detourStatsRow}>
                 <View style={styles.detourStatBox}>
-                  <Text style={styles.detourStatLabel}>ADDITIONAL DETOUR</Text>
+                  <Text style={styles.detourStatLabel}>ADDITIONAL DISTANCE</Text>
                   <Text style={styles.detourStatValue}>+{detourInfo.detourDistanceKm} km</Text>
                 </View>
                 <View style={styles.detourStatBox}>
-                  <Text style={styles.detourStatLabel}>EXTRA TRAVEL TIME</Text>
+                  <Text style={styles.detourStatLabel}>ADDITIONAL TIME</Text>
                   <Text style={styles.detourStatValue}>+{detourInfo.detourDurationMin} mins</Text>
                 </View>
               </View>
 
               <Text style={styles.detourSummaryText}>
-                Approving {displayName} will add approximately {detourInfo.detourDistanceKm} km and {detourInfo.detourDurationMin} minutes of travel to your trip.
+                Approving {displayName} adds {detourInfo.detourDistanceKm} km and {detourInfo.detourDurationMin} minutes of detour to this ride.
               </Text>
             </View>
           ) : (
