@@ -9,6 +9,7 @@ export default function AuthLayout() {
       }}
     >
       <Stack.Screen name="signup" />
+      <Stack.Screen name="name-setup" />
       <Stack.Screen name="profile" />
       <Stack.Screen name="license-upload" />
     </Stack>

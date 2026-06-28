@@ -103,8 +103,15 @@ export default function WalletScreen() {
       if (snap.exists()) {
         const data = snap.data();
         if (data.payoutMethod && data.payoutMethod.type === 'upi') {
-          setUpiId(data.payoutMethod.upiId || '');
-          setIsUpiVerified(data.payoutMethod.verified || false);
+          const rawUpi = data.payoutMethod.upiId || '';
+          // Prompt to update if static or missing
+          if (rawUpi && rawUpi !== 'pullup@oksbi' && rawUpi !== 'static@upi') {
+            setUpiId(rawUpi);
+            setIsUpiVerified(data.payoutMethod.verified || false);
+          } else {
+            setUpiId('');
+            setIsUpiVerified(false);
+          }
         }
       }
     }, (error) => {
@@ -153,9 +160,16 @@ export default function WalletScreen() {
   }, [auth.user]);
 
   const handleVerifyUpi = async () => {
-    if (!auth.user) return;
-    if (!upiId.trim()) {
-      Alert.alert('Error', 'Please enter a UPI ID first.');
+    if (!auth.user || verifyingUpi) return;
+    const formattedUpi = upiId.trim().toLowerCase();
+    if (!formattedUpi) {
+      Alert.alert('Error', 'Please enter your UPI ID (e.g. example@oksbi).');
+      return;
+    }
+
+    const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
+    if (!upiRegex.test(formattedUpi)) {
+      Alert.alert('Invalid Format', 'Please enter a valid UPI ID (e.g. example@oksbi).');
       return;
     }
 
@@ -163,17 +177,18 @@ export default function WalletScreen() {
     try {
       const res = await apiClient.post('/verify-upi', {
         userId: auth.user.id,
-        upiId: upiId.trim(),
+        upiId: formattedUpi,
       });
 
       if (res.data?.success) {
+        setUpiId(formattedUpi);
         setIsUpiVerified(true);
         Alert.alert('Success', 'Your UPI ID has been verified successfully!');
       } else {
         throw new Error(res.data?.message || 'Verification failed');
       }
     } catch (err: any) {
-      Alert.alert('UPI Verification Failed', err.message || 'Invalid UPI ID format. Ensure it follows name@bank.');
+      Alert.alert('UPI Verification Failed', err.message || 'Invalid UPI ID format. Ensure it follows example@oksbi.');
     } finally {
       setVerifyingUpi(false);
     }
@@ -311,7 +326,7 @@ export default function WalletScreen() {
             <View style={styles.upiInputRow}>
               <TextInput
                 style={[styles.input, isUpiVerified && styles.inputDisabled]}
-                placeholder="name@bank"
+                placeholder="example@oksbi"
                 placeholderTextColor={WARM_CORE.textSecondary}
                 value={upiId}
                 onChangeText={(text) => {

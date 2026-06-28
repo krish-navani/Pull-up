@@ -583,6 +583,69 @@ export default function ProfileScreen() {
               </View>
             </Animated.View>
 
+            {/* PROFILE COMPLETION CARD (Non-blocking) */}
+            {(() => {
+              const missing: { id: string; label: string; icon: string; route: string }[] = [];
+              if (!auth.user?.profileImage) {
+                missing.push({ id: 'photo', label: 'Add Profile Photo', icon: 'camera-plus-outline', route: '/profile-edit' });
+              }
+              if (!auth.user?.homeAddress) {
+                missing.push({ id: 'address', label: 'Add Home Address', icon: 'home-city-outline', route: '/profile-edit' });
+              }
+              const upiId = (auth.user as any)?.payoutMethod?.upiId;
+              if (!upiId || upiId === 'pullup@oksbi' || upiId === 'static@upi') {
+                missing.push({ id: 'upi', label: 'Add UPI ID for Payouts', icon: 'credit-card-outline', route: '/wallet' });
+              }
+
+              if (missing.length === 0) return null;
+
+              const completedCount = 3 - missing.length;
+              const percent = Math.round((completedCount / 3) * 100);
+
+              return (
+                <Animated.View
+                  style={[
+                    styles.completionCard,
+                    {
+                      opacity: profileCardAnim.opacity,
+                      transform: [{ translateY: profileCardAnim.translateY }],
+                    },
+                  ]}
+                >
+                  <View style={styles.completionHeader}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.completionTitle}>Complete Your Profile</Text>
+                      <Text style={styles.completionSubtitle}>{completedCount} of 3 tasks completed ({percent}%)</Text>
+                    </View>
+                    <View style={styles.completionBadge}>
+                      <Text style={styles.completionBadgeText}>{percent}%</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.completionProgressTrack}>
+                    <View style={[styles.completionProgressBar, { width: `${percent}%` }]} />
+                  </View>
+
+                  <View style={styles.completionItemsList}>
+                    {missing.map((item) => (
+                      <TouchableOpacity
+                        key={item.id}
+                        style={styles.completionItemRow}
+                        onPress={() => router.push(item.route as any)}
+                        activeOpacity={0.7}
+                      >
+                        <View style={styles.completionIconBox}>
+                          <MaterialCommunityIcons name={item.icon as any} size={18} color={WARM_CORE.primary} />
+                        </View>
+                        <Text style={styles.completionItemLabel}>{item.label}</Text>
+                        <MaterialCommunityIcons name="chevron-right" size={18} color={WARM_CORE.textSecondary} />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </Animated.View>
+              );
+            })()}
+
             {/* ACTION ROW: Edit and Sliding Switcher */}
             <Animated.View
               style={[
@@ -1530,4 +1593,77 @@ const styles = StyleSheet.create({
     height: 32,
     backgroundColor: WARM_CORE.border,
   } as ViewStyle,
+  completionCard: {
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  } as ViewStyle,
+  completionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  } as ViewStyle,
+  completionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  } as TextStyle,
+  completionSubtitle: {
+    fontSize: 12,
+    color: WARM_CORE.textSecondary,
+    marginTop: 2,
+  } as TextStyle,
+  completionBadge: {
+    backgroundColor: 'rgba(212, 80, 10, 0.12)',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  } as ViewStyle,
+  completionBadgeText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: WARM_CORE.primary,
+  } as TextStyle,
+  completionProgressTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: WARM_CORE.border,
+    overflow: 'hidden',
+    marginBottom: 14,
+  } as ViewStyle,
+  completionProgressBar: {
+    height: '100%',
+    backgroundColor: WARM_CORE.primary,
+    borderRadius: 3,
+  } as ViewStyle,
+  completionItemsList: {
+    gap: 10,
+  } as ViewStyle,
+  completionItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: WARM_CORE.background,
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  } as ViewStyle,
+  completionIconBox: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: WARM_CORE.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  } as ViewStyle,
+  completionItemLabel: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: WARM_CORE.text,
+  } as TextStyle,
 });

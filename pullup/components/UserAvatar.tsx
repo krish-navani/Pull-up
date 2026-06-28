@@ -68,11 +68,11 @@ const styles = StyleSheet.create({
     backgroundColor: WARM_CORE.card,
   },
   avatarFallback: {
-    backgroundColor: WARM_CORE.text, // WARM_CORE.text is #1E120D
+    backgroundColor: WARM_CORE.primary, // Orange circular background
     justifyContent: 'center',
     alignItems: 'center',
   },
   avatarInitial: {
-    color: WARM_CORE.white, // white / cream text
+    color: WARM_CORE.white, // White text
   },
 });

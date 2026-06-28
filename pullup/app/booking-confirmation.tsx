@@ -11,6 +11,7 @@ import apiClient from '@/utils/backendApiClient';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
 import {
+    ActivityIndicator,
     Animated,
     Easing,
     Pressable,
@@ -31,8 +32,23 @@ const ROUTE = {
   line:      { width: 2, backgroundColor: WARM_CORE.border },
   labelPickup:  { fontSize: 11, fontWeight: '700' as const, color: WARM_CORE.primary, letterSpacing: 0.5, marginBottom: 3 },
   labelDropoff: { fontSize: 11, fontWeight: '700' as const, color: WARM_CORE.textSecondary, letterSpacing: 0.5, marginBottom: 3 },
-  address:   { fontSize: 14, fontWeight: '600' as const, color: WARM_CORE.text, lineHeight: 18 },
+  address:      { fontSize: 14, fontWeight: '600' as const, color: WARM_CORE.text, lineHeight: 18 },
 };
+
+function getPrimaryAddr(loc?: any): string {
+  if (!loc) return 'Location';
+  const addr = typeof loc === 'string' ? loc : loc.address || loc.city || '';
+  if (!addr) return 'Location';
+  return addr.split(',')[0].trim() || 'Location';
+}
+
+function getSecondaryAddr(loc?: any): string {
+  if (!loc) return '';
+  const addr = typeof loc === 'string' ? loc : loc.address || '';
+  if (!addr) return loc.city || '';
+  const parts = addr.split(',').slice(1, 3).map((p: string) => p.trim()).filter(Boolean);
+  return parts.join(', ') || loc.city || '';
+}
 
 // ─── Animation helpers ────────────────────────────────────────────────────────
 
@@ -179,14 +195,10 @@ function SuccessScreen({ ride, seatsSelected, totalPrice, customLocation, direct
               <View style={st.routeTextBlock}>
                 <Text style={ROUTE.labelPickup}>PICKUP</Text>
                 <Text style={ROUTE.address} numberOfLines={1}>
-                  {direction === 'home-to-atlas' && customLocation 
-                    ? customLocation.address.split(',')[0] 
-                    : ride.pickupLocation.address.split(',')[0]}
+                  {getPrimaryAddr(direction === 'home-to-atlas' && customLocation ? customLocation : ride?.pickupLocation)}
                 </Text>
                 <Text style={st.cityText} numberOfLines={1}>
-                  {direction === 'home-to-atlas' && customLocation 
-                    ? customLocation.address.split(',').slice(1, 3).join(',').trim()
-                    : ride.pickupLocation.address.split(',').slice(1, 3).join(',').trim()}
+                  {getSecondaryAddr(direction === 'home-to-atlas' && customLocation ? customLocation : ride?.pickupLocation)}
                 </Text>
               </View>
 
@@ -200,14 +212,10 @@ function SuccessScreen({ ride, seatsSelected, totalPrice, customLocation, direct
               <View style={st.routeTextBlock}>
                 <Text style={ROUTE.labelDropoff}>DROP-OFF</Text>
                 <Text style={ROUTE.address} numberOfLines={1}>
-                  {direction === 'atlas-to-home' && customLocation 
-                    ? customLocation.address.split(',')[0] 
-                    : ride.dropLocation.address.split(',')[0]}
+                  {getPrimaryAddr(direction === 'atlas-to-home' && customLocation ? customLocation : ride?.dropLocation)}
                 </Text>
                 <Text style={st.cityText} numberOfLines={1}>
-                  {direction === 'atlas-to-home' && customLocation 
-                    ? customLocation.address.split(',').slice(1, 3).join(',').trim()
-                    : ride.dropLocation.address.split(',').slice(1, 3).join(',').trim()}
+                  {getSecondaryAddr(direction === 'atlas-to-home' && customLocation ? customLocation : ride?.dropLocation)}
                 </Text>
               </View>
             </View>
@@ -489,7 +497,7 @@ export default function BookingConfirmationScreen() {
         walkingDistanceMeters: detourData.distanceToPolyline || 0,
       };
 
-      await requestRide(ride.id, seatsSelected, pickupLocation, dropLocation, detourMeta);
+      await (requestRide as any)(ride.id, seatsSelected, pickupLocation, dropLocation, detourMeta);
 
       // Save custom location to passenger's preferred location for future bookings
       if (boardingChoice === 'custom' && auth.user) {
@@ -581,16 +589,16 @@ export default function BookingConfirmationScreen() {
             <View style={[st.routeTextBlock, { gap: 20 }]}>
               <View>
                 <Text style={ROUTE.labelPickup}>PICKUP</Text>
-                <Text style={ROUTE.address} numberOfLines={1}>{ride.pickupLocation.address.split(',')[0]}</Text>
+                <Text style={ROUTE.address} numberOfLines={1}>{getPrimaryAddr(ride?.pickupLocation)}</Text>
                 <Text style={st.cityText} numberOfLines={1}>
-                  {ride.pickupLocation.address.split(',').slice(1, 3).join(',').trim()}
+                  {getSecondaryAddr(ride?.pickupLocation)}
                 </Text>
               </View>
               <View>
                 <Text style={ROUTE.labelDropoff}>DROP-OFF</Text>
-                <Text style={ROUTE.address} numberOfLines={1}>{ride.dropLocation.address.split(',')[0]}</Text>
+                <Text style={ROUTE.address} numberOfLines={1}>{getPrimaryAddr(ride?.dropLocation)}</Text>
                 <Text style={st.cityText} numberOfLines={1}>
-                  {ride.dropLocation.address.split(',').slice(1, 3).join(',').trim()}
+                  {getSecondaryAddr(ride?.dropLocation)}
                 </Text>
               </View>
             </View>

@@ -554,12 +554,20 @@ export default function MyBookingsScreen() {
     }
   }, [auth.user?.id, loadPassengerBookings, loadAllAvailableRides]);
 
-  // Get bookings where current user is the passenger AND ride is active, in_progress, completed or cancelled
+  // Get bookings where current user is the passenger AND ride/booking is active
   const rawPassengerBookings = (bookings ?? []).filter((b, idx, self) => {
     if (b.passengerId !== auth.user?.id) return false;
     const ride = (rides ?? []).find(r => r.id === b.rideId);
-    const isRideActive = ride && (ride.status === 'active' || ride.status === 'in_progress' || ride.status === 'completed' || ride.status === 'cancelled');
+    
+    // Check ride lifecycle
+    const rideStatus = ride ? (ride.status as string) : '';
+    const isRideActive = ride && (rideStatus === 'active' || rideStatus === 'in_progress' || rideStatus === 'arrived' || rideStatus === 'scheduled');
     if (!isRideActive) return false;
+
+    // Check booking lifecycle (exclude finished/terminal statuses)
+    const bookingStatus = (b.status as string);
+    const isBookingActive = bookingStatus === 'pending' || bookingStatus === 'accepted' || bookingStatus === 'confirmed' || bookingStatus === 'arrived';
+    if (!isBookingActive) return false;
 
     // Deduplicate duplicate document IDs
     return self.findIndex(o => o.id === b.id) === idx;
@@ -581,7 +589,10 @@ export default function MyBookingsScreen() {
       if (rideBookings.length === 1) {
         result.push(rideBookings[0]);
       } else {
-        const active = rideBookings.find(b => b.status === 'pending' || b.status === 'accepted' || b.status === 'confirmed');
+        const active = rideBookings.find(b => {
+          const s = b.status as string;
+          return s === 'pending' || s === 'accepted' || s === 'confirmed' || s === 'arrived';
+        });
         if (active) {
           result.push(active);
         } else {
@@ -1005,25 +1016,6 @@ export default function MyBookingsScreen() {
           </View>
         )}
 
-        {/* Book Again Button: completed, cancelled, or rejected bookings */}
-        {(booking.status === 'cancelled' || booking.status === 'rejected' || ride.status === 'completed' || ride.status === 'cancelled') && (
-          <View style={[styles.acceptedActionsContainer, { paddingHorizontal: 16, paddingBottom: 16 }]}>
-            <AnimatedPressButton
-              style={[styles.chatButton, { backgroundColor: WARM_CORE.primary }]}
-              onPress={() => {
-                const params = {
-                  prefillPickup: JSON.stringify(ride.pickupLocation),
-                  prefillDrop: JSON.stringify(ride.dropLocation),
-                  prefillRideType: 'car',
-                };
-                router.push({ pathname: '/(tabs)/home', params });
-              }}
-            >
-              <MaterialCommunityIcons name="cached" size={16} color={WARM_CORE.white} />
-              <Text style={styles.chatButtonText}>Book Again</Text>
-            </AnimatedPressButton>
-          </View>
-        )}
 
         {/* Penalty Info if Cancelled */}
         {booking.status === 'cancelled' && booking.penaltyApplied && booking.penaltyApplied > 0 && (
@@ -1580,6 +1572,7 @@ function PassengerProfileRow({
     detourDurationMin: number;
     proposedRoutePoints: any[];
     passengerLocation: any;
+    originalLocation?: any;
   } | null>(null);
 
   useEffect(() => {
@@ -2217,29 +2210,17 @@ function RideDetailsModal({
               </TouchableOpacity>
             )}
 
-            {/* FINISH RIDE BUTTON */}
+            {/* FINISH RIDE BUTTON (Directs to GPS Navigation for Geofence Arrival Validation) */}
             {ride.status === 'in_progress' && (
               <TouchableOpacity 
-                style={[styles.driverSuccessButton, { flex: 1, marginBottom: 12 }, isCompleting && { opacity: 0.6 }]}
-                onPress={async () => {
-                  setIsCompleting(true);
-                  try {
-                    await onCompleteRide(ride.id);
-                    onClose();
-                  } catch (error) {
-                    console.error('Failed to complete ride:', error);
-                  } finally {
-                    setIsCompleting(false);
-                  }
+                style={[styles.driverSuccessButton, { flex: 1, marginBottom: 12 }]}
+                onPress={() => {
+                  onClose();
+                  router.push({ pathname: '/navigation', params: { rideId: ride.id } });
                 }}
-                disabled={isCompleting || isCanceling}
               >
-                <MaterialCommunityIcons 
-                  name={isCompleting ? "loading" : "check-circle-outline"} 
-                  size={18} 
-                  color={WARM_CORE.success}
-                />
-                <Text style={styles.driverSuccessButtonText}>{isCompleting ? 'Completing...' : 'Finish Ride'}</Text>
+                <MaterialCommunityIcons name="flag-checkered" size={18} color={WARM_CORE.success} />
+                <Text style={styles.driverSuccessButtonText}>Open Navigation to Finish Ride</Text>
               </TouchableOpacity>
             )}
 

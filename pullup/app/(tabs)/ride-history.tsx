@@ -312,18 +312,24 @@ export default function RideHistoryScreen() {
     return ride && ride.status === 'in_progress';
   });
   
-  // Get completed/cancelled bookings
+  // Get completed/cancelled/rejected/expired bookings
   const historicalBookings = userBookings.filter(b => {
     const ride = rides.find(r => r.id === b.rideId);
-    return ride && (ride.status === 'completed' || ride.status === 'cancelled');
+    const bStatus = b.status as string;
+    const isTerminalBooking = bStatus === 'completed' || bStatus === 'cancelled' || bStatus === 'rejected' || bStatus === 'expired' || bStatus === 'no_show';
+    const isTerminalRide = ride && (ride.status === 'completed' || ride.status === 'cancelled' || (ride.status as string) === 'expired');
+    return isTerminalBooking || isTerminalRide;
   });
 
   const filteredBookings = 
     selectedFilter === 'ongoing' 
       ? ongoingBookings
       : historicalBookings.filter(b => {
-          const ride = rides.find(r => r.id === b.rideId);
-          return ride && ride.status === selectedFilter;
+          if (selectedFilter === 'completed' || selectedFilter === 'cancelled') {
+            const ride = rides.find(r => r.id === b.rideId);
+            return b.status === selectedFilter || (ride && ride.status === selectedFilter);
+          }
+          return true;
         });
 
   // Empty state animations trigger

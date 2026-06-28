@@ -20,7 +20,8 @@ import {
 let messaging: any = null;
 try {
   // @react-native-firebase/messaging requires a native build; gracefully degrade in Expo Go
-  if (Platform.OS !== 'web' && Constants.appOwnership !== 'expo') {
+  const isExpoGo = Constants.appOwnership === 'expo' || (Constants as any).executionEnvironment === 'storeClient';
+  if (Platform.OS !== 'web' && !isExpoGo) {
     messaging = require('@react-native-firebase/messaging').default;
   }
 } catch (e) {

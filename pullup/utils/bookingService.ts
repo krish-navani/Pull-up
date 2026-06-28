@@ -56,7 +56,23 @@ export const createBookingInFirestore = async (
       
       const rideData = rideSnap.data()!;
 
-      // VALIDATION 1: Check if passenger is the ride creator
+      // VALIDATION 1: Check if ride is active
+      if (rideData.status === 'completed' || rideData.status === 'cancelled' || rideData.status === 'expired') {
+        throw {
+          code: 'RIDE_INACTIVE',
+          message: `This ride has been ${rideData.status} and cannot be booked`,
+        };
+      }
+
+      // VALIDATION 2: Check if departure time has passed
+      if (rideData.departureTime && new Date(rideData.departureTime).getTime() < Date.now()) {
+        throw {
+          code: 'RIDE_EXPIRED',
+          message: 'This ride has already departed',
+        };
+      }
+
+      // VALIDATION 3: Check if passenger is the ride creator
       if (passengerId === rideData.driverId) {
         throw {
           code: 'OWN_RIDE_BOOKING',
@@ -64,7 +80,7 @@ export const createBookingInFirestore = async (
         };
       }
 
-      // VALIDATION 2: Check capacity
+      // VALIDATION 4: Check capacity
       if (rideData.availableSeats < seatsBooked) {
         throw {
           code: 'INSUFFICIENT_SEATS',
@@ -72,7 +88,7 @@ export const createBookingInFirestore = async (
         };
       }
 
-      // VALIDATION 3: Check duplicate booking
+      // VALIDATION 5: Check duplicate booking
       const bookingSnap = await transaction.get(bookingRef);
       if (bookingSnap.exists()) {
         const bStatus = bookingSnap.data()!.status;

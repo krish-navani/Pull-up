@@ -65,8 +65,7 @@ const ALL_EVENT_TYPES = [
   { type: 'withdrawal_requested', title: 'Withdrawal Requested 🏦', msg: 'Your withdrawal request for INR 500 was submitted.' },
   { type: 'withdrawal_approved', title: 'Withdrawal Approved 💵', msg: 'INR 500 has been transferred to your account.' },
   { type: 'withdrawal_rejected', title: 'Withdrawal Rejected ❌', msg: 'Withdrawal failed due to invalid UPI ID.' },
-  { type: 'sos', title: 'EMERGENCY SOS ALERT 🚨', msg: 'Distress alert triggered for ride.' },
-  { type: 'marketing', title: 'Weekend Special Offer 🎁', msg: 'Get 20% off on your next carpool ride!' }
+  { type: 'sos', title: 'EMERGENCY SOS ALERT 🚨', msg: 'Distress alert triggered for ride.' }
 ];
 
 async function runProductionAudit() {

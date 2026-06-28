@@ -18,7 +18,8 @@ import {
   TextInput,
   TextStyle,
   View,
-  ViewStyle
+  ViewStyle,
+  TouchableOpacity,
 } from 'react-native';
 
 import { calculateDistance, formatDistance, getCurrentLocation } from '@/utils/locationUtils';
@@ -26,8 +27,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { WARM_CORE } from '@/constants/theme';
 import { subscribeToActivePools, subscribeToPassengerRequests, TaxiPool, PoolRequest } from '@/utils/taxiPoolService';
 import PoolCard from '@/components/PoolCard';
-import { TouchableOpacity } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
+
 import GreetingBanner from '@/components/GreetingBanner';
 import UserAvatar from '@/components/UserAvatar';
 
@@ -96,11 +96,8 @@ function UnifiedFeedCard({ item, onPress }: { item: any; onPress: () => void }) 
       activeOpacity={0.9}
     >
       {isTaxi ? (
-        <LinearGradient
-          colors={['#FFF2E6', '#FED8B1']}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={StyleSheet.absoluteFillObject}
+        <View
+          style={[StyleSheet.absoluteFillObject, { backgroundColor: '#FFF2E6' }]}
         />
       ) : (
         <View
@@ -171,16 +168,9 @@ function UnifiedFeedCard({ item, onPress }: { item: any; onPress: () => void }) 
 // ---------------------------------------------------------------------------
 export default function HomeScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams<{
-    search?: string;
-    prefillPickup?: string;
-    prefillDrop?: string;
-    prefillRideType?: 'car' | 'taxi';
-  }>();
+  const params = useLocalSearchParams<{ search?: string }>();
   const { rides, auth, notifications, loadAllAvailableRides, authInitializing, switchRolePersistent } = useAppContext();
   const [searchQuery, setSearchQuery] = useState('');
-  const [prefilledPickup, setPrefilledPickup] = useState<any>(null);
-  const [prefilledDrop, setPrefilledDrop] = useState<any>(null);
   const [searchFocused, setSearchFocused] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
@@ -195,50 +185,11 @@ export default function HomeScreen() {
   const [joinLoading, setJoinLoading] = useState<Record<string, boolean>>({});
   const [poolDistances, setPoolDistances] = useState<Record<string, number>>({});
 
-  // Prefill search from "Book Again" parameters
   useEffect(() => {
     if (params.search) {
       setSearchQuery(params.search);
     }
-    if (params.prefillPickup) {
-      try {
-        const pickupLoc = JSON.parse(decodeURIComponent(params.prefillPickup));
-        setPrefilledPickup(pickupLoc);
-      } catch (e) {
-        console.warn('Failed to parse prefillPickup:', e);
-      }
-    }
-    if (params.prefillDrop) {
-      try {
-        const dropLoc = JSON.parse(decodeURIComponent(params.prefillDrop));
-        setPrefilledDrop(dropLoc);
-        if (dropLoc && dropLoc.address) {
-          const shortAddress = dropLoc.address.split(',')[0];
-          setSearchQuery(shortAddress);
-        }
-      } catch (e) {
-        console.warn('Failed to parse prefillDrop:', e);
-      }
-    }
-    if (params.prefillRideType) {
-      setActiveTab(params.prefillRideType === 'car' ? 'rides' : 'pools');
-    }
   }, [params]);
-
-  // Watch search query to clear prefilled locations if search text diverges
-  useEffect(() => {
-    if (searchQuery.trim() === '') {
-      setPrefilledPickup(null);
-      setPrefilledDrop(null);
-    } else if (prefilledDrop) {
-      const q = searchQuery.toLowerCase();
-      const shortDrop = prefilledDrop.address.split(',')[0].toLowerCase();
-      if (!shortDrop.includes(q) && !q.includes(shortDrop)) {
-        setPrefilledPickup(null);
-        setPrefilledDrop(null);
-      }
-    }
-  }, [searchQuery]);
 
   // Combine rides and pools into a unified list
   const combinedFeed = useMemo(() => {
@@ -321,39 +272,11 @@ export default function HomeScreen() {
     // Filter by searchQuery
     if (searchQuery.trim() !== '') {
       const q = searchQuery.toLowerCase();
-      const isBookAgainMatched = prefilledDrop && 
-        (prefilledDrop.address.toLowerCase().includes(q) || q.includes(prefilledDrop.address.split(',')[0].toLowerCase()));
-
-      if (prefilledPickup && prefilledDrop && isBookAgainMatched) {
-        filtered = filtered.filter(item => {
-          const raw = item.rawItem;
-          const isCar = item.type === 'car';
-          const itemPickup = isCar ? raw.pickupLocation : (raw.pickupLocation || raw.destination);
-          const itemDrop = isCar ? raw.dropLocation : raw.destination;
-
-          if (!itemPickup || !itemDrop) return false;
-
-          const pMatch = (itemPickup.placeId && prefilledPickup.placeId && itemPickup.placeId === prefilledPickup.placeId) ||
-                         itemPickup.address.toLowerCase().includes(prefilledPickup.address.toLowerCase()) ||
-                         prefilledPickup.address.toLowerCase().includes(itemPickup.address.toLowerCase()) ||
-                         (Math.abs(itemPickup.latitude - prefilledPickup.latitude) < 0.005 &&
-                          Math.abs(itemPickup.longitude - prefilledPickup.longitude) < 0.005);
-
-          const dMatch = (itemDrop.placeId && prefilledDrop.placeId && itemDrop.placeId === prefilledDrop.placeId) ||
-                         itemDrop.address.toLowerCase().includes(prefilledDrop.address.toLowerCase()) ||
-                         prefilledDrop.address.toLowerCase().includes(itemDrop.address.toLowerCase()) ||
-                         (Math.abs(itemDrop.latitude - prefilledDrop.latitude) < 0.005 &&
-                          Math.abs(itemDrop.longitude - prefilledDrop.longitude) < 0.005);
-
-          return pMatch && dMatch;
-        });
-      } else {
-        filtered = filtered.filter(item => 
-          item.pickup.toLowerCase().includes(q) ||
-          item.dropoff.toLowerCase().includes(q) ||
-          item.creatorName.toLowerCase().includes(q)
-        );
-      }
+      filtered = filtered.filter(item => 
+        item.pickup.toLowerCase().includes(q) ||
+        item.dropoff.toLowerCase().includes(q) ||
+        item.creatorName.toLowerCase().includes(q)
+      );
     }
 
     // Sort by distance (closest first), fallback to departure time
@@ -363,7 +286,7 @@ export default function HomeScreen() {
       }
       return new Date(a.time).getTime() - new Date(b.time).getTime();
     });
-  }, [rides, pools, activeTab, searchQuery, rideDistances, poolDistances, prefilledPickup, prefilledDrop]);
+  }, [rides, pools, activeTab, searchQuery, rideDistances, poolDistances]);
 
   // ── Entry animations ─────────────────────────────────────────────────────
   // All three groups start invisible and slide up together as a clean stagger
@@ -615,13 +538,16 @@ export default function HomeScreen() {
   }, [userLocation, rides]);
 
   // Filter and sort rides by distance — guard for undefined rides
-  const sortedAndFilteredRides = (rides ?? []).filter(ride =>
-    ride.status === 'active' &&
-    (searchQuery === '' ||
-      ride.pickupLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      ride.dropLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      ride.driverName.toLowerCase().includes(searchQuery.toLowerCase()))
-  ).sort((a, b) => {
+  const sortedAndFilteredRides = (rides ?? []).filter(ride => {
+    const isStatusValid = (ride.status as string) === 'active' || (ride.status as string) === 'booking_open' || (ride.status as string) === 'published';
+    const isNotExpired = !ride.departureTime || new Date(ride.departureTime).getTime() > Date.now();
+    const hasSeats = (ride.availableSeats ?? 0) > 0;
+    const matchesSearch = searchQuery === '' ||
+      (ride.pickupLocation?.address || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (ride.dropLocation?.address || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (ride.driverName || '').toLowerCase().includes(searchQuery.toLowerCase());
+    return isStatusValid && isNotExpired && hasSeats && matchesSearch;
+  }).sort((a, b) => {
     const distA = rideDistances[a.id] ?? Infinity;
     const distB = rideDistances[b.id] ?? Infinity;
     return distA - distB;

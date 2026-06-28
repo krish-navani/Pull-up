@@ -3142,7 +3142,7 @@ export async function triggerNotification(
     } else if (['license_verified', 'license_rejected', 'license_resubmit'].includes(type)) {
       isAllowed = prefs.rideUpdates !== false;
     } else if (['marketing', 'campaign'].includes(type)) {
-      isAllowed = prefs.marketingUpdates === true;
+      isAllowed = false; // Promotional notifications strictly disabled for production launch
     }
 
     // Resolve active token (prioritize valid Expo token)

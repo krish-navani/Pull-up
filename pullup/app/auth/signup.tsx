@@ -268,15 +268,9 @@ export default function SignupScreen() {
       });
       
       if (result.isNewUser) {
-        console.log('[SIGNUP] New user detected, navigating to profile setup');
-        // New user - show profile setup
-        console.log('[SIGNUP] Calling router.push with params:', {
-          email: email + UNIVERSITY_DOMAIN, 
-          otp: otpCode,
-          isNewUser: 'true'
-        });
+        console.log('[SIGNUP] New user detected, navigating to name setup');
         router.push({
-          pathname: '/auth/profile',
+          pathname: '/auth/name-setup' as any,
           params: { 
             email: email + UNIVERSITY_DOMAIN, 
             otp: otpCode,

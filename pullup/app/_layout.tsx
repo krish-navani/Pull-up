@@ -25,7 +25,8 @@ import Constants from 'expo-constants';
 // FCM messaging — loaded lazily so we degrade gracefully in Expo Go
 let messaging: any = null;
 try {
-  if (Platform.OS !== 'web' && Constants.appOwnership !== 'expo') {
+  const isExpoGo = Constants.appOwnership === 'expo' || (Constants as any).executionEnvironment === 'storeClient';
+  if (Platform.OS !== 'web' && !isExpoGo) {
     messaging = require('@react-native-firebase/messaging').default;
   }
 } catch (e) {
@@ -279,8 +280,6 @@ function RootLayoutContent() {
       });
 
       if (canAccessMainApp && inAuthGroup) {
-        // If they are on the license-upload screen, only redirect them to home if their license is actually verified.
-        // Otherwise, they might be a passenger trying to verify, or a driver checking status.
         if (currentAuthScreen === 'license-upload') {
           if (isLicenseVerified) {
             console.log('[NAV GUARD] ✅ License is verified, redirecting to home');
@@ -293,7 +292,6 @@ function RootLayoutContent() {
           router.replace('/(tabs)/home');
         }
       } else if (!canAccessMainApp && !inAuthGroup) {
-        // User shouldn't be in the main app — redirect to appropriate auth screen
         if (isSignedIn && isProfileComplete && needsLicenseVerification) {
           console.log('[NAV GUARD] 🔒 Driver needs license verification, redirecting to license-upload');
           router.replace('/auth/license-upload');
@@ -304,95 +302,51 @@ function RootLayoutContent() {
           console.log('[NAV GUARD] 🔐 Not authenticated, redirecting to signup');
           router.replace('/auth/signup');
         }
-      } else if (!canAccessMainApp && inAuthGroup && currentAuthScreen === 'license-upload') {
-        // User is already on license-upload and still needs verification — do nothing.
-        // This prevents the guard from interfering while the polling waits for admin approval.
-        console.log('[NAV GUARD] ⏳ Already on license-upload, awaiting verification — no redirect');
       }
-      // All other cases (in auth group correctly, or in main app with access) — do nothing.
     } catch (navError) {
       console.error('[ROOT LAYOUT] Navigation error:', navError);
     }
   }, [auth.isSignedIn, auth.user?.profileComplete, auth.user?.role, auth.user?.licenseVerified, auth.user?.licenseVerificationStatus, authInitializing, segments]);
 
-  const [showSplash, setShowSplash] = React.useState(true);
+  const [showSplash, setShowSplash] = React.useState(!globalHasColdLaunched);
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ThemeProvider value={WarmNavigationTheme}>
-        <Stack
-          screenOptions={{
-            headerShown: false,
-            animation: 'slide_from_right',
-          }}
-        >
+        <Stack screenOptions={{ headerShown: false, animation: 'slide_from_right' }}>
           <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
           <Stack.Screen name="auth" options={{ headerShown: false }} />
           <Stack.Screen name="index" options={{ headerShown: false }} />
-          <Stack.Screen name="ride-details" options={{
-            headerShown: false,
-            presentation: 'card',
-          }} />
-          <Stack.Screen name="navigation" options={{
-            headerShown: false,
-            presentation: 'card',
-          }} />
-          <Stack.Screen name="create-taxi-pool" options={{
-            headerShown: false,
-            presentation: 'card',
-          }} />
-          <Stack.Screen name="taxi-pool-details" options={{
-            headerShown: false,
-            presentation: 'card',
-          }} />
-          <Stack.Screen name="chat" options={{
-            headerShown: false,
-            presentation: 'card',
-          }} />
-          <Stack.Screen name="group-chat" options={{
-            headerShown: false,
-            presentation: 'card',
-          }} />
-          <Stack.Screen name="notifications" options={{
-            headerShown: false,
-            presentation: 'card',
-          }} />
-          <Stack.Screen name="car-owner-calculator" options={{
-            headerShown: false,
-            presentation: 'card',
-          }} />
-          <Stack.Screen name="driver-calculator" options={{
-            headerShown: false,
-            presentation: 'card',
-          }} />
-          <Stack.Screen name="booking-confirmation" options={{
-            headerShown: false,
-            presentation: 'card',
-          }} />
-          <Stack.Screen name="profile-edit" options={{
-            headerShown: false,
-            presentation: 'card',
-          }} />
-          <Stack.Screen name="wallet" options={{
-            headerShown: false,
-            presentation: 'card',
-          }} />
-          <Stack.Screen name="driver-subscription" options={{
-            headerShown: false,
-            presentation: 'card',
-          }} />
+          <Stack.Screen name="ride-details" options={{ headerShown: false, presentation: 'card' }} />
+          <Stack.Screen name="navigation" options={{ headerShown: false, presentation: 'card' }} />
+          <Stack.Screen name="create-taxi-pool" options={{ headerShown: false, presentation: 'card' }} />
+          <Stack.Screen name="taxi-pool-details" options={{ headerShown: false, presentation: 'card' }} />
+          <Stack.Screen name="chat" options={{ headerShown: false, presentation: 'card' }} />
+          <Stack.Screen name="group-chat" options={{ headerShown: false, presentation: 'card' }} />
+          <Stack.Screen name="notifications" options={{ headerShown: false, presentation: 'card' }} />
+          <Stack.Screen name="car-owner-calculator" options={{ headerShown: false, presentation: 'card' }} />
+          <Stack.Screen name="driver-calculator" options={{ headerShown: false, presentation: 'card' }} />
+          <Stack.Screen name="booking-confirmation" options={{ headerShown: false, presentation: 'card' }} />
+          <Stack.Screen name="profile-edit" options={{ headerShown: false, presentation: 'card' }} />
+          <Stack.Screen name="wallet" options={{ headerShown: false, presentation: 'card' }} />
+          <Stack.Screen name="driver-subscription" options={{ headerShown: false, presentation: 'card' }} />
           <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
         </Stack>
         <StatusBar style="auto" />
         {showSplash && (
           <SplashScreen
-            onFinish={() => setShowSplash(false)}
+            onFinish={() => {
+              globalHasColdLaunched = true;
+              setShowSplash(false);
+            }}
           />
         )}
       </ThemeProvider>
     </GestureHandlerRootView>
   );
 }
+
+let globalHasColdLaunched = false;
 
 export default function RootLayout() {
   return (

@@ -96,6 +96,7 @@ export default function ProfileScreen() {
   const emailFromParams = typeof params.email === 'string' ? params.email : '';
   const otpFromParams = typeof params.otp === 'string' ? params.otp : '';
   const isNewUserParam = typeof params.isNewUser === 'string' ? params.isNewUser === 'true' : false;
+  const fullNameFromParams = typeof params.fullName === 'string' ? params.fullName : '';
 
   // Debug logging
   useEffect(() => {
@@ -103,14 +104,15 @@ export default function ProfileScreen() {
       emailFromParams,
       otpFromParams,
       isNewUserParam,
+      fullNameFromParams,
       hasEmail: !!emailFromParams,
     });
-  }, [emailFromParams, otpFromParams, isNewUserParam]);
+  }, [emailFromParams, otpFromParams, isNewUserParam, fullNameFromParams]);
 
   // Initialize ALL state hooks FIRST (unconditionally)
   const [role, setRole] = useState<'driver' | 'passenger'>('passenger');
   const [formData, setFormData] = useState<FormData>({
-    fullName: '',
+    fullName: fullNameFromParams || '',
     phone: '',
     year: '',
     course: '',
@@ -119,25 +121,11 @@ export default function ProfileScreen() {
     homeAddress: null,
   });
 
-  // Automatically prefill fullName from email and lock it
-  useEffect(() => {
-    if (emailFromParams) {
-      const parsedName = getNameFromEmail(emailFromParams);
-      console.log('[PROFILE] Auto-fetched name from email:', parsedName);
-      setFormData(prev => ({
-        ...prev,
-        fullName: parsedName
-      }));
-    }
-  }, [emailFromParams]);
   const [showYearDropdown, setShowYearDropdown] = useState(false);
   const [showCourseDropdown, setShowCourseDropdown] = useState(false);
   const [showDivisionDropdown, setShowDivisionDropdown] = useState(false);
   const [error, setError] = useState('');
   const [phoneError, setPhoneError] = useState('');
-  const [dropdownPressedYear, setDropdownPressedYear] = useState(false);
-  const [dropdownPressedCourse, setDropdownPressedCourse] = useState(false);
-  const [dropdownPressedDivision, setDropdownPressedDivision] = useState(false);
   const [image, setImage] = useState<string | null>(null);
   const [isCreatingAccount, setIsCreatingAccount] = useState(false);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
@@ -171,10 +159,8 @@ export default function ProfileScreen() {
     }
   }, [error]);
 
-  // Redirect if not a new user (after all hooks are initialized)
+  // Redirect if not a new user
   useEffect(() => {
-    // Only redirect if isNewUserParam is explicitly false (user verified but was existing)
-    // If isNewUserParam is undefined/missing, it means params weren't passed correctly, so don't redirect
     if (isNewUserParam === false && emailFromParams) {
       console.log('[PROFILE] Existing user detected from params, redirecting to home');
       router.replace('/(tabs)/home');
@@ -186,51 +172,21 @@ export default function ProfileScreen() {
     }
   }, [isNewUserParam, emailFromParams, router]);
 
-  // Safety check: If user is marked as new but actually exists in Firestore, redirect to home
-  // This handles the case where user was incorrectly classified as new due to a bug
-  useEffect(() => {
-    const checkExistingUser = async () => {
-      if (isNewUserParam && emailFromParams) {
-        try {
-          const { checkEmailExists } = await import('@/utils/otpService');
-          const exists = await checkEmailExists(emailFromParams);
-
-          if (exists) {
-            console.log('[PROFILE] ⚠️ User marked as new but found in Firestore. Redirecting to home.');
-            router.replace('/(tabs)/home');
-          }
-        } catch (error) {
-          console.error('[PROFILE] Error checking if user exists:', error);
-        }
-      }
-    };
-
-    const timeout = setTimeout(() => {
-      checkExistingUser();
-    }, 500); // Add delay to let app fully initialize
-
-    return () => clearTimeout(timeout);
-  }, [isNewUserParam, emailFromParams, router]);
-
   // Clear loading state when navigating away from this screen
   useFocusEffect(
     useCallback(() => {
-      // Prevent hardware back button only when there's nothing to go back to
       const backHandler = BackHandler.addEventListener(
         'hardwareBackPress',
         () => {
-          // Check if we can actually go back
           if (navigation?.canGoBack()) {
             navigation.goBack();
             return true;
           }
-          // Can't go back, prevent default
           return true;
         }
       );
 
       return () => {
-        // Clear loading state when screen loses focus
         setIsCreatingAccount(false);
         backHandler.remove();
       };
@@ -257,9 +213,6 @@ export default function ProfileScreen() {
     }
   };
 
-  /**
-   * Upload image to Cloudinary
-   */
   const handleUploadImage = async (imageUri: string) => {
     setIsUploadingImage(true);
     try {

@@ -854,7 +854,7 @@ function PostRideScreenInner() {
           totalSeats: formData.availableSeats,
           carModel: formData.carModel,
           detourRadiusMeters: formData.detourRadiusMeters,
-          routePolyline: routeInfo?.polyline || '',
+          routePolyline: (routeInfo as any)?.polyline || '',
           simplifiedCoordinates: simplifiedCoords,
           baselineDistanceMeters: routeInfo?.distanceMeters || 0,
           baselineDurationSeconds: routeInfo?.durationSeconds || 0,

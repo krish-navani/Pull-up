@@ -57,6 +57,8 @@ export const getGreetingContent = (firstName?: string) => {
 
   if (hour >= 5 && hour < 12) {
     return {
+      emoji: '☀️',
+      greeting: 'Good Morning',
       title: `☀️ Good Morning, ${name}!`,
       subtitle: 'Ready for your ride today?',
     };
@@ -64,14 +66,18 @@ export const getGreetingContent = (firstName?: string) => {
 
   if (hour >= 12 && hour < 17) {
     return {
+      emoji: '🌤️',
+      greeting: 'Good Afternoon',
       title: `🌤️ Good Afternoon, ${name}!`,
       subtitle: 'Hope your day is going smoothly.',
     };
   }
 
   return {
-    title: `🌇 Good Evening, ${name}!`,
-    subtitle: 'Traveling late? Stay safe.',
+    emoji: '🌙',
+    greeting: 'Good Evening',
+    title: `🌙 Good Evening, ${name}!`,
+    subtitle: 'Heading home from Atlas?',
   };
 };
 

@@ -5,6 +5,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Timestamp, doc, onSnapshot, updateDoc, deleteField } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
 import { WARM_CORE } from '@/constants/theme';
+import UserAvatar from '@/components/UserAvatar';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
@@ -96,15 +97,7 @@ function MessageBubble({
       ]}
     >
       {!isCurrentUser && (
-        <View style={chatStyles.avatarContainer}>
-          {recipientAvatar ? (
-            <Image source={{ uri: recipientAvatar }} style={chatStyles.avatar} />
-          ) : (
-            <View style={chatStyles.avatarPlaceholder}>
-              <MaterialCommunityIcons name="account" size={16} color={WARM_CORE.primary} />
-            </View>
-          )}
-        </View>
+        <UserAvatar imageUrl={recipientAvatar} name={message.senderName} size={28} style={{ marginRight: 8 }} />
       )}
 
       <View

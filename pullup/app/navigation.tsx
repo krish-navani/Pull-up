@@ -490,7 +490,6 @@ export default function NavigationScreen() {
   };
 
   const handleGoogleMapsFallback = () => {
-    setMenuVisible(false);
     if (!ride) return;
     const destCoords = `${ride.dropLocation.latitude},${ride.dropLocation.longitude}`;
     const wps = waypoints.map(wp => `${wp.latitude},${wp.longitude}`).join('|');
