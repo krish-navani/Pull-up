@@ -19,7 +19,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { doc, onSnapshot, updateDoc, deleteField, arrayUnion, collection } from 'firebase/firestore';
+import { doc, onSnapshot, updateDoc, deleteField, arrayUnion, collection, serverTimestamp } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
 import { useAppContext } from '@/context/AppContext';
 import { WARM_CORE } from '@/constants/theme';
@@ -28,6 +28,7 @@ import {
   GroupChatMessage,
   GroupChatRoom,
   sendGroupMessage,
+  ensureParticipantInGroupChat,
   subscribeToGroupMessages,
   subscribeToGroupChatRoom
 } from '@/utils/rideGroupChatService';
@@ -91,6 +92,7 @@ export default function GroupChatScreen() {
   useEffect(() => {
     if (!rideId || authInitializing || !auth.user) return;
 
+    ensureParticipantInGroupChat(rideId, auth.user.id);
     setLoading(true);
     const unsubRoom = subscribeToGroupChatRoom(rideId, (chatRoom) => {
       setRoom(chatRoom);
@@ -285,7 +287,8 @@ export default function GroupChatScreen() {
     try {
       const roomRef = doc(db, 'rideChats', rideId);
       await updateDoc(roomRef, {
-        [`typing.${auth.user.id}`]: isTyping
+        [`typing.${auth.user.id}`]: isTyping,
+        updatedAt: serverTimestamp(),
       });
     } catch (e) {
       console.warn('[GROUP CHAT] Failed to update typing state:', e);
@@ -912,7 +915,7 @@ export default function GroupChatScreen() {
             return (
               <View style={styles.participantItem}>
                 <View style={[styles.avatarCircle, isHost && styles.hostAvatarCircle]}>
-                  <UserAvatar imageUrl={item.image} name={item.fullName} size={40} />
+                  <UserAvatar userId={item.id} imageUrl={item.image} name={item.fullName} size={40} />
                   {isHost && (
                     <View style={styles.hostBadge}>
                       <MaterialCommunityIcons name="star" size={8} color={WARM_CORE.white} />
@@ -971,7 +974,7 @@ export default function GroupChatScreen() {
             return (
               <View style={[styles.messageRow, isCurrentUser ? styles.messageRowRight : styles.messageRowLeft]}>
                 {!isCurrentUser && (
-                  <UserAvatar imageUrl={item.senderPhoto} name={item.senderName} size={32} style={{ marginRight: 8 }} />
+                  <UserAvatar userId={item.senderId} imageUrl={item.senderPhoto} name={item.senderName} size={32} style={{ marginRight: 8 }} />
                 )}
                 <View style={styles.messageBubbleContainer}>
                   {!isCurrentUser && <Text style={styles.messageSenderName}>{item.senderName}</Text>}
@@ -1297,7 +1300,7 @@ export default function GroupChatScreen() {
           <View style={styles.profileModalContent}>
             <Text style={styles.profileModalTitle}>Host Profile</Text>
             <View style={styles.profileModalHeader}>
-              <UserAvatar imageUrl={rideDetails?.driverImage || rideDetails?.creatorImage} name={driverOrHostName} size={64} style={{ marginRight: 12 }} />
+              <UserAvatar userId={rideDetails?.driverId || rideDetails?.creatorId} imageUrl={rideDetails?.driverImage || rideDetails?.creatorImage} name={driverOrHostName} size={64} style={{ marginRight: 12 }} />
               <View>
                 <Text style={styles.profileModalName}>{driverOrHostName}</Text>
                 <View style={styles.verifiedRow}>

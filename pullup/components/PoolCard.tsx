@@ -16,6 +16,7 @@ import UserAvatar from '@/components/UserAvatar';
 
 export interface PoolCardProps {
   destination: string;
+  creatorId?: string;
   creatorName: string;
   creatorImage?: string;
   creatorCourse: string;
@@ -34,6 +35,7 @@ export interface PoolCardProps {
 
 export default function PoolCard({
   destination,
+  creatorId,
   creatorName,
   creatorImage,
   creatorCourse,
@@ -129,7 +131,7 @@ export default function PoolCard({
         {/* Top Header Row: Creator Info + Status Badge */}
         <View style={styles.topRow}>
           <View style={styles.creatorContainer}>
-            <UserAvatar imageUrl={creatorImage} name={creatorName} size={36} style={{ marginRight: 10 }} />
+            <UserAvatar userId={creatorId} imageUrl={creatorImage} name={creatorName} size={36} style={{ marginRight: 10 }} />
             <View style={styles.creatorDetails}>
               <Text style={styles.creatorName} numberOfLines={1}>{creatorName}</Text>
               <Text style={styles.creatorMeta} numberOfLines={1}>

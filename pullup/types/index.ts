@@ -69,6 +69,8 @@ export interface Location {
   address: string;
   city: string;
   placeId?: string;
+  locality?: string;
+  state?: string;
 }
 
 export interface Ride {
@@ -89,6 +91,7 @@ export interface Ride {
   startedAt?: string; // When driver started the ride
   completedAt?: string; // When driver completed the ride
   bookedSeats: BookingInfo[];
+  searchIndex?: string[];
   currentLocation?: {
     latitude: number;
     longitude: number;

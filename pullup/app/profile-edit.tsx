@@ -10,6 +10,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { useRouter } from 'expo-router';
 import { WARM_CORE } from '@/constants/theme';
 import LocationSearchInput from '@/components/LocationSearchInput';
+import { uploadImageToCloudinary } from '@/utils/cloudinaryService';
 import { Location as PullUpLocation } from '@/types';
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -149,7 +150,7 @@ export default function ProfileEditScreen() {
   const handleSelectImage = useCallback(async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: 'images',
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.8,
@@ -173,7 +174,7 @@ export default function ProfileEditScreen() {
   const handleCaptureImage = useCallback(async () => {
     try {
       const result = await ImagePicker.launchCameraAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        mediaTypes: 'images',
         allowsEditing: true,
         aspect: [1, 1],
         quality: 0.8,
@@ -246,9 +247,15 @@ export default function ProfileEditScreen() {
         emergencyContactPhone: profile.emergencyContactPhone?.trim() || null,
       };
 
-      // Handle profile image changes (including removal)
+      // Handle profile image changes (including removal and Cloudinary upload)
       if (profile.profileImage !== user.profileImage) {
-        updates.profileImage = profile.profileImage;
+        if (profile.profileImage && (profile.profileImage.startsWith('file://') || profile.profileImage.startsWith('content://') || profile.profileImage.startsWith('ph://'))) {
+          console.log('[PROFILE EDIT] Uploading image to Cloudinary...');
+          const uploadedUrl = await uploadImageToCloudinary(profile.profileImage, 'profile_pictures');
+          updates.profileImage = uploadedUrl;
+        } else {
+          updates.profileImage = profile.profileImage;
+        }
       }
 
       await updateProfileData(user.id, updates);

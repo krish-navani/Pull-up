@@ -88,7 +88,7 @@ function TaxiPoolCreatorRow({ creatorId, defaultName, defaultCourse, defaultDivi
 
   return (
     <View style={styles.personRow}>
-      <UserAvatar imageUrl={displayImage} name={displayName} size={44} />
+      <UserAvatar userId={creatorId} imageUrl={displayImage} name={displayName} size={44} />
       <View style={styles.personDetails}>
         <Text style={styles.personName}>{displayName}</Text>
         <Text style={styles.personSub}>{displayCourse} • Division {displayDivision}</Text>
@@ -125,7 +125,7 @@ function TaxiPoolMemberRow({ member, creatorId }: { member: PoolMember; creatorI
 
   return (
     <View style={styles.memberRow}>
-      <UserAvatar imageUrl={displayImage} name={displayName} size={32} />
+      <UserAvatar userId={member.passengerId} imageUrl={displayImage} name={displayName} size={32} />
       <View style={styles.memberDetails}>
         <Text style={styles.memberName}>
           {displayName} {member.passengerId === creatorId ? '(Admin)' : ''}
@@ -175,7 +175,7 @@ function TaxiPoolRequestRow({
   return (
     <View style={styles.requestCard}>
       <View style={styles.requestProfile}>
-        <UserAvatar imageUrl={displayImage} name={displayName} size={32} />
+        <UserAvatar userId={req.passengerId} imageUrl={displayImage} name={displayName} size={32} />
         <View style={styles.requestMeta}>
           <Text style={styles.reqName}>{displayName}</Text>
           <Text style={styles.reqSub}>{displayCourse} • Div {displayDivision}</Text>
@@ -407,12 +407,16 @@ export default function TaxiPoolDetailsScreen() {
         );
         setRouteCoordinates(result.points);
 
-        if (mapRef.current && result.points && result.points.length > 1) {
+        if (mapRef.current && typeof (mapRef.current as any).fitToCoordinates === 'function' && result.points && result.points.length > 1) {
           setTimeout(() => {
-            mapRef.current?.fitToCoordinates(result.points, {
-              edgePadding: { top: 100, right: 50, bottom: 280, left: 50 },
-              animated: true,
-            });
+            try {
+              (mapRef.current as any)?.fitToCoordinates(result.points, {
+                edgePadding: { top: 100, right: 50, bottom: 280, left: 50 },
+                animated: true,
+              });
+            } catch (err) {
+              console.warn('[POOL DETAILS] Error fitting coordinates:', err);
+            }
           }, 400);
         }
       } catch (err) {

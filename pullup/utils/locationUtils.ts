@@ -1,6 +1,60 @@
 import { Location as LocationType } from '@/types';
 import * as Location from 'expo-location';
 
+const LOCATION_FIX_TIMEOUT_MS = 6500;
+const REVERSE_GEOCODE_TIMEOUT_MS = 3500;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve(fallback), timeoutMs);
+    promise
+      .then((value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      })
+      .catch(() => {
+        clearTimeout(timeout);
+        resolve(fallback);
+      });
+  });
+}
+
+/**
+ * Request location permission and return current user location
+ */
+export async function getReverseGeocodeDetails(
+  latitude: number,
+  longitude: number
+): Promise<{ address: string; city: string; locality: string; state: string }> {
+  try {
+    if (!latitude || !longitude || isNaN(latitude) || isNaN(longitude)) {
+      return { address: 'Current Location', city: 'Mumbai', locality: '', state: 'Maharashtra' };
+    }
+    const result = await withTimeout(
+      Location.reverseGeocodeAsync({ latitude, longitude }),
+      REVERSE_GEOCODE_TIMEOUT_MS,
+      []
+    );
+    if (result && result.length > 0) {
+      const item = result[0];
+      const parts = [
+        item.street || item.name || '',
+        item.city || item.subregion || item.district || '',
+        item.region || '',
+      ].filter(Boolean);
+      return {
+        address: parts.join(', ') || `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`,
+        city: item.city || item.subregion || item.district || 'Mumbai',
+        locality: item.district || item.name || item.street || '',
+        state: item.region || 'Maharashtra',
+      };
+    }
+  } catch (err) {
+    console.warn('[LOCATION] Reverse geocode details failed:', err);
+  }
+  return { address: `${latitude.toFixed(4)}, ${longitude.toFixed(4)}`, city: 'Mumbai', locality: '', state: 'Maharashtra' };
+}
+
 /**
  * Request location permission and return current user location
  */
@@ -12,9 +66,18 @@ export async function getCurrentLocation(): Promise<LocationType | null> {
       return null;
     }
 
-    const location = await Location.getCurrentPositionAsync({
-      accuracy: Location.Accuracy.Balanced,
+    const lastKnown = await Location.getLastKnownPositionAsync({
+      maxAge: 60 * 1000,
+      requiredAccuracy: 2000,
     });
+
+    const location = lastKnown || await withTimeout(
+      Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Low,
+      }),
+      LOCATION_FIX_TIMEOUT_MS,
+      null
+    );
 
     if (!location || !location.coords) {
       console.warn('[LOCATION] No location data received');
@@ -28,13 +91,15 @@ export async function getCurrentLocation(): Promise<LocationType | null> {
       return null;
     }
 
-    const address = await getReverseGeocodeAddress(latitude, longitude);
+    const details = await getReverseGeocodeDetails(latitude, longitude);
 
     return {
       latitude,
       longitude,
-      address,
-      city: 'Unknown',
+      address: details.address,
+      city: details.city,
+      locality: details.locality,
+      state: details.state,
     };
   } catch (error) {
     console.error('[LOCATION] Error getting current location:', error);
@@ -83,10 +148,14 @@ export async function getReverseGeocodeAddress(
       return `${latitude?.toFixed(4) || 'N/A'}, ${longitude?.toFixed(4) || 'N/A'}`;
     }
 
-    const result = await Location.reverseGeocodeAsync({
-      latitude,
-      longitude,
-    });
+    const result = await withTimeout(
+      Location.reverseGeocodeAsync({
+        latitude,
+        longitude,
+      }),
+      REVERSE_GEOCODE_TIMEOUT_MS,
+      []
+    );
 
     if (result && result.length > 0) {
       const address = result[0];

@@ -97,7 +97,7 @@ function MessageBubble({
       ]}
     >
       {!isCurrentUser && (
-        <UserAvatar imageUrl={recipientAvatar} name={message.senderName} size={28} style={{ marginRight: 8 }} />
+        <UserAvatar userId={message.senderId} imageUrl={recipientAvatar} name={message.senderName} size={28} style={{ marginRight: 8 }} />
       )}
 
       <View

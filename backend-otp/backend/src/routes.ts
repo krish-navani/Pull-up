@@ -3046,6 +3046,22 @@ async function recordNotificationFailure(db: any, userId: string, errorMsg: stri
   }
 }
 
+async function recordNotificationSuccess(db: any, userId: string) {
+  try {
+    const userRef = db.collection('users').doc(userId);
+    await userRef.update({
+      notificationHealth: {
+        status: 'healthy',
+        lastSentAt: new Date().toISOString(),
+        failureCount: 0,
+        lastFailureReason: null,
+      }
+    });
+  } catch (err: any) {
+    console.error('[NOTIFICATIONS] Failed to update notification health success status:', err.message);
+  }
+}
+
 // Helper function to send unified notification and push alert
 export async function triggerNotification(
   userId: string,
@@ -3345,6 +3361,9 @@ export async function triggerNotification(
     };
 
     await notifRef.set(notifPayload, { merge: true });
+    if (pushSent) {
+      await recordNotificationSuccess(db, userId);
+    }
     const tFirestoreUpdated = Date.now();
     console.log(`[STAGE 10: TOTAL LATENCY] totalTime=${tFirestoreUpdated - startTime}ms`);
     console.log(`=========================================================\n`);
@@ -4950,6 +4969,9 @@ router.post('/evaluate-detour', async (req: Request, res: Response) => {
     if (points.length === 0 && ride.routePolyline) {
       points = decodePolyline(ride.routePolyline);
     }
+    if (points.length === 0 && ride.pickupLocation && ride.dropLocation) {
+      points = [ride.pickupLocation, ride.dropLocation];
+    }
 
     const corridorRes = getDistanceToPolyline(passengerPickup, points);
     const distanceToCorridor = corridorRes.distance;
@@ -4982,7 +5004,7 @@ router.post('/evaluate-detour', async (req: Request, res: Response) => {
           longitude: tB * passengerPickup.longitude + (1 - tB) * coordA.longitude,
         };
         const walkDistB = walkDistA * (1 - tB);
-        const nameB = (await reverseGeocode(coordB.latitude, coordB.longitude)) + " Junction";
+        const nameB = await reverseGeocode(coordB.latitude, coordB.longitude);
         recommendations.push({
           name: nameB,
           latitude: coordB.latitude,
@@ -4998,7 +5020,7 @@ router.post('/evaluate-detour', async (req: Request, res: Response) => {
           longitude: tC * passengerPickup.longitude + (1 - tC) * coordA.longitude,
         };
         const walkDistC = walkDistA * (1 - tC);
-        const nameC = (await reverseGeocode(coordC.latitude, coordC.longitude)) + " Landmark";
+        const nameC = await reverseGeocode(coordC.latitude, coordC.longitude);
         recommendations.push({
           name: nameC,
           latitude: coordC.latitude,
@@ -5018,7 +5040,7 @@ router.post('/evaluate-detour', async (req: Request, res: Response) => {
             longitude: tB * passengerPickup.longitude + (1 - tB) * coordA.longitude,
           };
           const walkDistB = walkDistA * (1 - tB);
-          const nameB = (await reverseGeocode(coordB.latitude, coordB.longitude)) + " Spot";
+          const nameB = await reverseGeocode(coordB.latitude, coordB.longitude);
           recommendations.push({
             name: nameB,
             latitude: coordB.latitude,
@@ -5035,7 +5057,7 @@ router.post('/evaluate-detour', async (req: Request, res: Response) => {
             longitude: tC * passengerPickup.longitude + (1 - tC) * coordA.longitude,
           };
           const walkDistC = walkDistA * (1 - tC);
-          const nameC = (await reverseGeocode(coordC.latitude, coordC.longitude)) + " Point";
+          const nameC = await reverseGeocode(coordC.latitude, coordC.longitude);
           recommendations.push({
             name: nameC,
             latitude: coordC.latitude,
@@ -5044,17 +5066,6 @@ router.post('/evaluate-detour', async (req: Request, res: Response) => {
             detourDistanceMeters: Math.round(tC * walkDistA),
           });
         }
-      }
-
-      // Final fallback to fill list to 3 items
-      while (recommendations.length < 3) {
-        recommendations.push({
-          name: `${nameA} Alternative`,
-          latitude: coordA.latitude + (Math.random() - 0.5) * 0.0005,
-          longitude: coordA.longitude + (Math.random() - 0.5) * 0.0005,
-          walkingDistanceMeters: Math.round(walkDistA),
-          detourDistanceMeters: 0,
-        });
       }
 
       return recommendations;
@@ -5102,12 +5113,42 @@ router.post('/evaluate-detour', async (req: Request, res: Response) => {
     const extraDistance = Math.max(0, newRes.distanceMeters - baselineRes.distanceMeters);
     const extraDuration = Math.max(0, newRes.durationSeconds - baselineRes.durationSeconds);
 
+    // Check exact match with driver pickup or dropoff
+    const driverPickup = ride.pickupLocation;
+    const driverDrop = ride.dropLocation;
+    let isExactMatch = false;
+    if (driverPickup && driverPickup.latitude && driverPickup.longitude && passengerPickup.latitude && passengerPickup.longitude) {
+      const distPickup = getHaversineDistance(passengerPickup, driverPickup);
+      if (distPickup <= 150 || (passengerPickup.placeId && driverPickup.placeId && passengerPickup.placeId === driverPickup.placeId)) {
+        isExactMatch = true;
+      }
+    }
+    if (driverDrop && driverDrop.latitude && driverDrop.longitude && passengerPickup.latitude && passengerPickup.longitude) {
+      const distDrop = getHaversineDistance(passengerPickup, driverDrop);
+      if (distDrop <= 150 || (passengerPickup.placeId && driverDrop.placeId && passengerPickup.placeId === driverDrop.placeId)) {
+        isExactMatch = true;
+      }
+    }
+
+    if (isExactMatch) {
+      return res.json({
+        success: true,
+        status: 'approved',
+        extraDistanceMeters: 0,
+        extraDurationSeconds: 0,
+        distanceToPolyline: 0,
+        newPolyline: ride.routePolyline || null,
+        optimizationSource: 'exact_match',
+        congestionMode: false,
+      });
+    }
+
     let approved = false;
     if (isNoDetour) {
-      approved = distanceToCorridor <= 200 && extraDistance <= 300 && extraDuration <= 120;
+      approved = distanceToCorridor <= 300 && extraDistance <= 500 && extraDuration <= 180;
     } else {
       const globalDetour = Math.max(0, newRes.distanceMeters - (ride.baselineDistanceMeters || 0));
-      approved = extraDistance <= remainingBudget && globalDetour <= detourLimit;
+      approved = (extraDistance <= remainingBudget || distanceToCorridor <= 200) && globalDetour <= detourLimit * 1.2;
     }
 
     if (approved) {

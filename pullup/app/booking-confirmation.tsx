@@ -328,6 +328,7 @@ export default function BookingConfirmationScreen() {
           latitude: location.latitude,
           longitude: location.longitude,
           address: location.address,
+          placeId: location.placeId,
         },
         passengerId: auth.user?.id,
       });
@@ -672,7 +673,7 @@ export default function BookingConfirmationScreen() {
               setErrorMessage(null);
             }}
             placeholder="Search pickup address..."
-            readOnly={boardingChoice !== 'custom' || detourLimit === 0 || direction !== 'home-to-atlas'}
+            readOnly={boardingChoice !== 'custom' || direction !== 'home-to-atlas'}
           />
 
           <View style={{ height: 12 }} />
@@ -685,7 +686,7 @@ export default function BookingConfirmationScreen() {
               setErrorMessage(null);
             }}
             placeholder="Search drop-off address..."
-            readOnly={boardingChoice !== 'custom' || detourLimit === 0 || direction !== 'atlas-to-home'}
+            readOnly={boardingChoice !== 'custom' || direction !== 'atlas-to-home'}
           />
 
           <View style={{ height: 16 }} />

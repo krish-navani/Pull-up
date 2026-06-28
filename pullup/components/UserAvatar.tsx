@@ -1,21 +1,53 @@
 import React from 'react';
 import { StyleSheet, Text, View, Image } from 'react-native';
+import { doc, onSnapshot } from 'firebase/firestore';
+import { db } from '@/utils/firebase';
 import { WARM_CORE } from '@/constants/theme';
 
 interface UserAvatarProps {
+  userId?: string | null;
   imageUrl?: string | null;
   name?: string;
   size?: number;
   style?: any;
 }
 
-export default function UserAvatar({ imageUrl, name, size = 44, style }: UserAvatarProps) {
+export default function UserAvatar({ userId, imageUrl, name, size = 44, style }: UserAvatarProps) {
   const [hasError, setHasError] = React.useState(false);
-  const initial = name && name.trim() ? name.trim()[0].toUpperCase() : '?';
+  const [liveImage, setLiveImage] = React.useState<string | null>(imageUrl || null);
+  const [liveName, setLiveName] = React.useState<string | undefined>(name);
+
+  React.useEffect(() => {
+    setLiveImage(imageUrl || null);
+    setLiveName(name);
+  }, [imageUrl, name]);
+
+  React.useEffect(() => {
+    if (!userId) return;
+    try {
+      const userRef = doc(db, 'users', userId);
+      const unsub = onSnapshot(userRef, (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data.profileImage !== undefined) setLiveImage(data.profileImage);
+          if (data.fullName !== undefined) setLiveName(data.fullName);
+        }
+      }, (err) => {
+        console.warn('[AVATAR SYNC] Snapshot error:', err);
+      });
+      return () => unsub();
+    } catch (e) {
+      console.warn('[AVATAR SYNC] Setup error:', e);
+    }
+  }, [userId]);
+
+  const displayImage = liveImage || imageUrl;
+  const displayName = liveName || name;
+  const initial = displayName && displayName.trim() ? displayName.trim()[0].toUpperCase() : '?';
 
   React.useEffect(() => {
     setHasError(false);
-  }, [imageUrl]);
+  }, [displayImage]);
 
   const containerStyle = {
     width: size,
@@ -28,7 +60,9 @@ export default function UserAvatar({ imageUrl, name, size = 44, style }: UserAva
     fontWeight: '700' as const,
   };
 
-  const cleanUrl = imageUrl && typeof imageUrl === 'string' && imageUrl.trim().length > 0 ? imageUrl.trim() : null;
+  const rawUrl = displayImage && typeof displayImage === 'string' && displayImage.trim().length > 0 ? displayImage.trim() : null;
+  const isLocalOrInvalid = rawUrl ? (rawUrl.startsWith('file://') || rawUrl.startsWith('content://') || rawUrl.startsWith('ph://')) : false;
+  const cleanUrl = isLocalOrInvalid ? null : rawUrl;
 
   if (cleanUrl && !hasError) {
     return (

@@ -874,15 +874,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         // Handle foreground FCM messages — show a real local OS notification
         // (FCM does NOT show the notification tray banner by itself when the app is open)
         unsubForegroundMessage = messaging().onMessage(async (remoteMessage: any) => {
-          if (!isMounted) return;
+          console.log('[INSTRUMENTATION] ENTERED onMessage()');
+          if (!isMounted) {
+            console.log('[INSTRUMENTATION] onMessage aborted: isMounted is false');
+            return;
+          }
+          console.log('[INSTRUMENTATION] RemoteMessage received:', JSON.stringify(remoteMessage, null, 2));
+
           try {
-            const { notification, data } = remoteMessage;
+            const { notification, data } = remoteMessage || {};
             const title = notification?.title || data?.title || 'New Notification';
             const body = notification?.body || data?.message || '';
             console.log('[FCM] Foreground message received:', title);
 
-            // Present as a real local notification so it shows in the notification tray/banner
-            await Notifications.scheduleNotificationAsync({
+            const notifInput = {
               content: {
                 title,
                 body,
@@ -891,9 +896,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 badge: 1,
               },
               trigger: null, // show immediately
-            });
+            };
+            console.log('[INSTRUMENTATION] Input passed into scheduleNotificationAsync():', JSON.stringify(notifInput, null, 2));
 
-            // Also show in-app toast for UX continuity
+            let notifIdentifier: string | null = null;
+            try {
+              notifIdentifier = await Notifications.scheduleNotificationAsync(notifInput as any);
+              console.log(`[INSTRUMENTATION] scheduleNotificationAsync SUCCESS (Returned Identifier: "${notifIdentifier}")`);
+
+              try {
+                const presented = await Notifications.getPresentedNotificationsAsync();
+                console.log('[INSTRUMENTATION] Total presented notifications in OS tray:', presented.length);
+                console.log('[INSTRUMENTATION] Presented notifications payload list:', JSON.stringify(presented, null, 2));
+                const isPresent = presented.some((n: any) => n.request?.identifier === notifIdentifier || n.identifier === notifIdentifier);
+                console.log(`[INSTRUMENTATION] Is newly scheduled notification ("${notifIdentifier}") present in Android OS tray list?`, isPresent ? 'YES ✅' : 'NO ❌');
+              } catch (presErr: any) {
+                console.error('[INSTRUMENTATION] getPresentedNotificationsAsync error:', presErr?.message || presErr);
+              }
+            } catch (schedErr: any) {
+              console.error('[INSTRUMENTATION] scheduleNotificationAsync EXCEPTION:', schedErr?.message || schedErr, schedErr?.stack || '');
+            }
+            console.log('[INSTRUMENTATION] Completed scheduleNotificationAsync step.');
+
+            console.log('[INSTRUMENTATION] Updating in-app notification center / Toast...');
             try {
               const Toast = require('react-native-toast-message').default;
               if (Toast) {
@@ -903,6 +928,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                   text2: body,
                   visibilityTime: 4000,
                 });
+                console.log('[INSTRUMENTATION] Toast shown successfully.');
               }
             } catch (_) {}
           } catch (err) {

@@ -7,11 +7,11 @@ export function generateMockRides(): Ride[] {
     {
       id: 'ride-1',
       driverId: 'driver-1',
-      driverName: 'Soham Bhosale',
+      driverName: 'Krish Navani',
       pickupLocation: {
         latitude: 19.1755629,
         longitude: 72.877972,
-        address: 'NNP, Goregaon',
+        address: 'Thane',
         city: 'Mumbai',
       },
       dropLocation: {

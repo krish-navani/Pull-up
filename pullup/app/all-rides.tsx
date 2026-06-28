@@ -176,7 +176,7 @@ export default function AllRidesScreen() {
                   <View style={styles.divider} />
                   <View style={styles.cardFooter}>
                     <View style={styles.driverSection}>
-                      <UserAvatar imageUrl={(ride as any).driverImage || (ride as any).driverProfileImage} name={ride.driverName} size={34} />
+                      <UserAvatar userId={ride.driverId} imageUrl={(ride as any).driverImage || (ride as any).driverProfileImage} name={ride.driverName} size={34} />
                       <View>
                         <Text style={styles.driverName} numberOfLines={1}>{ride.driverName}</Text>
                         <View style={styles.metaRow}>

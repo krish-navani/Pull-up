@@ -68,8 +68,25 @@ export interface GroupChatRoom {
  * 3. A member of a taxipool.
  * 4. A participant listed in the chat document.
  */
+const chatAuthCache = new Set<string>();
+
 export const isUserAuthorizedForChat = async (rideId: string, userId: string): Promise<boolean> => {
+  if (userId === 'system') return true;
+  const cacheKey = `${rideId}_${userId}`;
+  if (chatAuthCache.has(cacheKey)) return true;
+
   try {
+    // 1. Fast path: check rideChats participants first
+    const chatRef = doc(db, 'rideChats', rideId);
+    const chatSnap = await getDoc(chatRef);
+    if (chatSnap.exists()) {
+      const chatData = chatSnap.data();
+      if (chatData.participants && (chatData.participants.includes(userId))) {
+        chatAuthCache.add(cacheKey);
+        return true;
+      }
+    }
+
     // Resolve persistent userId if userId is a session ID
     let persistentUserId = userId;
     try {
@@ -79,58 +96,59 @@ export const isUserAuthorizedForChat = async (rideId: string, userId: string): P
         const sessionData = sessionSnap.data();
         if (sessionData.userId) {
           persistentUserId = sessionData.userId;
-          console.log(`[GROUP CHAT SERVICE] Resolved session UID ${userId} -> persistent user ID ${persistentUserId}`);
         }
       }
     } catch (sessionErr) {
-      console.warn('[GROUP CHAT SERVICE] Failed to check userSessions mapping:', sessionErr);
+      // ignore
     }
 
-    // 1. Check if user is the driver/host of the ride
+    if (chatAuthCache.has(`${rideId}_${persistentUserId}`)) return true;
+
+    if (chatSnap.exists()) {
+      const chatData = chatSnap.data();
+      if (chatData.participants && chatData.participants.includes(persistentUserId)) {
+        chatAuthCache.add(cacheKey);
+        chatAuthCache.add(`${rideId}_${persistentUserId}`);
+        return true;
+      }
+    }
+
+    // 2. Check if user is driver/host
     const rideRef = doc(db, 'rides', rideId);
     const rideSnap = await getDoc(rideRef);
     if (rideSnap.exists()) {
       const rideData = rideSnap.data();
       if (rideData.driverId === persistentUserId) {
+        chatAuthCache.add(cacheKey);
         return true;
       }
     }
 
-    // 2. Check if user has a confirmed and paid booking
+    // 3. Check booking
     const bookingId = `${rideId}_${persistentUserId}`;
     const bookingRef = doc(db, 'bookings', bookingId);
     const bookingSnap = await getDoc(bookingRef);
     if (bookingSnap.exists()) {
       const bookingData = bookingSnap.data();
       if (bookingData.status === 'confirmed' && bookingData.paymentStatus === 'paid') {
+        chatAuthCache.add(cacheKey);
         return true;
       }
     }
 
-    // 3. For Taxi Pools, check if user is a member of the taxi pool
+    // 4. TaxiPool member
     const taxiPoolRef = doc(db, 'taxiPools', rideId);
     const taxiPoolSnap = await getDoc(taxiPoolRef);
     if (taxiPoolSnap.exists()) {
-      // Check if they are in poolMembers collection
       const memberRef = doc(db, 'poolMembers', `${rideId}_${persistentUserId}`);
       const memberSnap = await getDoc(memberRef);
       if (memberSnap.exists()) {
+        chatAuthCache.add(cacheKey);
         return true;
       }
-      
-      // Or check if they are the creator
       const taxiPoolData = taxiPoolSnap.data();
       if (taxiPoolData.creatorId === persistentUserId) {
-        return true;
-      }
-    }
-
-    // 4. Fallback: check rideChats participants
-    const chatRef = doc(db, 'rideChats', rideId);
-    const chatSnap = await getDoc(chatRef);
-    if (chatSnap.exists()) {
-      const chatData = chatSnap.data();
-      if (chatData.participants && (chatData.participants.includes(persistentUserId) || chatData.participants.includes(userId))) {
+        chatAuthCache.add(cacheKey);
         return true;
       }
     }
@@ -218,6 +236,24 @@ export const addParticipantToGroupChat = async (
     console.log('[GROUP CHAT SERVICE] ✅ Participant added & system message sent');
   } catch (error) {
     console.error('[GROUP CHAT SERVICE] ❌ Error adding participant:', error);
+  }
+};
+
+export const ensureParticipantInGroupChat = async (
+  rideId: string,
+  userId: string
+): Promise<void> => {
+  if (!rideId || !userId) return;
+
+  try {
+    const roomRef = doc(db, 'rideChats', rideId);
+    await setDoc(roomRef, {
+      rideId,
+      participants: arrayUnion(userId),
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+  } catch (error) {
+    console.warn('[GROUP CHAT SERVICE] Failed to ensure participant in chat:', error);
   }
 };
 

@@ -427,11 +427,11 @@ export default function RideDetailsScreen() {
           if (!isNaN(parsed) && parsed > 0) setRouteDistanceKm(parsed);
         }
 
-        if (mapRef.current && result.points && result.points.length > 1) {
+        if (mapRef.current && typeof (mapRef.current as any).fitToCoordinates === 'function' && result.points && result.points.length > 1) {
           setTimeout(() => {
             try {
               console.log('Fitting map to route...');
-              mapRef.current?.fitToCoordinates(result.points, {
+              (mapRef.current as any)?.fitToCoordinates(result.points, {
                 edgePadding: { top: 150, right: 50, bottom: 350, left: 50 },
                 animated: true,
               });
@@ -987,7 +987,7 @@ export default function RideDetailsScreen() {
 
               <View style={styles.vehicleCard}>
                 <View style={styles.driverRow}>
-                  <UserAvatar imageUrl={ride.driverImage} name={ride.driverName} size={44} />
+                  <UserAvatar userId={ride.driverId} imageUrl={ride.driverImage} name={ride.driverName} size={44} />
 
                   <View style={{ flex: 1 }}>
                     <Text style={styles.driverName}>{ride.driverName}</Text>

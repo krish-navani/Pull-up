@@ -1,5 +1,7 @@
 import { Location as LocationType } from '@/types';
 import { calculateDistance, getCurrentLocation, getLocationSuggestionsWithCoords, getReverseGeocodeAddress } from '@/utils/locationUtils';
+import { fetchNearbyRecommendations, NearbyPlace } from '@/utils/locationRecommendationService';
+import { useAppContext } from '@/context/AppContext';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import React, { useEffect, useRef, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -36,10 +38,13 @@ export default function LocationPickerModal({
   initialLocation,
   title = 'Select Location',
 }: LocationPickerModalProps) {
+  const { auth } = useAppContext();
   const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView>(null);
   const searchTimeoutRef = useRef<any>(null);
+  const nearbyTimeoutRef = useRef<any>(null);
   const searchIdRef = useRef<number>(0);
+  const nearbyIdRef = useRef<number>(0);
   const regionChangeIdRef = useRef<number>(0);
   const programmaticMoveRef = useRef<boolean>(false);
   const [markerLocation, setMarkerLocation] = useState<LocationType>(
@@ -61,6 +66,33 @@ export default function LocationPickerModal({
   const [mapInitialized, setMapInitialized] = useState(false);
 
   const [recentSearches, setRecentSearches] = useState<LocationType[]>([]);
+  const [nearbyPlaces, setNearbyPlaces] = useState<NearbyPlace[]>([]);
+  const googleMapsApiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
+
+  const refreshNearbyPlaces = async (latitude: number, longitude: number) => {
+    if (!latitude || !longitude || isNaN(latitude) || isNaN(longitude)) return;
+    const currentNearbyId = ++nearbyIdRef.current;
+    try {
+      const places = await fetchNearbyRecommendations({ latitude, longitude }, googleMapsApiKey);
+      if (currentNearbyId === nearbyIdRef.current) {
+        setNearbyPlaces(places);
+      }
+    } catch (error) {
+      if (currentNearbyId === nearbyIdRef.current) {
+        setNearbyPlaces([]);
+      }
+      console.warn('[LOCATION PICKER] Failed to refresh nearby places:', error);
+    }
+  };
+
+  const queueNearbyRefresh = (latitude: number, longitude: number) => {
+    if (nearbyTimeoutRef.current) {
+      clearTimeout(nearbyTimeoutRef.current);
+    }
+    nearbyTimeoutRef.current = setTimeout(() => {
+      refreshNearbyPlaces(latitude, longitude);
+    }, 450);
+  };
 
   useEffect(() => {
     setMarkerLocation(
@@ -74,10 +106,10 @@ export default function LocationPickerModal({
     setAddress(initialLocation?.address || '');
   }, [initialLocation, visible]);
 
-  // Load recent searches when modal is visible
+  // Load recent searches and nearby recommendations when modal is visible
   useEffect(() => {
     if (visible) {
-      const loadRecentSearches = async () => {
+      const loadData = async () => {
         try {
           const stored = await AsyncStorage.getItem('pullup_recent_searches');
           if (stored) {
@@ -86,13 +118,16 @@ export default function LocationPickerModal({
               setRecentSearches(parsed);
             }
           }
+          if (markerLocation && markerLocation.latitude) {
+            await refreshNearbyPlaces(markerLocation.latitude, markerLocation.longitude);
+          }
         } catch (error) {
-          console.warn('[LOCATION PICKER] Failed to load recent searches:', error);
+          console.warn('[LOCATION PICKER] Failed to load initial data:', error);
         }
       };
-      loadRecentSearches();
+      loadData();
     }
-  }, [visible]);
+  }, [visible, markerLocation.latitude, markerLocation.longitude]);
 
   // Get current location on mount
   useEffect(() => {
@@ -114,6 +149,9 @@ export default function LocationPickerModal({
     return () => {
       if (searchTimeoutRef.current) {
         clearTimeout(searchTimeoutRef.current);
+      }
+      if (nearbyTimeoutRef.current) {
+        clearTimeout(nearbyTimeoutRef.current);
       }
     };
   }, []);
@@ -193,6 +231,7 @@ export default function LocationPickerModal({
           city: 'Mumbai',
         });
         setAddress(reverseAddress);
+        queueNearbyRefresh(latitude, longitude);
       }
     } catch (error) {
       console.error('[LOCATION PICKER] Error updating location from map region:', error);
@@ -298,6 +337,7 @@ export default function LocationPickerModal({
           setMarkerLocation(location);
           setAddress(location.address || '');
           setSearchQuery(location.address || '');
+          queueNearbyRefresh(location.latitude, location.longitude);
           programmaticMoveRef.current = true;
           if (mapRef.current) {
             try {
@@ -334,6 +374,7 @@ export default function LocationPickerModal({
         setMarkerLocation(finalLoc);
         setAddress(suggestion.address);
         setSearchQuery(suggestion.address);
+        queueNearbyRefresh(suggestion.latitude, suggestion.longitude);
         programmaticMoveRef.current = true;
         if (mapRef.current) {
           try {
@@ -372,6 +413,7 @@ export default function LocationPickerModal({
       });
       setAddress(displayName);
       setSearchQuery(displayName);
+      queueNearbyRefresh(suggestion.latitude, suggestion.longitude);
       programmaticMoveRef.current = true;
 
       // Animate map to the selected location
@@ -401,6 +443,7 @@ export default function LocationPickerModal({
       if (location && location.latitude && location.longitude) {
         setMarkerLocation(location);
         setAddress(location.address || '');
+        queueNearbyRefresh(location.latitude, location.longitude);
         programmaticMoveRef.current = true;
         if (mapRef.current) {
           try {
@@ -621,6 +664,26 @@ export default function LocationPickerModal({
             const suggestionsData = searchQuery.trim() === ''
               ? [
                   { type: 'current_location', displayName: 'Use Current Location', secondaryText: 'Tap to use your current location' },
+                  ...(auth.user?.homeAddress ? [{
+                    type: 'recent_search',
+                    displayName: 'Home',
+                    secondaryText: auth.user.homeAddress.address,
+                    latitude: auth.user.homeAddress.latitude,
+                    longitude: auth.user.homeAddress.longitude,
+                    address: auth.user.homeAddress.address,
+                    city: auth.user.homeAddress.city || 'Mumbai',
+                    placeId: auth.user.homeAddress.placeId,
+                  }] : []),
+                  ...nearbyPlaces.map((place: NearbyPlace) => ({
+                    type: 'recent_search',
+                    displayName: place.name,
+                    secondaryText: `Nearby · ${place.vicinity}`,
+                    latitude: place.latitude,
+                    longitude: place.longitude,
+                    address: `${place.name}, ${place.vicinity}`,
+                    city: 'Mumbai',
+                    placeId: place.placeId,
+                  })),
                   ...recentSearches.map(item => ({
                     type: 'recent_search',
                     displayName: item.address.split(',')[0],

@@ -30,6 +30,7 @@ import PoolCard from '@/components/PoolCard';
 
 import GreetingBanner from '@/components/GreetingBanner';
 import UserAvatar from '@/components/UserAvatar';
+import { getRideSearchScore } from '@/utils/rideService';
 
 // ---------------------------------------------------------------------------
 // Skeleton shimmer row shown while rides are loading
@@ -152,7 +153,7 @@ function UnifiedFeedCard({ item, onPress }: { item: any; onPress: () => void }) 
       {/* Footer Info Row */}
       <View style={styles.cardFooterRow}>
         <View style={styles.cardCreatorInfo}>
-          <UserAvatar imageUrl={item.creatorImage} name={item.creatorName} size={26} />
+          <UserAvatar userId={item.creatorId} imageUrl={item.creatorImage} name={item.creatorName} size={26} />
           <Text style={styles.cardUserText} numberOfLines={1}>
             {item.creatorName}  ·  ★ {item.creatorRating}
           </Text>
@@ -214,8 +215,9 @@ export default function HomeScreen() {
           seatsLeft: ride.availableSeats,
           totalSeats: ride.totalSeats,
           creatorName: ride.driverName,
+          creatorId: ride.driverId,
           creatorImage: (ride as any).driverImage || (ride as any).driverProfileImage || null,
-          creatorRating: '4.9',
+          creatorRating: (ride as any).driverRating || (ride as any).rating || 'New',
           rawItem: ride,
           distance: distanceVal,
         });
@@ -254,7 +256,9 @@ export default function HomeScreen() {
           seatsLeft: pool.maxMembers - pool.memberCount,
           totalSeats: pool.maxMembers,
           creatorName: pool.creatorName,
-          creatorRating: '4.7',
+          creatorId: pool.creatorId,
+          creatorImage: (pool as any).creatorImage || (pool as any).creatorProfileImage || null,
+          creatorRating: (pool as any).creatorRating || (pool as any).rating || 'New',
           rawItem: pool,
           distance: distanceVal,
         });
@@ -269,24 +273,26 @@ export default function HomeScreen() {
       filtered = feed.filter(item => item.type === 'taxi');
     }
 
-    // Filter by searchQuery
-    if (searchQuery.trim() !== '') {
-      const q = searchQuery.toLowerCase();
-      filtered = filtered.filter(item => 
-        item.pickup.toLowerCase().includes(q) ||
-        item.dropoff.toLowerCase().includes(q) ||
-        item.creatorName.toLowerCase().includes(q)
-      );
-    }
+    const scored = filtered
+      .map((item) => ({
+        ...item,
+        searchScore: getRideSearchScore(item.rawItem, searchQuery, {
+          distanceKm: item.distance,
+          userLocation,
+        }),
+      }))
+      .filter((item) => item.searchScore !== Number.NEGATIVE_INFINITY);
 
-    // Sort by distance (closest first), fallback to departure time
-    return filtered.sort((a, b) => {
+    return scored.sort((a, b) => {
+      if (searchQuery.trim() && a.searchScore !== b.searchScore) {
+        return b.searchScore - a.searchScore;
+      }
       if (a.distance !== b.distance) {
         return (a.distance ?? Infinity) - (b.distance ?? Infinity);
       }
       return new Date(a.time).getTime() - new Date(b.time).getTime();
     });
-  }, [rides, pools, activeTab, searchQuery, rideDistances, poolDistances]);
+  }, [rides, pools, activeTab, searchQuery, rideDistances, poolDistances, userLocation]);
 
   // ── Entry animations ─────────────────────────────────────────────────────
   // All three groups start invisible and slide up together as a clean stagger
@@ -539,13 +545,25 @@ export default function HomeScreen() {
 
   // Filter and sort rides by distance — guard for undefined rides
   const sortedAndFilteredRides = (rides ?? []).filter(ride => {
-    const isStatusValid = (ride.status as string) === 'active' || (ride.status as string) === 'booking_open' || (ride.status as string) === 'published';
-    const isNotExpired = !ride.departureTime || new Date(ride.departureTime).getTime() > Date.now();
+    const isStatusValid = (ride.status as string) === 'active' || (ride.status as string) === 'in_progress' || (ride.status as string) === 'booking_open' || (ride.status as string) === 'published';
+    const isNotExpired = !ride.departureTime || new Date(ride.departureTime).getTime() > (Date.now() - 6 * 60 * 60 * 1000);
     const hasSeats = (ride.availableSeats ?? 0) > 0;
-    const matchesSearch = searchQuery === '' ||
-      (ride.pickupLocation?.address || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (ride.dropLocation?.address || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (ride.driverName || '').toLowerCase().includes(searchQuery.toLowerCase());
+    const cleanQuery = searchQuery.trim().toLowerCase().replace(/[^\w\s]/g, '');
+    let matchesSearch = cleanQuery === '';
+    if (!matchesSearch) {
+      const tokens = cleanQuery.split(/\s+/);
+      const searchIdx: string[] = (ride as any).searchIndex || [];
+      const pickupStr = (ride.pickupLocation?.address || '').toLowerCase();
+      const dropStr = (ride.dropLocation?.address || '').toLowerCase();
+      const driverStr = (ride.driverName || '').toLowerCase();
+
+      matchesSearch = tokens.every(token => 
+        searchIdx.some(idx => idx.includes(token)) ||
+        pickupStr.includes(token) ||
+        dropStr.includes(token) ||
+        driverStr.includes(token)
+      );
+    }
     return isStatusValid && isNotExpired && hasSeats && matchesSearch;
   }).sort((a, b) => {
     const distA = rideDistances[a.id] ?? Infinity;

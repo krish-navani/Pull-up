@@ -89,4 +89,8 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
+# Service account credentials & logs
+*firebase-adminsdk*.json
+*.log
+
 # @end expo-cli

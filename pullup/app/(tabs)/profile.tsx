@@ -22,6 +22,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WARM_CORE } from '@/constants/theme';
 import UserAvatar from '@/components/UserAvatar';
+import * as ImagePicker from 'expo-image-picker';
+import { uploadImageToCloudinary } from '@/utils/cloudinaryService';
 
 interface ProfileState {
   driverStats: DriverStats | null;
@@ -356,10 +358,11 @@ function RoleSwitchingAnimation({ targetRole }: { targetRole: 'driver' | 'passen
 
 export default function ProfileScreen() {
   const router = useRouter();
-  const { auth, logout, getDriverStats, getPassengerStats, getUpcomingRide } = useAppContext();
+  const { auth, logout, updateProfileData, getDriverStats, getPassengerStats, getUpcomingRide } = useAppContext();
 
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isSwitching, setIsSwitching] = useState(false);
+  const [isUpdatingImage, setIsUpdatingImage] = useState(false);
   const [profileState, setProfileState] = useState<ProfileState>({
     driverStats: null,
     passengerStats: null,
@@ -368,6 +371,75 @@ export default function ProfileScreen() {
     isLoading: true,
     error: null,
   });
+
+  const handleProcessImageUpload = useCallback(async (uri: string) => {
+    if (!auth.user?.id) return;
+    setIsUpdatingImage(true);
+    try {
+      const cloudinaryUrl = await uploadImageToCloudinary(uri, 'profile_pictures');
+      await updateProfileData(auth.user.id, { profileImage: cloudinaryUrl });
+      Alert.alert('Success', 'Profile picture updated successfully!');
+    } catch (err: any) {
+      console.error('[PROFILE] Image upload error:', err);
+      Alert.alert('Error', err.message || 'Failed to update profile picture.');
+    } finally {
+      setIsUpdatingImage(false);
+    }
+  }, [auth.user?.id, updateProfileData]);
+
+  const handleSelectImage = useCallback(async () => {
+    try {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: 'images',
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]) {
+        await handleProcessImageUpload(result.assets[0].uri);
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to select image from gallery.');
+    }
+  }, [handleProcessImageUpload]);
+
+  const handleCaptureImage = useCallback(async () => {
+    try {
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: 'images',
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.8,
+      });
+      if (!result.canceled && result.assets[0]) {
+        await handleProcessImageUpload(result.assets[0].uri);
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to capture image.');
+    }
+  }, [handleProcessImageUpload]);
+
+  const handleRemoveImage = useCallback(async () => {
+    if (!auth.user?.id) return;
+    setIsUpdatingImage(true);
+    try {
+      await updateProfileData(auth.user.id, { profileImage: null });
+      Alert.alert('Success', 'Profile picture removed.');
+    } catch (err: any) {
+      Alert.alert('Error', 'Failed to remove profile picture.');
+    } finally {
+      setIsUpdatingImage(false);
+    }
+  }, [auth.user?.id, updateProfileData]);
+
+  const handleProfilePicturePress = useCallback(() => {
+    Alert.alert('Update Profile Picture', 'Choose how you would like to update your profile picture', [
+      { text: 'Take Photo 📸', onPress: handleCaptureImage },
+      { text: 'Choose from Gallery 🖼️', onPress: handleSelectImage },
+      { text: 'Remove Photo 🗑️', onPress: handleRemoveImage, style: 'destructive' },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
+  }, [handleCaptureImage, handleSelectImage, handleRemoveImage]);
 
   const [activeRole, setActiveRole] = useState<'driver' | 'passenger'>(auth.user?.role === 'driver' ? 'driver' : 'passenger');
 
@@ -548,9 +620,42 @@ export default function ProfileScreen() {
               <View style={styles.idCardGlow} />
               
               <View style={styles.idCardHeaderRow}>
-                <PulsingAvatarRing isVerified={auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'verified'}>
-                  <UserAvatar imageUrl={auth.user?.profileImage} name={auth.user?.fullName} size={64} />
-                </PulsingAvatarRing>
+                <TouchableOpacity onPress={handleProfilePicturePress} activeOpacity={0.8} style={{ position: 'relative' }}>
+                  <PulsingAvatarRing isVerified={auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'verified'}>
+                    <UserAvatar imageUrl={auth.user?.profileImage} name={auth.user?.fullName} size={64} />
+                  </PulsingAvatarRing>
+                  <View style={{
+                    position: 'absolute',
+                    bottom: 0,
+                    right: 0,
+                    backgroundColor: WARM_CORE.primary,
+                    width: 22,
+                    height: 22,
+                    borderRadius: 11,
+                    justifyContent: 'center',
+                    alignItems: 'center',
+                    borderWidth: 2,
+                    borderColor: WARM_CORE.white,
+                    elevation: 3,
+                  }}>
+                    <MaterialCommunityIcons name="camera" size={12} color={WARM_CORE.white} />
+                  </View>
+                  {isUpdatingImage && (
+                    <View style={{
+                      position: 'absolute',
+                      top: 0,
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                      borderRadius: 32,
+                      backgroundColor: 'rgba(0,0,0,0.4)',
+                      justifyContent: 'center',
+                      alignItems: 'center',
+                    }}>
+                      <ActivityIndicator size="small" color={WARM_CORE.white} />
+                    </View>
+                  )}
+                </TouchableOpacity>
 
                 <View style={styles.userInfoContainer}>
                   <Text style={styles.fullName}>{auth.user.fullName}</Text>
@@ -631,7 +736,13 @@ export default function ProfileScreen() {
                       <TouchableOpacity
                         key={item.id}
                         style={styles.completionItemRow}
-                        onPress={() => router.push(item.route as any)}
+                        onPress={() => {
+                          if (item.id === 'photo') {
+                            handleProfilePicturePress();
+                          } else {
+                            router.push(item.route as any);
+                          }
+                        }}
                         activeOpacity={0.7}
                       >
                         <View style={styles.completionIconBox}>

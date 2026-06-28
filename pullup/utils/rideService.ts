@@ -16,6 +16,112 @@ import { db } from './firebase';
 import apiClient from './backendApiClient';
 import { initializeGroupChat } from './rideGroupChatService';
 import { sendNotification } from './notificationService';
+import { calculateDistance } from './locationUtils';
+
+const SEARCH_ALIASES: Record<string, string[]> = {
+  udupi: ['bhandup', 'udupi'],
+  bhandup: ['bhandup', 'udupi'],
+  powai: ['powai', 'hiranandani', 'iit', 'jvlr', 'lake homes'],
+  atlas: ['atlas', 'skilltech', 'campus', 'gate'],
+  college: ['atlas', 'skilltech', 'campus', 'college'],
+  university: ['atlas', 'skilltech', 'campus', 'college'],
+  metro: ['metro', 'station'],
+};
+
+export const normalizeLocationSearchText = (value?: string | null): string => {
+  if (!value) return '';
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+
+export const getLocationSearchTokens = (...values: Array<string | undefined | null>): string[] => {
+  const tokens = new Set<string>();
+  values.forEach((value) => {
+    const normalized = normalizeLocationSearchText(value);
+    if (!normalized) return;
+    tokens.add(normalized);
+    normalized.split(/\s+/).forEach((token) => {
+      if (token.length >= 2) tokens.add(token);
+      SEARCH_ALIASES[token]?.forEach((alias) => tokens.add(alias));
+    });
+  });
+  return Array.from(tokens);
+};
+
+export const getRideSearchScore = (
+  rideLike: any,
+  queryText: string,
+  options?: {
+    distanceKm?: number;
+    userLocation?: { latitude: number; longitude: number } | null;
+  }
+): number => {
+  const cleanQuery = normalizeLocationSearchText(queryText);
+  let score = 0;
+
+  const pickup = rideLike.pickupLocation || rideLike.pickup || {};
+  const drop = rideLike.dropLocation || rideLike.destination || rideLike.dropoff || {};
+  const searchTokens = new Set<string>([
+    ...getLocationSearchTokens(
+      pickup.address,
+      pickup.city,
+      pickup.locality,
+      pickup.placeId,
+      drop.address,
+      drop.city,
+      drop.locality,
+      drop.placeId,
+      rideLike.driverName,
+      rideLike.creatorName
+    ),
+    ...((rideLike.searchIndex || []) as string[]).map(normalizeLocationSearchText),
+  ]);
+
+  if (cleanQuery) {
+    const queryTokens = getLocationSearchTokens(cleanQuery);
+    const hasEveryToken = queryTokens.every((token) =>
+      Array.from(searchTokens).some((idx) => idx === token || idx.includes(token) || token.includes(idx))
+    );
+    if (!hasEveryToken) return Number.NEGATIVE_INFINITY;
+    score += queryTokens.reduce((total, token) => {
+      const exactPlace = token && (pickup.placeId === token || drop.placeId === token);
+      const exactToken = searchTokens.has(token);
+      return total + (exactPlace ? 600 : exactToken ? 120 : 40);
+    }, 0);
+  }
+
+  const distanceKm = options?.distanceKm;
+  if (typeof distanceKm === 'number' && isFinite(distanceKm)) {
+    score += Math.max(0, 80 - distanceKm * 8);
+  } else if (options?.userLocation && pickup.latitude && pickup.longitude) {
+    const computedDistance = calculateDistance(
+      options.userLocation.latitude,
+      options.userLocation.longitude,
+      pickup.latitude,
+      pickup.longitude
+    );
+    score += Math.max(0, 80 - computedDistance * 8);
+  }
+
+  const availableSeats = Number(rideLike.availableSeats ?? rideLike.seatsLeft ?? 0);
+  score += Math.min(availableSeats, 4) * 8;
+
+  const rating = Number(rideLike.driverRating ?? rideLike.creatorRating ?? rideLike.rating ?? 0);
+  if (rating > 0) score += Math.min(rating, 5) * 6;
+
+  const departureMs = new Date(rideLike.departureTime || rideLike.time || 0).getTime();
+  if (departureMs > Date.now()) {
+    const hoursAway = (departureMs - Date.now()) / 36e5;
+    score += Math.max(0, 24 - hoursAway);
+  }
+
+  return score;
+};
 
 /**
  * Create a new ride in Firestore
@@ -44,11 +150,27 @@ export const createRideInFirestore = async (
   try {
     console.log('[RIDE SERVICE] Creating ride for driver:', driverId);
 
+    const generateSearchIndex = (pickup: Location, drop: Location, dName: string): string[] => {
+      const tokens = new Set<string>();
+      const addTokens = (text?: string) => {
+        if (!text) return;
+        const clean = text.toLowerCase().replace(/[^\w\s]/g, ' ');
+        clean.split(/\s+/).forEach(t => { if (t.length >= 2) tokens.add(t); });
+      };
+      addTokens(pickup?.address); addTokens(pickup?.city); addTokens((pickup as any)?.locality);
+      addTokens(drop?.address); addTokens(drop?.city); addTokens((drop as any)?.locality);
+      addTokens(dName);
+      if (pickup?.placeId) tokens.add(pickup.placeId.toLowerCase());
+      if (drop?.placeId) tokens.add(drop.placeId.toLowerCase());
+      return Array.from(tokens);
+    };
+
     const firebaseRideData = {
       driverId,
       driverName,
       pickupLocation: rideData.pickupLocation,
       dropLocation: rideData.dropLocation,
+      searchIndex: generateSearchIndex(rideData.pickupLocation, rideData.dropLocation, driverName),
       departureTime: rideData.departureTime,
       price: rideData.price,
       availableSeats: rideData.availableSeats,
@@ -137,6 +259,7 @@ export const getAllRides = async (): Promise<Ride[]> => {
         status: data.status,
         bookedSeats: data.bookedSeats || [],
         detourRadiusMeters: data.detourRadiusMeters || 0,
+        searchIndex: data.searchIndex || [],
       });
     });
 
@@ -191,6 +314,7 @@ export const getAllRidesIncludingHistory = async (): Promise<Ride[]> => {
         status: data.status,
         bookedSeats: data.bookedSeats || [],
         detourRadiusMeters: data.detourRadiusMeters || 0,
+        searchIndex: data.searchIndex || [],
       });
     });
 

@@ -7,6 +7,28 @@
   "client": [
     {
       "client_info": {
+        "mobilesdk_app_id": "1:286433202099:android:d1fa230db7382a023005c6",
+        "android_client_info": {
+          "package_name": "com.pullup.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs"
+        },
+        {
+          "current_key": "AIzaSyDnBOMpesEh50yFK9xA1NYr2VmXXwvTLDw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
         "mobilesdk_app_id": "1:286433202099:android:c94f067cd677b9303005c6",
         "android_client_info": {
           "package_name": "com.soham5713.PullUp"
@@ -14,6 +36,9 @@
       },
       "oauth_client": [],
       "api_key": [
+        {
+          "current_key": "AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs"
+        },
         {
           "current_key": "AIzaSyDnBOMpesEh50yFK9xA1NYr2VmXXwvTLDw"
         }
