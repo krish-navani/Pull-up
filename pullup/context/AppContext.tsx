@@ -780,13 +780,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       try {
         if (Platform.OS === 'android') {
+          const channelBefore = await Notifications.getNotificationChannelAsync('default');
+          console.log('[INSTRUMENTATION] Default Notification Channel (before):', JSON.stringify(channelBefore, null, 2));
+          
           await Notifications.setNotificationChannelAsync('default', {
             name: 'PullUp alerts',
             importance: Notifications.AndroidImportance.MAX,
             vibrationPattern: [0, 250, 250, 250],
             lightColor: '#D4500A',
             sound: 'default',
+            showBadge: true,
+            bypassDnd: true,
           });
+          
+          const channelAfter = await Notifications.getNotificationChannelAsync('default');
+          console.log('[INSTRUMENTATION] Default Notification Channel (after):', JSON.stringify(channelAfter, null, 2));
         }
 
         const existingPerms = await Notifications.getPermissionsAsync();
@@ -882,9 +890,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           console.log('[INSTRUMENTATION] RemoteMessage received:', JSON.stringify(remoteMessage, null, 2));
 
           try {
-            const { notification, data } = remoteMessage || {};
-            const title = notification?.title || data?.title || 'New Notification';
-            const body = notification?.body || data?.message || '';
+            const notification = remoteMessage.notification || {};
+            const data = remoteMessage.data || {};
+            const title = notification.title || data.title || 'New Notification';
+            const body = notification.body || data.body || data.message || '';
             console.log('[FCM] Foreground message received:', title);
 
             const notifInput = {
@@ -892,7 +901,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
                 title,
                 body,
                 sound: 'default',
-                data: data || {},
+                channelId: 'default',
+                data: data,
                 badge: 1,
               },
               trigger: null, // show immediately

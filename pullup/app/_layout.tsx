@@ -93,9 +93,9 @@ function RootLayoutContent() {
 
         let resolvedScreen = targetScreen;
         if (!resolvedScreen && type) {
-          if (['chat_message', 'message', 'sos'].includes(type)) {
+          if (['chat_message', 'message', 'sos', 'SOS', 'group_message', 'group-message'].includes(type)) {
             resolvedScreen = 'group-chat';
-          } else if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'payment_confirmed', 'booking_expired', 'waitlist_joined', 'waitlist_promoted', 'waitlist_expired', 'cancellation'].includes(type)) {
+          } else if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'payment_confirmed', 'payment_required', 'payment-required', 'booking_expired', 'waitlist_joined', 'waitlist_promoted', 'waitlist_expired', 'cancellation'].includes(type)) {
             resolvedScreen = 'ride-details';
           } else if (['pool_request', 'pool_accepted', 'pool_rejected', 'pool_joined', 'pool_full'].includes(type)) {
             resolvedScreen = 'taxi-pool-details';
