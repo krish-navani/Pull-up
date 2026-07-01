@@ -36,7 +36,8 @@
         "EXPO_PUBLIC_GOOGLE_MAPS_API_KEY": "AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs"
       },
       "android": {
-        "buildType": "apk"
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease"
       }
     },
     "production": {
