@@ -53,3 +53,7 @@ private_key.pem
 temp/
 tmp/
 .vercel
+
+# Helper scripts
+backend/read-specific-otp.ts
+backend/read-user-tokens.ts

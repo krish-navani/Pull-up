@@ -89,6 +89,7 @@
         }
       ],
       "@react-native-firebase/app",
+      "./plugins/withReanimatedWorkletsBuildFix",
       "./plugins/withNotificationFix"
     ],
     "experiments": {

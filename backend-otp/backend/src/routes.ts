@@ -23,6 +23,18 @@ router.get('/health', (req: Request, res: Response) => {
   });
 });
 
+// TEMPORARY: Test notification endpoint for push verification
+router.post('/test-notification', async (req: Request, res: Response) => {
+  const { userId, type = 'booking_accepted', title = '🚗 Test Push', message = 'Push notification verified!' } = req.body;
+  if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
+  try {
+    const sent = await triggerNotification(userId, type, title, message, 'test-ride-123');
+    res.json({ success: sent, message: sent ? 'Notification sent' : 'Notification failed' });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 // GET HTML CHECKOUT PAGE (Razorpay Web Checkout integration)
 router.get('/checkout-page', (req: Request, res: Response) => {
   const { type, orderId, amount, userId, planId, bookingId } = req.query;

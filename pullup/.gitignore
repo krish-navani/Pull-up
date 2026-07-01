@@ -93,4 +93,11 @@ yarn-error.*
 *firebase-adminsdk*.json
 *.log
 
+# Helper scripts and temporary logs
+download_logs.mjs
+eas_build_decompressed.txt
+extract_gradle_logs.mjs
+extract_prebuild_logs.mjs
+upload-fcm-credentials.mjs
+
 # @end expo-cli
