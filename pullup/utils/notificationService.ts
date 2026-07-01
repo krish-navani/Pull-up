@@ -16,6 +16,7 @@ import {
     writeBatch,
 } from 'firebase/firestore';
 import { db } from './firebase';
+import { OTP_BACKEND_URL } from '@/config/environment';
 
 export type NotificationType = 
   | 'booking_request' 
@@ -129,7 +130,7 @@ type: ${type}`);
     }
 
     // 2. Call backend REST endpoint
-    const backendUrl = process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pullup-backend-otp.vercel.app';
+    const backendUrl = OTP_BACKEND_URL;
     const response = await fetch(`${backendUrl}/api/otp/send-notification`, {
       method: 'POST',
       headers: {

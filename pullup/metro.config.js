@@ -3,7 +3,7 @@ const { getDefaultConfig } = require('expo/metro-config');
 const path = require('path');
 
 const OTP_BACKEND =
-  process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pullup-backend-otp.vercel.app';
+  process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://backend-eight-gamma-77.vercel.app';
 
 /** @type {import('expo/metro-config').MetroConfig} */
 const config = getDefaultConfig(__dirname);

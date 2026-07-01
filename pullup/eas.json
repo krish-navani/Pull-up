@@ -7,6 +7,10 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "env": {
+        "EXPO_PUBLIC_API_URL": "https://backend-eight-gamma-77.vercel.app",
+        "EXPO_PUBLIC_OTP_BACKEND_URL": "https://backend-eight-gamma-77.vercel.app"
+      },
       "android": {
         "buildType": "apk"
       }
@@ -23,7 +27,8 @@
         "EXPO_PUBLIC_FIREBASE_APP_ID": "1:286433202099:web:e2b0d38e845d50bc3005c6",
         "EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID": "G-BHMF6YMYXW",
 
-        "EXPO_PUBLIC_OTP_BACKEND_URL": "https://pullup-backend-otp.vercel.app",
+        "EXPO_PUBLIC_API_URL": "https://backend-eight-gamma-77.vercel.app",
+        "EXPO_PUBLIC_OTP_BACKEND_URL": "https://backend-eight-gamma-77.vercel.app",
         "EXPO_PUBLIC_OTP_EXPIRY_MINUTES": "10",
         "EXPO_PUBLIC_OTP_LENGTH": "4",
         "EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME": "dednna8sw",
@@ -45,7 +50,8 @@
         "EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID": "286433202099",
         "EXPO_PUBLIC_FIREBASE_APP_ID": "1:286433202099:web:e2b0d38e845d50bc3005c6",
         "EXPO_PUBLIC_FIREBASE_MEASUREMENT_ID": "G-BHMF6YMYXW",
-        "EXPO_PUBLIC_OTP_BACKEND_URL": "https://pullup-backend-otp.vercel.app",
+        "EXPO_PUBLIC_API_URL": "https://backend-eight-gamma-77.vercel.app",
+        "EXPO_PUBLIC_OTP_BACKEND_URL": "https://backend-eight-gamma-77.vercel.app",
         "EXPO_PUBLIC_OTP_EXPIRY_MINUTES": "10",
         "EXPO_PUBLIC_OTP_LENGTH": "4",
         "EXPO_PUBLIC_CLOUDINARY_CLOUD_NAME": "dednna8sw",

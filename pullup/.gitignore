@@ -100,4 +100,9 @@ extract_gradle_logs.mjs
 extract_prebuild_logs.mjs
 upload-fcm-credentials.mjs
 
+# Temporary build artifacts & APKs
+*.apk
+extracted-preview-apks/
+*.tar.gz
+
 # @end expo-cli

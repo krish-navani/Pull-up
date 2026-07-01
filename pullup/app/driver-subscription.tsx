@@ -20,9 +20,9 @@ import { useAppContext } from '@/context/AppContext';
 import { WARM_CORE } from '@/constants/theme';
 import { db } from '@/utils/firebase';
 import apiClient from '@/utils/backendApiClient';
+import { OTP_BACKEND_URL } from '@/config/environment';
 
-const REMOTE_BACKEND_URL =
-  process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pullup-backend-otp.vercel.app';
+const REMOTE_BACKEND_URL = OTP_BACKEND_URL;
 
 interface Plan {
   id: 'monthly' | 'quarterly' | 'yearly';

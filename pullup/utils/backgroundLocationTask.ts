@@ -17,6 +17,7 @@
 
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { OTP_BACKEND_URL } from '@/config/environment';
 
 export const BACKGROUND_LOCATION_TASK = 'pullup-background-location';
 
@@ -83,7 +84,7 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: any) =>
 
   // Read backend URL and secret from bundled env vars
   // These are embedded at build time, so process.env works in background context
-  const backendUrl = process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pullup-backend-otp.vercel.app';
+  const backendUrl = OTP_BACKEND_URL;
   const bgSecret = process.env.EXPO_PUBLIC_PULLUP_BG_SECRET || 'pullup_commute_secure_pass_2026';
 
   if (!backendUrl) {

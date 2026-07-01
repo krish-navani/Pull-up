@@ -310,7 +310,7 @@ export default function CreateTaxiPoolScreen() {
       const poolId = await createTaxiPool({
         creatorId: auth.user.id,
         creatorName: auth.user.fullName,
-        creatorImage: auth.user.profileImage || undefined,
+        creatorImage: auth.user.profileImage || null,
         creatorCourse: auth.user.course || 'BBA',
         creatorDivision: auth.user.division || 'A',
         pickupLocation: {
@@ -325,7 +325,7 @@ export default function CreateTaxiPoolScreen() {
         },
         departureTime: departureDateTime,
         maxMembers,
-        notes: notes.trim() || undefined,
+        notes: notes.trim() || null,
         price: parseInt(price, 10) || 40
       } as any);
 
@@ -539,8 +539,15 @@ export default function CreateTaxiPoolScreen() {
               <View style={styles.row}>
                 
                 {/* Date Picker Button */}
-                <PressableScale onPress={() => setShowDatePicker(true)} style={{ flex: 1 }}>
+                <PressableScale onPress={() => Platform.OS !== 'web' && setShowDatePicker(true)} style={{ flex: 1 }}>
                   <View style={styles.cardSelect}>
+                    {Platform.OS === 'web' && React.createElement('input', {
+                      type: 'date',
+                      value: departureDate,
+                      min: new Date().toISOString().split('T')[0],
+                      onChange: (e: any) => { setDepartureDate(e.target.value); setError(''); },
+                      style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer', zIndex: 10 }
+                    })}
                     <View style={styles.cardSelectIcon}>
                       <MaterialCommunityIcons name="calendar" size={20} color={WARM_CORE.primary} />
                     </View>
@@ -555,8 +562,14 @@ export default function CreateTaxiPoolScreen() {
                 </PressableScale>
 
                 {/* Time Picker Button */}
-                <PressableScale onPress={() => setShowTimePicker(true)} style={{ flex: 1 }}>
+                <PressableScale onPress={() => Platform.OS !== 'web' && setShowTimePicker(true)} style={{ flex: 1 }}>
                   <View style={styles.cardSelect}>
+                    {Platform.OS === 'web' && React.createElement('input', {
+                      type: 'time',
+                      value: departureTime,
+                      onChange: (e: any) => { setDepartureTime(e.target.value); setError(''); },
+                      style: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer', zIndex: 10 }
+                    })}
                     <View style={styles.cardSelectIcon}>
                       <MaterialCommunityIcons name="clock-outline" size={20} color={WARM_CORE.primary} />
                     </View>

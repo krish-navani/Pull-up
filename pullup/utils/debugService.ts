@@ -10,35 +10,32 @@ import { verifyEmailConfig } from './emailService';
 export const verifyAppConfiguration = async () => {
   console.log('[DEBUG] ============ APP CONFIGURATION CHECK ============');
   
-  // Check Firebase
+  const envInfo = {
+    Environment: process.env.NODE_ENV || 'development',
+    'OTP Backend URL (Env)': process.env.EXPO_PUBLIC_OTP_BACKEND_URL || '❌ NOT SET',
+    'API URL (Env)': process.env.EXPO_PUBLIC_API_URL || '❌ NOT SET',
+    'Google Maps API Key': process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY ? `✅ SET (${process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY.substring(0, 8)}...)` : '❌ MISSING',
+    'Firebase Project': process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || '❌ MISSING',
+    'Build Profile / Config': __DEV__ ? 'Development Client / Expo Go' : 'Release / Built Binary',
+  };
+  console.log('[DEBUG] App Startup Environment:', envInfo);
+
+  // Check Firebase Setup
   const firebaseConfig = {
     apiKey: process.env.EXPO_PUBLIC_FIREBASE_API_KEY ? '✅ SET' : '❌ MISSING',
     authDomain: process.env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN ? '✅ SET' : '❌ MISSING',
     projectId: process.env.EXPO_PUBLIC_FIREBASE_PROJECT_ID ? '✅ SET' : '❌ MISSING',
     storageBucket: process.env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET ? '✅ SET' : '❌ MISSING',
   };
-  console.log('[DEBUG] Firebase Config:', firebaseConfig);
-
-  // Check OTP Backend
-  const otpBackendConfig = {
-    backendUrl: process.env.EXPO_PUBLIC_OTP_BACKEND_URL ? '✅ SET' : '❌ MISSING',
-  };
-  console.log('[DEBUG] OTP Backend Config:', otpBackendConfig);
-
-  // Verify OTP Backend
+  console.log('[DEBUG] Firebase Config Status:', firebaseConfig);
+  
+  // Verify Live OTP Backend Connection
   try {
     const backendValid = await verifyEmailConfig();
-    console.log('[DEBUG] OTP Backend Verification:', backendValid ? '✅ VALID' : '❌ INVALID');
+    console.log('[DEBUG] Live OTP Backend Health Check:', backendValid ? '✅ HEALTHY' : '❌ UNHEALTHY');
   } catch (error) {
-    console.error('[DEBUG] OTP Backend Verification Error:', error);
+    console.error('[DEBUG] Live OTP Backend Verification Error:', error);
   }
-
-  // Check OTP settings
-  const otpConfig = {
-    length: process.env.EXPO_PUBLIC_OTP_LENGTH || '6',
-    expiryMinutes: process.env.EXPO_PUBLIC_OTP_EXPIRY_MINUTES || '10',
-  };
-  console.log('[DEBUG] OTP Config:', otpConfig);
 
   console.log('[DEBUG] ====================================================\n');
 };

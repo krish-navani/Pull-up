@@ -12,6 +12,7 @@ import * as Notifications from 'expo-notifications';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { WARM_CORE } from '@/constants/theme';
 import { useCallback, useState } from 'react';
+import { OTP_BACKEND_URL } from '@/config/environment';
 import {
     ActivityIndicator,
     Alert,
@@ -184,7 +185,7 @@ export default function NotificationsScreen() {
       const campaignId = (notification as any).campaignId;
       if (campaignId) {
         try {
-          await fetch(`${process.env.EXPO_PUBLIC_OTP_BACKEND_URL || 'https://pullup-backend-otp.vercel.app'}/api/otp/analytics/track`, {
+          await fetch(`${OTP_BACKEND_URL}/api/otp/analytics/track`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ campaignId, action: 'clicked' }),
