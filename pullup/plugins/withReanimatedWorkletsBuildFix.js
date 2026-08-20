@@ -1,6 +1,8 @@
 const { withProjectBuildGradle } = require('@expo/config-plugins');
 
+const FIX_MARKER = '// @pullup/reanimated-worklets-prefab-order-fix';
 const FIX_BLOCK = `
+${FIX_MARKER}
 // Ensure CMake configuration waits for Reanimated/Worklets Prefab outputs.
 // Reanimated consumes Worklets' prefab package, and the app consumes both.
 gradle.projectsEvaluated {
@@ -56,7 +58,7 @@ gradle.projectsEvaluated {
 module.exports = function withReanimatedWorkletsBuildFix(config) {
   return withProjectBuildGradle(config, (config) => {
     const contents = config.modResults.contents;
-    if (!contents.includes('Ensure Reanimated CMake configuration waits for Worklets Prefab output')) {
+    if (!contents.includes(FIX_MARKER)) {
       config.modResults.contents = `${contents.trimEnd()}\n${FIX_BLOCK}\n`;
     }
     return config;

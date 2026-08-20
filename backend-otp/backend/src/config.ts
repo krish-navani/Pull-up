@@ -27,7 +27,7 @@ if (process.env.NODE_ENV !== 'production') {
 
 export const config = {
   port: process.env.PORT || 3000,
-  nodeEnv: process.env.NODE_ENV || 'development',
+  nodeEnv: process.env.NODE_ENV || process.env.VERCEL_ENV || 'development',
 
   // Firebase
   firebase: {

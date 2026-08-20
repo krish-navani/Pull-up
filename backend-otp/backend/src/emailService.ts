@@ -26,6 +26,9 @@ export const getPrimaryMailer = (): nodemailer.Transporter => {
       tls: {
         rejectUnauthorized: false,
       },
+      pool: true,
+      maxConnections: 5,
+      maxMessages: 100,
       connectionTimeout: 5000, // 5 seconds connect timeout
       greetingTimeout: 5000,   // 5 seconds greeting timeout
       socketTimeout: 10000,    // 10 seconds idle socket timeout
@@ -56,6 +59,9 @@ export const getSecondaryMailer = (): nodemailer.Transporter => {
       tls: {
         rejectUnauthorized: false,
       },
+      pool: true,
+      maxConnections: 5,
+      maxMessages: 100,
       connectionTimeout: 5000, // 5 seconds connect timeout
       greetingTimeout: 5000,   // 5 seconds greeting timeout
       socketTimeout: 10000,    // 10 seconds idle socket timeout
@@ -77,11 +83,13 @@ export const getMailer = (): nodemailer.Transporter => {
 export const sendOTPEmail = async (
   email: string,
   otp: string,
-  expiryMinutes: number
+  expiryMinutes: number,
+  expiresAt?: Date
 ): Promise<boolean> => {
-  const expiryTime = new Date();
-  expiryTime.setMinutes(expiryTime.getMinutes() + expiryMinutes);
+  const t0 = Date.now();
+  const expiryTime = expiresAt || new Date(Date.now() + expiryMinutes * 60 * 1000);
   const formattedTime = expiryTime.toLocaleTimeString('en-US', {
+    timeZone: 'Asia/Kolkata',
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
@@ -89,30 +97,35 @@ export const sendOTPEmail = async (
   });
 
   const htmlContent = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-      <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; border-radius: 8px 8px 0 0; color: white;">
-        <h1 style="margin: 0; font-size: 24px;">PullUp - OTP Verification</h1>
+    <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; border: 1px solid #eaeaea; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+      <div style="background: linear-gradient(135deg, #D4500A 0%, #EA580C 100%); padding: 28px 24px; text-align: center; color: white;">
+        <h1 style="margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -0.5px;">PullUp</h1>
+        <p style="margin: 4px 0 0 0; font-size: 14px; opacity: 0.9;">Campus Ride Sharing</p>
       </div>
       
-      <div style="padding: 30px; background-color: #f9f9f9; border-radius: 0 0 8px 8px;">
-        <p style="color: #333; font-size: 16px; margin-top: 0;">Hi there,</p>
+      <div style="padding: 32px 28px; background-color: #ffffff;">
+        <p style="color: #111827; font-size: 16px; font-weight: 600; margin-top: 0;">Verification Code</p>
         
-        <p style="color: #666; font-size: 14px;">Your One-Time Password (OTP) for PullUp email verification is:</p>
+        <p style="color: #4B5563; font-size: 14px; line-height: 1.5;">Use the following One-Time Password (OTP) to complete your PullUp verification:</p>
         
-        <div style="background-color: white; border: 2px solid #667eea; padding: 20px; margin: 20px 0; border-radius: 8px; text-align: center;">
-          <p style="margin: 0; font-size: 32px; font-weight: bold; color: #667eea; letter-spacing: 5px;">${otp}</p>
+        <div style="background-color: #FFF7ED; border: 2px dashed #F97316; padding: 20px; margin: 24px 0; border-radius: 12px; text-align: center;">
+          <span style="font-size: 36px; font-weight: 800; color: #D4500A; letter-spacing: 8px; font-family: monospace;">${otp}</span>
         </div>
         
-        <p style="color: #666; font-size: 13px; background-color: #ffe6e6; padding: 12px; border-radius: 4px; border-left: 4px solid #ff6b6b;">
-          <strong>⏰ Expires at:</strong> ${formattedTime} (${expiryMinutes} minutes from now)
-        </p>
+        <div style="background-color: #FEF2F2; border-left: 4px solid #EF4444; padding: 12px 16px; border-radius: 6px; margin-bottom: 24px;">
+          <p style="margin: 0; color: #991B1B; font-size: 13px; font-weight: 600;">
+            ⏰ Expires at: <span style="font-weight: 700;">${formattedTime} IST</span> (${expiryMinutes} minutes validity)
+          </p>
+        </div>
         
-        <p style="color: #666; font-size: 13px; margin-top: 20px;">
-          <strong>🔒 Security Notice:</strong> Never share this OTP with anyone. PullUp support will never ask for your OTP.
+        <p style="color: #6B7280; font-size: 13px; line-height: 1.5; margin: 0;">
+          <strong>Security Notice:</strong> Never share this OTP with anyone. PullUp staff will never ask for your verification code.
         </p>
-        
-        <p style="color: #999; font-size: 12px; margin-top: 30px; border-top: 1px solid #ddd; padding-top: 20px;">
-          If you didn't request this OTP, please ignore this email and your account remains secure.
+      </div>
+      
+      <div style="padding: 16px 28px; background-color: #F9FAFB; border-top: 1px solid #F3F4F6; text-align: center;">
+        <p style="color: #9CA3AF; font-size: 12px; margin: 0;">
+          If you did not request this OTP, please ignore this email.
         </p>
       </div>
     </div>
@@ -125,20 +138,26 @@ export const sendOTPEmail = async (
       throw new Error('Primary SMTP credentials not configured (MAIL_USER is blank)');
     }
 
-    console.log(`[EMAIL-PRIMARY] Attempting delivery to ${email} via primary SMTP...`);
+    console.log(`[SMTP DIAGNOSTICS] [PRIMARY] Attempting delivery to ${email}...`);
+    const tAcquire = Date.now();
     const primaryMailer = getPrimaryMailer();
+    const tConn = Date.now();
+    console.log(`[SMTP DIAGNOSTICS] [PRIMARY] Transporter acquire: ${tConn - tAcquire}ms`);
+
     const info = await primaryMailer.sendMail({
       from: `"${config.mail.fromName}" <${primaryUser}>`,
       to: email,
       subject: `Your PullUp OTP: ${otp}`,
       html: htmlContent,
-      text: `Your OTP for PullUp: ${otp}. It expires at ${formattedTime}. Do not share this code.`,
+      text: `Your OTP for PullUp: ${otp}. It expires at ${formattedTime} IST. Do not share this code.`,
     });
 
-    console.log(`[EMAIL-PRIMARY] ✅ Delivered successfully to ${email}:`, info.messageId);
+    const tSend = Date.now();
+    console.log(`[SMTP DIAGNOSTICS] [PRIMARY] ✅ SendMail response in ${tSend - tConn}ms | Total SMTP: ${tSend - t0}ms | MessageId: ${info.messageId}`);
     return true;
   } catch (primaryError: any) {
-    console.warn(`[EMAIL-PRIMARY] ❌ Failed to send to ${email}:`, primaryError.message);
+    const tFailPrimary = Date.now();
+    console.warn(`[SMTP DIAGNOSTICS] [PRIMARY] ❌ Failed after ${tFailPrimary - t0}ms to send to ${email}:`, primaryError.message);
 
     // 2. Fall back to Secondary Mailer
     try {
@@ -147,20 +166,23 @@ export const sendOTPEmail = async (
         throw new Error('Secondary SMTP credentials not configured (SECONDARY_MAIL_USER is blank)');
       }
 
-      console.log(`[EMAIL-SECONDARY] Attempting fallback delivery to ${email} via secondary SMTP...`);
+      console.log(`[SMTP DIAGNOSTICS] [SECONDARY] Attempting fallback delivery to ${email}...`);
+      const tSecAcquire = Date.now();
       const secondaryMailer = getSecondaryMailer();
+      const tSecConn = Date.now();
       const info = await secondaryMailer.sendMail({
         from: `"${config.mail.secondary.fromName}" <${secondaryUser}>`,
         to: email,
         subject: `Your PullUp OTP: ${otp} (Fallback)`,
         html: htmlContent,
-        text: `Your OTP for PullUp: ${otp}. It expires at ${formattedTime}. Do not share this code.`,
+        text: `Your OTP for PullUp: ${otp}. It expires at ${formattedTime} IST. Do not share this code.`,
       });
 
-      console.log(`[EMAIL-SECONDARY] ✅ Delivered successfully to ${email} using fallback SMTP:`, info.messageId);
+      const tSecSend = Date.now();
+      console.log(`[SMTP DIAGNOSTICS] [SECONDARY] ✅ Fallback delivered in ${tSecSend - tSecConn}ms | MessageId: ${info.messageId}`);
       return true;
     } catch (secondaryError: any) {
-      console.error(`[EMAIL-SECONDARY] ❌ Secondary fallback failed:`, secondaryError.message);
+      console.error(`[SMTP DIAGNOSTICS] [SECONDARY] ❌ Secondary fallback failed:`, secondaryError.message);
       throw new Error(`Email delivery failed on both primary and secondary SMTP providers. Primary: ${primaryError.message} | Secondary: ${secondaryError.message}`);
     }
   }
@@ -201,4 +223,4 @@ export const verifyMailerConfig = async (): Promise<boolean> => {
   }
 
   return primarySuccess || secondarySuccess;
-};
+};

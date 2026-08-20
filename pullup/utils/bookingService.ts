@@ -102,6 +102,20 @@ export const createBookingInFirestore = async (
 
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes from now
 
+      const normalizeLocationForFirestore = (loc: any) => {
+        if (!loc) return null;
+        const cleaned: any = {
+          latitude: typeof loc.latitude === 'number' ? loc.latitude : Number(loc.latitude),
+          longitude: typeof loc.longitude === 'number' ? loc.longitude : Number(loc.longitude),
+          address: loc.address || '',
+          city: loc.city || '',
+        };
+        if (loc.placeId !== undefined && loc.placeId !== null) cleaned.placeId = loc.placeId;
+        if (loc.locality !== undefined && loc.locality !== null) cleaned.locality = loc.locality;
+        if (loc.state !== undefined && loc.state !== null) cleaned.state = loc.state;
+        return cleaned;
+      };
+
       const bookingData = {
         rideId,
         passengerId,
@@ -116,10 +130,10 @@ export const createBookingInFirestore = async (
         bookedAt: Timestamp.now(),
         createdAt: Timestamp.now(),
         updatedAt: Timestamp.now(),
-        passengerPickupLocation: passengerPickupLocation || null,
-        passengerDropLocation: passengerDropLocation || null,
-        passengerOriginalLocation: detourMeta?.passengerOriginalLocation || null,
-        passengerSelectedPickup: detourMeta?.passengerSelectedPickup || null,
+        passengerPickupLocation: normalizeLocationForFirestore(passengerPickupLocation),
+        passengerDropLocation: normalizeLocationForFirestore(passengerDropLocation),
+        passengerOriginalLocation: normalizeLocationForFirestore(detourMeta?.passengerOriginalLocation),
+        passengerSelectedPickup: normalizeLocationForFirestore(detourMeta?.passengerSelectedPickup),
         extraDistanceMeters: detourMeta?.extraDistanceMeters || 0,
         extraDurationSeconds: detourMeta?.extraDurationSeconds || 0,
         walkingDistanceMeters: detourMeta?.walkingDistanceMeters || 0,

@@ -13,6 +13,8 @@ import {
     ActivityIndicator,
     Animated,
     BackHandler,
+    KeyboardAvoidingView,
+    Platform,
     ScrollView,
     StatusBar,
     StyleSheet,
@@ -337,32 +339,172 @@ export default function SignupScreen() {
     return (
       <SafeAreaView style={styles.safeArea}>
         <StatusBar barStyle="dark-content" backgroundColor={WARM_CORE.background} />
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+        >
+          <ScrollView
+            style={styles.container}
+            contentContainerStyle={styles.contentContainer}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            keyboardDismissMode="on-drag"
+          >
+            <View style={styles.header}>
+              <TouchableOpacity
+                style={styles.backButton}
+                onPress={handleGoBack}
+              >
+                <MaterialCommunityIcons name="chevron-left" size={30} color={WARM_CORE.text} />
+              </TouchableOpacity>
+              <Text style={styles.screenTitle}>OTP Verification</Text>
+              <View style={styles.backButton} />
+            </View>
+
+            <ProgressBar step={2} totalSteps={3} label="Almost there!" />
+
+            <View style={styles.iconContainer}>
+              <View style={styles.iconSquare}>
+                <MaterialCommunityIcons name="email-outline" size={40} color={WARM_CORE.primary} />
+              </View>
+            </View>
+
+            <View style={styles.titleContainer}>
+              <Text style={styles.title}>Verify Email</Text>
+              <Animated.Text
+                style={[
+                  styles.subtitle,
+                  {
+                    opacity: formFade.opacity,
+                    transform: [{ translateY: subtitleSlide.slideY }],
+                  },
+                ]}
+              >
+                We sent an OTP to {'\n'}
+                <Text
+                  style={styles.emailText}
+                  numberOfLines={1}
+                  ellipsizeMode="tail"
+                >
+                  {email}{UNIVERSITY_DOMAIN}
+                </Text>
+              </Animated.Text>
+            </View>
+
+            <Animated.View
+              style={[
+                styles.formContainer,
+                {
+                  opacity: formFade.opacity,
+                  transform: [{ translateY: subtitleSlide.slideY }],
+                },
+              ]}
+            >
+              <View style={styles.otpBoxesContainer}>
+                {otpInputs.map((_, idx) => (
+                  <TextInput
+                    key={idx}
+                    ref={(ref) => {
+                      otpRefs.current[idx] = ref;
+                    }}
+                    style={[styles.otpBox, error && styles.inputError]}
+                    value={otp[idx]}
+                    onChangeText={value => handleOtpChange(value, idx)}
+                    keyboardType="numeric"
+                    maxLength={4}
+                    selectTextOnFocus
+                    editable={!isVerifying}
+                    returnKeyType={idx === 3 ? 'done' : 'next'}
+                    onKeyPress={({ nativeEvent }) => {
+                      if (nativeEvent.key === 'Backspace' && !otp[idx] && idx > 0) {
+                        otpRefs.current[idx - 1]?.focus();
+                        const newOtp = [...otp];
+                        newOtp[idx - 1] = '';
+                        setOtp(newOtp);
+                      }
+                    }}
+                  />
+                ))}
+              </View>
+
+              {error && (
+                <Animated.View
+                  style={[
+                    styles.errorContainer,
+                    { transform: [{ translateX: errorShake.translateX }] },
+                  ]}
+                >
+                  <MaterialCommunityIcons name="alert-circle" size={16} color={WARM_CORE.error} />
+                  <Text style={styles.errorText}>{error}</Text>
+                </Animated.View>
+              )}
+
+              <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
+                <TouchableOpacity
+                  style={[
+                    styles.sendButton,
+                    otp.some(digit => digit === '') || isVerifying ? styles.buttonDisabled : null,
+                  ]}
+                  onPress={handleVerifyOTP}
+                  disabled={otp.some(digit => digit === '') || isVerifying}
+                >
+                  {isVerifying ? (
+                    <ActivityIndicator color={WARM_CORE.white} />
+                  ) : (
+                    <>
+                      <Text style={styles.buttonText}>Verify</Text>
+                      <MaterialCommunityIcons name="arrow-right" size={20} color={WARM_CORE.white} />
+                    </>
+                  )}
+                </TouchableOpacity>
+              </Animated.View>
+            </Animated.View>
+
+            <View style={styles.footer}>
+              <Text style={styles.footerText}>Didn&apos;t receive OTP?</Text>
+              <TouchableOpacity onPress={handleGoBack}>
+                <Text style={styles.resendLink}>Resend</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    );
+  }
+  return (
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar barStyle="dark-content" backgroundColor={WARM_CORE.background} />
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+      >
         <ScrollView
           style={styles.container}
           contentContainerStyle={styles.contentContainer}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
         >
           <View style={styles.header}>
-            <TouchableOpacity
-              style={styles.backButton}
-              onPress={handleGoBack}
-            >
-              <MaterialCommunityIcons name="chevron-left" size={30} color={WARM_CORE.text} />
-            </TouchableOpacity>
-            <Text style={styles.screenTitle}>OTP Verification</Text>
+            <View style={styles.backButton} />
+            <Text style={styles.screenTitle}>Login</Text>
             <View style={styles.backButton} />
           </View>
 
-          <ProgressBar step={2} totalSteps={3} label="Almost there!" />
+          <ProgressBar step={1} totalSteps={3} label="Get Started!" />
 
           <View style={styles.iconContainer}>
             <View style={styles.iconSquare}>
-              <MaterialCommunityIcons name="email-outline" size={40} color={WARM_CORE.primary} />
+              <MaterialCommunityIcons name="car" size={40} color={WARM_CORE.primary} />
             </View>
           </View>
 
           <View style={styles.titleContainer}>
-            <Text style={styles.title}>Verify Email</Text>
+            <Animated.Text style={[styles.title, { opacity: titleFade.opacity }]}>
+              Join PullUp!
+            </Animated.Text>
             <Animated.Text
               style={[
                 styles.subtitle,
@@ -372,14 +514,9 @@ export default function SignupScreen() {
                 },
               ]}
             >
-              We sent an OTP to {'\n'}
-              <Text
-                style={styles.emailText}
-                numberOfLines={1}
-                ellipsizeMode="tail"
-              >
-                {email}{UNIVERSITY_DOMAIN}
-              </Text>
+              Exclusive community for{'\n'}
+              <Text style={styles.universityText}>Atlas SkillTech University</Text>
+              {' '}students
             </Animated.Text>
           </View>
 
@@ -392,31 +529,35 @@ export default function SignupScreen() {
               },
             ]}
           >
-            <View style={styles.otpBoxesContainer}>
-              {otpInputs.map((_, idx) => (
-                <TextInput
-                  key={idx}
-                  ref={(ref) => {
-                    otpRefs.current[idx] = ref;
-                  }}
-                  style={[styles.otpBox, error && styles.inputError]}
-                  value={otp[idx]}
-                  onChangeText={value => handleOtpChange(value, idx)}
-                  keyboardType="numeric"
-                  maxLength={4}
-                  selectTextOnFocus
-                  editable={!isVerifying}
-                  returnKeyType={idx === 3 ? 'done' : 'next'}
-                  onKeyPress={({ nativeEvent }) => {
-                    if (nativeEvent.key === 'Backspace' && !otp[idx] && idx > 0) {
-                      otpRefs.current[idx - 1]?.focus();
-                      const newOtp = [...otp];
-                      newOtp[idx - 1] = '';
-                      setOtp(newOtp);
-                    }
-                  }}
+            <View style={styles.labelContainer}>
+              <Text style={styles.label}>University Email</Text>
+            </View>
+
+            <View style={[styles.inputWrapper, error && styles.inputWrapperError]}>
+              <View style={styles.inputIcon}>
+                <MaterialCommunityIcons
+                  name="email-outline"
+                  size={20}
+                  color={WARM_CORE.textSecondary}
                 />
-              ))}
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder="your.name"
+                placeholderTextColor="#8A8A8A"
+                value={email}
+                onChangeText={handleEmailChange}
+                editable={!isSendingOTP}
+                keyboardType="email-address"
+                autoCapitalize="none"
+              />
+              <Text style={styles.domainSuffix}>{UNIVERSITY_DOMAIN}</Text>
+            </View>
+
+            {/* Verification Message - matching exact image style */}
+            <View style={styles.verificationBanner}>
+              <MaterialCommunityIcons name="shield-check" size={18} color={WARM_CORE.success} />
+              <Text style={styles.verificationBannerText}>Verify your student status instantly via OTP</Text>
             </View>
 
             {error && (
@@ -435,16 +576,16 @@ export default function SignupScreen() {
               <TouchableOpacity
                 style={[
                   styles.sendButton,
-                  otp.some(digit => digit === '') || isVerifying ? styles.buttonDisabled : null,
+                  !isEmailValid || isSendingOTP ? styles.buttonDisabled : null,
                 ]}
-                onPress={handleVerifyOTP}
-                disabled={otp.some(digit => digit === '') || isVerifying}
+                onPress={handleSendOTP}
+                disabled={!isEmailValid || isSendingOTP}
               >
-                {isVerifying ? (
+                {isSendingOTP ? (
                   <ActivityIndicator color={WARM_CORE.white} />
                 ) : (
                   <>
-                    <Text style={styles.buttonText}>Verify</Text>
+                    <Text style={styles.buttonText}>Send OTP</Text>
                     <MaterialCommunityIcons name="arrow-right" size={20} color={WARM_CORE.white} />
                   </>
                 )}
@@ -453,138 +594,15 @@ export default function SignupScreen() {
           </Animated.View>
 
           <View style={styles.footer}>
-            <Text style={styles.footerText}>Didn&apos;t receive OTP?</Text>
-            <TouchableOpacity onPress={handleGoBack}>
-              <Text style={styles.resendLink}>Resend</Text>
-            </TouchableOpacity>
+            <Text style={styles.footerText}>
+              By confirming, you agree to our{' '}
+              <Text style={styles.link}>Terms of Service</Text>
+              {' '}and{' '}
+              <Text style={styles.link}>Privacy Policy</Text>
+            </Text>
           </View>
         </ScrollView>
-      </SafeAreaView>
-    );
-  }
-  return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor={WARM_CORE.background} />
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={styles.contentContainer}
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.header}>
-          <View style={styles.backButton} />
-          <Text style={styles.screenTitle}>Login</Text>
-          <View style={styles.backButton} />
-        </View>
-
-        <ProgressBar step={1} totalSteps={3} label="Get Started!" />
-
-        <View style={styles.iconContainer}>
-          <View style={styles.iconSquare}>
-            <MaterialCommunityIcons name="car" size={40} color={WARM_CORE.primary} />
-          </View>
-        </View>
-
-        <View style={styles.titleContainer}>
-          <Animated.Text style={[styles.title, { opacity: titleFade.opacity }]}>
-            Join PullUp!
-          </Animated.Text>
-          <Animated.Text
-            style={[
-              styles.subtitle,
-              {
-                opacity: formFade.opacity,
-                transform: [{ translateY: subtitleSlide.slideY }],
-              },
-            ]}
-          >
-            Exclusive community for{'\n'}
-            <Text style={styles.universityText}>Atlas SkillTech University</Text>
-            {' '}students
-          </Animated.Text>
-        </View>
-
-        <Animated.View
-          style={[
-            styles.formContainer,
-            {
-              opacity: formFade.opacity,
-              transform: [{ translateY: subtitleSlide.slideY }],
-            },
-          ]}
-        >
-          <View style={styles.labelContainer}>
-            <Text style={styles.label}>University Email</Text>
-          </View>
-
-          <View style={[styles.inputWrapper, error && styles.inputWrapperError]}>
-            <View style={styles.inputIcon}>
-              <MaterialCommunityIcons
-                name="email-outline"
-                size={20}
-                color={WARM_CORE.textSecondary}
-              />
-            </View>
-            <TextInput
-              style={styles.input}
-              placeholder="your.name"
-              placeholderTextColor="#8A8A8A"
-              value={email}
-              onChangeText={handleEmailChange}
-              editable={!isSendingOTP}
-              keyboardType="email-address"
-              autoCapitalize="none"
-            />
-            <Text style={styles.domainSuffix}>{UNIVERSITY_DOMAIN}</Text>
-          </View>
-
-          {/* Verification Message - matching exact image style */}
-          <View style={styles.verificationBanner}>
-            <MaterialCommunityIcons name="shield-check" size={18} color={WARM_CORE.success} />
-            <Text style={styles.verificationBannerText}>Verify your student status instantly via OTP</Text>
-          </View>
-
-          {error && (
-            <Animated.View
-              style={[
-                styles.errorContainer,
-                { transform: [{ translateX: errorShake.translateX }] },
-              ]}
-            >
-              <MaterialCommunityIcons name="alert-circle" size={16} color={WARM_CORE.error} />
-              <Text style={styles.errorText}>{error}</Text>
-            </Animated.View>
-          )}
-
-          <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
-            <TouchableOpacity
-              style={[
-                styles.sendButton,
-                !isEmailValid || isSendingOTP ? styles.buttonDisabled : null,
-              ]}
-              onPress={handleSendOTP}
-              disabled={!isEmailValid || isSendingOTP}
-            >
-              {isSendingOTP ? (
-                <ActivityIndicator color={WARM_CORE.white} />
-              ) : (
-                <>
-                  <Text style={styles.buttonText}>Send OTP</Text>
-                  <MaterialCommunityIcons name="arrow-right" size={20} color={WARM_CORE.white} />
-                </>
-              )}
-            </TouchableOpacity>
-          </Animated.View>
-        </Animated.View>
-
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            By confirming, you agree to our{' '}
-            <Text style={styles.link}>Terms of Service</Text>
-            {' '}and{' '}
-            <Text style={styles.link}>Privacy Policy</Text>
-          </Text>
-        </View>
-      </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

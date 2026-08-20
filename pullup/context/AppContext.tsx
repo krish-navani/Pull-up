@@ -843,23 +843,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Get FCM token
-        const fcmToken = await messaging().getToken();
-        if (!fcmToken) {
-          console.warn('[FCM] Could not obtain FCM token');
-          return;
+        let fcmToken: string | null = null;
+        try {
+          fcmToken = await messaging().getToken();
+          if (fcmToken) {
+            console.log('[FCM] Token registered:', fcmToken);
+          }
+        } catch (err: any) {
+          console.warn('[FCM] Token registration error:', err?.message || err);
         }
-        console.log('[FCM] Token registered:', fcmToken.substring(0, 20) + '...');
 
         if (isMounted && state.auth.user) {
           const { Platform } = require('react-native');
           const userRef = doc(db, 'users', state.auth.user.id);
-          await updateDoc(userRef, {
-            fcmToken,
-            expoPushToken,
+          const updateData: any = {
+            expoPushToken: expoPushToken || null,
             devicePlatform: Platform.OS,
             lastTokenRefresh: Timestamp.now(),
-          });
-          console.log('[FCM] Token saved to Firestore for user:', state.auth.user.id);
+          };
+          if (fcmToken) updateData.fcmToken = fcmToken;
+          await updateDoc(userRef, updateData);
+          console.log('[FCM/PUSH] Token saved to Firestore for user:', state.auth.user.id);
         }
 
         // Handle FCM token refreshes
@@ -1020,22 +1024,33 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             role: storedUser.role,
             licenseVerified: storedUser.licenseVerified,
           });
-          // Ensure Firebase Auth is signed in anonymously if there's no current user.
-          // This keeps the user authenticated in Firebase so write operations don't get permission-denied.
+          // Ensure Firebase Auth is authenticated with a valid custom token for storedUser.id
           try {
             const { auth } = require('../utils/firebase');
-            const { signInAnonymously } = require('firebase/auth');
-            // Wait a brief moment for Firebase Auth to initialize and try auto-restoring session
-            await new Promise(resolve => setTimeout(resolve, 500));
-            if (!auth.currentUser) {
-              console.log('[CONTEXT] ℹ️ Firebase Auth is null. Re-establishing anonymous session...');
-              await signInAnonymously(auth);
-              console.log('[CONTEXT] ✅ Anonymous session re-established.');
-            } else {
-              console.log('[CONTEXT] ✅ Firebase Auth session is active:', auth.currentUser.uid);
+            const { signInWithCustomToken } = require('firebase/auth');
+            const { refreshCustomTokenViaBackend } = require('../utils/backendApiClient');
+
+            // Wait up to 1000ms for Firebase Auth to auto-restore persistent session from AsyncStorage
+            for (let attempt = 0; attempt < 10; attempt++) {
+              if (auth.currentUser && !auth.currentUser.isAnonymous && auth.currentUser.uid === storedUser.id) {
+                break;
+              }
+              await new Promise(resolve => setTimeout(resolve, 100));
             }
-            if (auth.currentUser) {
+
+            if (auth.currentUser && !auth.currentUser.isAnonymous && auth.currentUser.uid === storedUser.id) {
+              console.log('[CONTEXT] ✅ Firebase Auth session is active for user:', auth.currentUser.uid);
               await syncUserSession(storedUser.id);
+            } else {
+              console.log(`[CONTEXT] 🔄 Firebase Auth session missing/anonymous for ${storedUser.id}. Fetching custom token from backend...`);
+              const tokenRes = await refreshCustomTokenViaBackend(storedUser.id);
+              if (tokenRes.success && tokenRes.firebaseToken) {
+                await signInWithCustomToken(auth, tokenRes.firebaseToken);
+                console.log('[CONTEXT] ✅ Re-authenticated Firebase Auth with custom token for UID:', auth.currentUser?.uid);
+                await syncUserSession(storedUser.id);
+              } else {
+                console.warn('[CONTEXT] ⚠️ Custom token refresh failed. User may need to sign in again.');
+              }
             }
           } catch (authError) {
             console.error('[CONTEXT] ⚠️ Failed to re-establish Firebase Auth session:', authError);

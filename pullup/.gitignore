@@ -103,6 +103,8 @@ upload-fcm-credentials.mjs
 # Temporary build artifacts & APKs
 *.apk
 extracted-preview-apks/
+inspect-preview*/
+tmp/
 *.tar.gz
 
 # @end expo-cli

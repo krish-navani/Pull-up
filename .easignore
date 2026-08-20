@@ -1,0 +1,55 @@
+# EAS archives from the Git repo root for this workspace. Keep the app upload
+# source-only so EAS regenerates Android with prebuild instead of using local
+# Windows native build outputs.
+
+# App dependency/native/generated outputs.
+pullup/node_modules/
+pullup/android/
+pullup/ios/
+pullup/.expo/
+pullup/.gradle/
+pullup/.kotlin/
+pullup/.cxx/
+pullup/build/
+pullup/tmp/
+pullup/inspect-preview*/
+
+# Any generated outputs if EAS traverses nested folders.
+**/node_modules/
+**/android/
+**/ios/
+**/.expo/
+**/.gradle/
+**/.kotlin/
+**/.cxx/
+**/build/
+**/tmp/
+**/inspect-preview*/
+
+# Local build artifacts.
+*.apk
+*.aab
+*.tar.gz
+*.log
+*.tsbuildinfo
+hs_err_pid*.log
+replay_pid*.log
+
+# Local env/secrets.
+.env
+.env.*
+pullup/.env
+pullup/.env.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+*firebase-adminsdk*.json
+
+# Editor/OS.
+.DS_Store
+.vscode/
+**/.vscode/
+*.orig.*

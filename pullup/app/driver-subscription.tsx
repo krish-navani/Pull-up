@@ -139,43 +139,21 @@ export default function DriverSubscriptionScreen() {
 
     setSubmitting(true);
     try {
-      // Create Subscription Order
       const res = await apiClient.post('/create-subscription', {
         userId: auth.user.id,
         planId: selectedPlan,
       });
 
       if (res.data?.success) {
-        const { orderId } = res.data;
-        
-        console.log('[SUBSCRIPTION] (BYPASS MODE) Directly verifying subscription order:', orderId);
-        const verifyRes = await apiClient.post('/verify-subscription', {
-          razorpay_payment_id: `pay_mock_${Math.random().toString(36).substring(7)}`,
-          razorpay_order_id: orderId,
-          razorpay_signature: `sig_mock_${Math.random().toString(36).substring(7)}`,
-          userId: auth.user.id,
-          planId: selectedPlan,
-        });
+        const { orderId, amount } = res.data;
+        const checkoutUrl =
+          `${REMOTE_BACKEND_URL}/api/otp/checkout-page?type=subscription` +
+          `&orderId=${encodeURIComponent(orderId)}` +
+          `&amount=${encodeURIComponent(String(amount))}` +
+          `&userId=${encodeURIComponent(auth.user.id)}` +
+          `&planId=${encodeURIComponent(selectedPlan)}`;
 
-        if (verifyRes.data?.success) {
-          Alert.alert(
-            'Subscription Active 🎉',
-            'Thank you! Your TaxiPool creation benefits have been successfully activated. (Bypassed Razorpay WebView)',
-            [
-              {
-                text: 'Create TaxiPool',
-                onPress: () => router.replace('/create-taxi-pool'),
-              },
-              {
-                text: 'Go Home',
-                onPress: () => router.replace('/(tabs)/home'),
-              },
-            ]
-          );
-          fetchSubscriptionStatus();
-        } else {
-          throw new Error(verifyRes.data?.message || 'Subscription verification failed');
-        }
+        await WebBrowser.openBrowserAsync(checkoutUrl);
       } else {
         throw new Error(res.data?.message || 'Failed to initialize subscription checkout');
       }
@@ -186,7 +164,6 @@ export default function DriverSubscriptionScreen() {
       setSubmitting(false);
     }
   };
-
   if (loading) {
     return (
       <SafeAreaView style={[styles.container, styles.center]}>

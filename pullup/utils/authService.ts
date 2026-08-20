@@ -1,15 +1,15 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
     User as FirebaseUser,
-    signInAnonymously,
     signInWithCustomToken,
     signOut,
 } from 'firebase/auth';
 import { collection, doc, getDoc, getDocs, query, setDoc, updateDoc, where } from 'firebase/firestore';
 import { User } from '../types';
 import { auth, db } from './firebase';
-import { checkEmailExists, deleteOTP, sendOTPEmail, validateVerifiedOTP, verifyOTP } from './otpService';
+import { checkEmailExists, sendOTPEmail, verifyOTP } from './otpService';
 import { syncUserSession } from './userSessionService';
+import { forensicTrace } from './forensicLogger';
 
 const UNIVERSITY_DOMAIN = '@atlasskilltech.university';
 const STORAGE_KEY_USER = 'pullup_user_data';
@@ -117,34 +117,56 @@ export const verifyOTPAndCreateAccount = async (
   try {
     const fullEmail = email.includes('@') ? email : email + UNIVERSITY_DOMAIN;
 
-    // Check if email already exists
-    const emailExists = await checkEmailExists(fullEmail);
-    if (emailExists) {
-      const error = 'This email is already registered';
-      throw new Error(error);
-    }
-
-    // Validate OTP (it was already verified in signup screen, just validate it still exists and is valid)
-    await validateVerifiedOTP(email, otp);
-
-    // Sign in using custom token or anonymous auth
+    // Sign in using the backend custom token. Complete Profile must never run under
+    // anonymous auth because Firestore rules resolve getPersistentUserId() from
+    // userSessions/{request.auth.uid}.userId.
     let firebaseUser = auth.currentUser;
-    if (!firebaseUser) {
-      console.log('[AUTH] Creating account: No active Firebase Auth session. Re-verifying OTP to get custom token...');
+    if (!firebaseUser || firebaseUser.isAnonymous) {
+      console.log('[AUTH] Creating account: No custom-token Firebase Auth session. Verifying OTP to get custom token...');
       const verifyResult = await verifyOTP(email, otp);
       if (verifyResult.firebaseToken) {
         console.log('[AUTH] Creating account: Signing in with Custom Token...');
         const userCredential = await signInWithCustomToken(auth, verifyResult.firebaseToken);
         firebaseUser = userCredential.user;
       } else {
-        console.log('[AUTH] Creating account: Falling back to anonymous auth...');
-        const userCredential = await signInAnonymously(auth);
-        firebaseUser = userCredential.user;
+        throw new Error('Onboarding aborted: Backend did not return a Firebase custom token.');
       }
     }
 
-    console.log('[AUTH] Firebase Auth session user UID:', firebaseUser.uid);
+    // Assert and prove that the Firebase user is actually authenticated
+    if (!firebaseUser) {
+      console.error('[AUTH] ❌ CRITICAL ERROR: Aborting onboarding because Firebase Auth currentUser is null.');
+      throw new Error('Onboarding aborted: Authentication session was lost. Please verify OTP again.');
+    }
+
+    if (firebaseUser.isAnonymous) {
+      console.error('[AUTH] CRITICAL ERROR: Complete Profile is running with an anonymous Firebase session.');
+      throw new Error('Onboarding aborted: Custom-token authentication is required. Please restart signup.');
+    }
+
     await syncUserSession(firebaseUser.uid);
+
+    // Check if email already exists only after custom-token auth is established.
+    const emailExists = await checkEmailExists(fullEmail, { requireExistingAuth: true });
+    if (emailExists) {
+      const error = 'This email is already registered';
+      throw new Error(error);
+    }
+
+    console.log('[AUTH] Forensic Check Before First Firestore Write:');
+    console.log(`- auth.currentUser.uid: ${firebaseUser.uid}`);
+    console.log(`- auth.currentUser.email: ${firebaseUser.email || 'N/A'}`);
+    console.log(`- Firebase Auth State: Authenticated (isAnonymous: ${firebaseUser.isAnonymous})`);
+    console.log(`- User Document ID to write: ${firebaseUser.uid}`);
+    console.log(`- request.auth.uid (sent to Firestore): ${firebaseUser.uid}`);
+    
+    // Confirm auth.currentUser.uid equals the user document id
+    const docIdToWrite = firebaseUser.uid;
+    if (firebaseUser.uid !== docIdToWrite) {
+      console.error(`[AUTH] ❌ CRITICAL ERROR: Auth UID (${firebaseUser.uid}) does not match User Document ID (${docIdToWrite})`);
+      throw new Error('Onboarding aborted: Identity mismatch.');
+    }
+    console.log('✅ Forensic Check Passed: Auth UID matches User Document ID.');
 
     // Create user document in Firestore
     const userData: User = {
@@ -165,14 +187,22 @@ export const verifyOTPAndCreateAccount = async (
     };
 
     console.log('[AUTH] Creating account with profileComplete =', userData.profileComplete);
-    await setDoc(doc(db, 'users', firebaseUser.uid), userData);
+    await forensicTrace(
+      'setDoc',
+      'users',
+      firebaseUser.uid,
+      userData,
+      () => setDoc(doc(db, 'users', firebaseUser.uid), userData),
+      {
+        path: `users/${firebaseUser.uid}`,
+        destinationId: firebaseUser.uid,
+        contextUserId: firebaseUser.uid,
+      }
+    );
 
-    // Delete OTP after successful verification
-    await deleteOTP(email);
-    
     // Save user data to device storage for persistent login
     await saveUserToStorage(userData);
-    
+
     console.log('[AUTH] Account created successfully with profileComplete:', userData.profileComplete);
     return userData;
   } catch (error: any) {
@@ -195,7 +225,9 @@ export const verifyOTPAndLogin = async (email: string, otp: string): Promise<Use
 
     // Get user data from Firestore
     const usersQuery = query(collection(db, 'users'), where('email', '==', fullEmail));
-    const snapshot = await getDocs(usersQuery);
+    const snapshot = await forensicTrace('getDocs', 'users', null, { email: fullEmail }, () =>
+      getDocs(usersQuery)
+    );
 
     if (snapshot.empty) {
       throw new Error('User not found. Please sign up first.');
@@ -217,20 +249,17 @@ export const verifyOTPAndLogin = async (email: string, otp: string): Promise<Use
       console.warn('[AUTH] ⚠️ Driver license not verified - navigation guard will redirect to license verification');
     }
 
-    // Sign in using Custom Token or fallback to Anonymous
+    // Sign in using Custom Token. Do not fall back to anonymous auth; it can create
+    // a stale userSessions mapping and make getPersistentUserId() differ from uid.
     if (verifyResult.firebaseToken) {
       console.log('[AUTH] Login: Signing in with Custom Token...');
       await signInWithCustomToken(auth, verifyResult.firebaseToken);
     } else {
-      console.log('[AUTH] Login: Falling back to Anonymous Auth...');
-      await signInAnonymously(auth);
+      throw new Error('Login aborted: Backend did not return a Firebase custom token.');
     }
     console.log('[AUTH] Login: Firebase Auth completed. UID:', auth.currentUser?.uid, '| User Profile ID:', userData.id);
     console.log('[AUTH] Login: UIDs match?', auth.currentUser?.uid === userData.id);
-    await syncUserSession(userData.id);
-
-    // Delete OTP after successful verification
-    await deleteOTP(email);
+    await syncUserSession(auth.currentUser!.uid);
 
     // Save user data to device storage for persistent login
     console.log('[AUTH] Saving user to storage with profileComplete:', userData.profileComplete);
@@ -273,13 +302,53 @@ const ensureUserDefaults = (firestoreData: Record<string, any>): User => {
  * Get current user data
  */
 export const getCurrentUser = async (): Promise<User | null> => {
-  // First try to look up by the stored user ID (from original signup)
-  // This is necessary because signInAnonymously creates new UIDs each time
+  const activeFirebaseUser = auth.currentUser;
+
+  if (activeFirebaseUser && !activeFirebaseUser.isAnonymous) {
+    try {
+      const userRef = doc(db, 'users', activeFirebaseUser.uid);
+      const userDoc = await forensicTrace('getDoc', 'users', activeFirebaseUser.uid, null, () =>
+        getDoc(userRef)
+      );
+
+      if (userDoc.exists()) {
+        return ensureUserDefaults(userDoc.data());
+      }
+
+      const storedUser = await loadUserFromStorage();
+      if (storedUser) {
+        console.log('[AUTH] Firestore user doc not found. Re-creating on active UID:', activeFirebaseUser.uid);
+        const userData: User = {
+          ...storedUser,
+          id: activeFirebaseUser.uid,
+          updatedAt: new Date().toISOString(),
+        };
+        await forensicTrace('setDoc', 'users', activeFirebaseUser.uid, userData, () =>
+          setDoc(userRef, userData)
+        );
+        return userData;
+      }
+
+      return null;
+    } catch (error) {
+      console.error('[AUTH] Error looking up user by active Firebase UID:', error);
+      return null;
+    }
+  }
+
+  if (activeFirebaseUser?.isAnonymous) {
+    console.warn('[AUTH] Anonymous Firebase user ignored while resolving current user.');
+    return null;
+  }
+
+  // Cold-start cache fallback only. Any active custom-token Firebase user is handled above.
   try {
     const storedUser = await loadUserFromStorage();
     if (storedUser?.id) {
       const userRef = doc(db, 'users', storedUser.id);
-      const userDoc = await getDoc(userRef);
+      const userDoc = await forensicTrace('getDoc', 'users', storedUser.id, null, () =>
+        getDoc(userRef)
+      );
       if (userDoc.exists()) {
         return ensureUserDefaults(userDoc.data());
       } else {
@@ -290,7 +359,9 @@ export const getCurrentUser = async (): Promise<User | null> => {
           ...storedUser,
           updatedAt: new Date().toISOString(),
         };
-        await setDoc(userRef, userData);
+        await forensicTrace('setDoc', 'users', storedUser.id, userData, () =>
+          setDoc(userRef, userData)
+        );
         console.log('[AUTH] ✅ Re-created user document in Firestore.');
         return userData;
       }
@@ -307,7 +378,9 @@ export const getCurrentUser = async (): Promise<User | null> => {
 
   try {
     const userRef = doc(db, 'users', firebaseUser.uid);
-    const userDoc = await getDoc(userRef);
+    const userDoc = await forensicTrace('getDoc', 'users', firebaseUser.uid, null, () =>
+      getDoc(userRef)
+    );
 
     if (!userDoc.exists()) {
       // If Firebase user is authenticated but no Firestore doc exists,
@@ -320,7 +393,9 @@ export const getCurrentUser = async (): Promise<User | null> => {
           id: firebaseUser.uid, // Sync ID with active Auth UID
           updatedAt: new Date().toISOString(),
         };
-        await setDoc(userRef, userData);
+        await forensicTrace('setDoc', 'users', firebaseUser.uid, userData, () =>
+          setDoc(userRef, userData)
+        );
         console.log('[AUTH] ✅ Re-created user document on active UID.');
         return userData;
       }
@@ -370,25 +445,28 @@ export const verifyOTPAndAutoAuth = async (email: string, otp: string): Promise<
     const verifyResult = await verifyOTP(email, otp);
     console.log('[AUTH] ✅ OTP verified successfully', verifyResult);
 
-    // Sign in using Custom Token or fallback to Anonymous immediately
+    // Sign in using Custom Token immediately. Do not fall back to anonymous auth;
+    // getPersistentUserId() must resolve to this custom-token uid.
     if (verifyResult.firebaseToken) {
       console.log('[AUTH] Auto-Auth: Signing in with Custom Token...');
       await signInWithCustomToken(auth, verifyResult.firebaseToken);
     } else {
-      console.log('[AUTH] Auto-Auth: Falling back to Anonymous Auth...');
-      await signInAnonymously(auth);
+      throw new Error('OTP verified but backend did not return a Firebase custom token.');
     }
     console.log('[AUTH] Auto-Auth: Firebase Auth completed. UID:', auth.currentUser?.uid);
+    await syncUserSession(auth.currentUser!.uid);
 
     // Check if email exists
-    const emailExists = await checkEmailExists(fullEmail);
+    const emailExists = await checkEmailExists(fullEmail, { requireExistingAuth: true });
     console.log('[AUTH] checkEmailExists result =', emailExists, 'for email:', fullEmail);
 
     if (emailExists) {
       // Existing user - login
       console.log('[AUTH] Existing user found, fetching user data from Firestore...');
       const usersQuery = query(collection(db, 'users'), where('email', '==', fullEmail));
-      const snapshot = await getDocs(usersQuery);
+      const snapshot = await forensicTrace('getDocs', 'users', null, { email: fullEmail }, () =>
+        getDocs(usersQuery)
+      );
 
       if (snapshot.empty) {
         console.error('[AUTH] ❌ User email found but no user document in Firestore');
@@ -400,7 +478,6 @@ export const verifyOTPAndAutoAuth = async (email: string, otp: string): Promise<
       
       console.log('[AUTH] Auto-Auth: Firebase Auth UID:', auth.currentUser?.uid, '| User Profile ID:', userData.id);
       console.log('[AUTH] Auto-Auth: UIDs match?', auth.currentUser?.uid === userData.id);
-      await syncUserSession(userData.id);
       
       console.log('[AUTH] Firestore user data:', {
         id: userData.id,
@@ -418,10 +495,6 @@ export const verifyOTPAndAutoAuth = async (email: string, otp: string): Promise<
       if (userData.role === 'driver' && !userData.licenseVerified) {
         console.warn('[AUTH] ⚠️ Driver license not verified yet - user will be redirected to license verification');
       }
-
-      // Delete OTP after successful verification
-      await deleteOTP(email);
-      console.log('[AUTH] ✅ OTP deleted');
 
       // Save user data to device storage for persistent login
       console.log('[AUTH] Saving user to storage with profileComplete:', userData.profileComplete);
@@ -453,12 +526,23 @@ export const verifyOTPAndAutoAuth = async (email: string, otp: string): Promise<
 /**
  * Update user profile
  */
-export const updateUserProfile = async (userId: string, updates: Partial<User>): Promise<void> => {
+export const updateUserProfile = async (userId: string, updates: Partial<User>): Promise<User> => {
   try {
-    await updateDoc(doc(db, 'users', userId), {
+    const userRef = doc(db, 'users', userId);
+    const updatePayload = {
       ...updates,
       updatedAt: new Date().toISOString(),
-    });
+    };
+    await forensicTrace('updateDoc', 'users', userId, updatePayload, () =>
+      updateDoc(userRef, updatePayload)
+    );
+    const userDoc = await forensicTrace('getDoc', 'users', userId, null, () =>
+      getDoc(userRef)
+    );
+    if (userDoc.exists()) {
+      return ensureUserDefaults(userDoc.data());
+    }
+    throw new Error('User document not found after update');
   } catch (error: any) {
     throw {
       code: error.code || 'UPDATE_PROFILE_ERROR',

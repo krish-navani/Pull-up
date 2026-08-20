@@ -98,15 +98,22 @@ recipientId: ${userId}
 token: ${token}
 type: ${type}`);
 
+
+  let targetScreen: string | null = null;
+  let targetId: string | null = null;
+
   try {
     // 1. Determine target screen routing metadata for deep links
-    let targetScreen: string | null = null;
-    let targetId: string | null = null;
-
     if (type === 'message') {
       targetScreen = 'group-chat';
       targetId = rideId;
-    } else if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'pool_full', 'cancellation'].includes(type)) {
+    } else if (['booking_request', 'booking_accepted', 'booking_rejected'].includes(type)) {
+      targetScreen = 'my-bookings';
+      targetId = bookingId || rideId;
+    } else if (['ride_started', 'driver_arrived', 'passenger_confirmed_pickup', 'live_tracking', 'live-tracking', 'location_update'].includes(type)) {
+      targetScreen = 'navigation';
+      targetId = rideId;
+    } else if (['ride_completed', 'ride_cancelled', 'pool_full', 'cancellation'].includes(type)) {
       targetScreen = 'ride-details';
       targetId = rideId;
     } else if (['payment_required', 'payment_failed', 'booking_expired'].includes(type)) {
@@ -174,6 +181,8 @@ type: ${type}`);
       read: false,
       createdAt: serverTimestamp(),
       actionUrl: actionUrl || null,
+      targetScreen: targetScreen || null,
+      targetId: targetId || null,
     });
 
     return notificationDoc.id;
@@ -221,6 +230,26 @@ export const subscribeToNotifications = (
       q,
       (querySnapshot) => {
         const notifications: Notification[] = [];
+
+        querySnapshot.docChanges().forEach((change) => {
+          if (change.type === 'added') {
+            const notifData = change.doc.data();
+            const createdTime = notifData.createdAt ? new Date(notifData.createdAt).getTime() : 0;
+            if (Date.now() - createdTime < 2 * 60 * 1000) {
+              Notifications.scheduleNotificationAsync({
+                content: {
+                  title: notifData.title || 'PullUp Alert',
+                  body: notifData.message || '',
+                  sound: 'default',
+                  channelId: 'default',
+                  badge: 1,
+                  data: notifData,
+                },
+                trigger: null,
+              }).catch((err) => console.warn('[NOTIFICATIONS] Error scheduling tray notification:', err));
+            }
+          }
+        });
 
         querySnapshot.forEach((doc) => {
           notifications.push({

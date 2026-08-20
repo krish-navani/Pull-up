@@ -16,7 +16,7 @@ import { useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAppContext } from '@/context/AppContext';
 import { WARM_CORE } from '@/constants/theme';
-import { db } from '@/utils/firebase';
+import { db, auth } from '@/utils/firebase';
 import { collection, query, where, onSnapshot, doc, getDoc, limitToLast, orderBy } from 'firebase/firestore';
 
 interface ChatRoomData {
@@ -39,17 +39,23 @@ interface ChatRoomData {
 
 export default function ChatsScreen() {
   const router = useRouter();
-  const { auth } = useAppContext();
+  const { auth: authState, firebaseAuthReady } = useAppContext();
   const [chatRooms, setChatRooms] = useState<ChatRoomData[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [roomsMeta, setRoomsMeta] = useState<{ [key: string]: any }>({});
 
-  const currentUserId = auth.user?.id;
+  const currentUserId = authState.user?.id;
+
+  const canStartRealtimeListeners =
+    firebaseAuthReady &&
+    authState.isSignedIn &&
+    !!auth.currentUser &&
+    !!currentUserId;
 
   // 1. Subscribe to chat rooms
   useEffect(() => {
-    if (!currentUserId) {
+    if (!canStartRealtimeListeners) {
       setLoading(false);
       return;
     }
@@ -132,11 +138,11 @@ export default function ChatsScreen() {
     });
 
     return () => unsubRooms();
-  }, [currentUserId]);
+  }, [canStartRealtimeListeners, currentUserId]);
 
   // 2. Subscribe to messages of each room to calculate specific unreadCounts dynamically
   useEffect(() => {
-    if (chatRooms.length === 0 || !currentUserId) return;
+    if (chatRooms.length === 0 || !canStartRealtimeListeners) return;
 
     const messageUnsubs: { [roomId: string]: () => void } = {};
 
@@ -166,7 +172,7 @@ export default function ChatsScreen() {
     return () => {
       Object.values(messageUnsubs).forEach(unsub => unsub());
     };
-  }, [chatRooms.length, currentUserId]);
+  }, [chatRooms.length, canStartRealtimeListeners, currentUserId]);
 
   // Format Room List (merge metadata and sort client-side)
   const formattedRooms = useMemo(() => {

@@ -11,7 +11,7 @@ import {
 } from 'firebase/firestore';
 import { Booking, Ride, User } from '../types';
 import { auth, db } from './firebase';
-import { signInAnonymously } from 'firebase/auth';
+import { forensicTrace } from './forensicLogger';
 
 /**
  * Get profile statistics for a driver
@@ -259,9 +259,11 @@ const ensureUserDefaults = (firestoreData: Record<string, any>): User => {
  */
 const ensureAuthSession = async () => {
   if (!auth.currentUser) {
-    console.log('[PROFILE] No active Firebase Auth session. Signing in anonymously...');
-    const credential = await signInAnonymously(auth);
-    console.log('[PROFILE] ✅ Anonymous session established:', credential.user.uid);
+    throw new Error('Profile write blocked: auth.currentUser is null.');
+  }
+
+  if (auth.currentUser.isAnonymous) {
+    throw new Error('Profile write blocked: auth.currentUser is anonymous.');
   }
 };
 
@@ -282,11 +284,34 @@ export const updateUserProfile = async (
       updatedAt: new Date().toISOString(),
     };
 
-    await setDoc(userRef, updateData, { merge: true });
+    await forensicTrace(
+      'setDoc',
+      'users',
+      userId,
+      updateData,
+      () => setDoc(userRef, updateData, { merge: true }),
+      {
+        path: `users/${userId}`,
+        destinationId: userId,
+        merge: true,
+        contextUserId: userId,
+      }
+    );
     console.log('[PROFILE] ✅ Profile updated/created successfully');
 
     // Return updated user with safe defaults
-    const userDoc = await getDoc(userRef);
+    const userDoc = await forensicTrace(
+      'getDoc',
+      'users',
+      userId,
+      null,
+      () => getDoc(userRef),
+      {
+        path: `users/${userId}`,
+        destinationId: userId,
+        contextUserId: userId,
+      }
+    );
     if (userDoc.exists()) {
       return ensureUserDefaults(userDoc.data());
     }
@@ -445,7 +470,18 @@ export const switchUserRole = async (userId: string, newRole: 'driver' | 'passen
     // When switching to driver, ensure license fields are set.
     // Reset to unverified state if the license hasn't been verified yet.
     // This handles passengers (licenseVerified=false) as well as truly new drivers (undefined).
-    const existingDoc = await getDoc(userRef);
+    const existingDoc = await forensicTrace(
+      'getDoc',
+      'users',
+      userId,
+      null,
+      () => getDoc(userRef),
+      {
+        path: `users/${userId}`,
+        destinationId: userId,
+        contextUserId: userId,
+      }
+    );
     if (existingDoc.exists()) {
       const existingData = existingDoc.data();
       if (newRole === 'driver') {
@@ -486,12 +522,35 @@ export const switchUserRole = async (userId: string, newRole: 'driver' | 'passen
     
     console.log('[PROFILE] 📍 Attempting to update/create with data:', updateData);
     
-    await setDoc(userRef, updateData, { merge: true });
+    await forensicTrace(
+      'setDoc',
+      'users',
+      userId,
+      updateData,
+      () => setDoc(userRef, updateData, { merge: true }),
+      {
+        path: `users/${userId}`,
+        destinationId: userId,
+        merge: true,
+        contextUserId: userId,
+      }
+    );
 
     console.log('[PROFILE] ✅ Role switched successfully');
 
     // Return updated user with safe defaults
-    const userDoc = await getDoc(userRef);
+    const userDoc = await forensicTrace(
+      'getDoc',
+      'users',
+      userId,
+      null,
+      () => getDoc(userRef),
+      {
+        path: `users/${userId}`,
+        destinationId: userId,
+        contextUserId: userId,
+      }
+    );
     if (userDoc.exists()) {
       const updatedUser = ensureUserDefaults(userDoc.data());
       

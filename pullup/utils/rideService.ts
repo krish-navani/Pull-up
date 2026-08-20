@@ -133,7 +133,7 @@ export const createRideInFirestore = async (
   rideData: {
     pickupLocation: Location;
     dropLocation: Location;
-    departureTime: string; // ISO format
+    departureTime: string;
     price: number;
     availableSeats: number;
     totalSeats: number;
@@ -147,9 +147,7 @@ export const createRideInFirestore = async (
     baselineDurationSeconds?: number;
   }
 ): Promise<string> => {
-  try {
-    console.log('[RIDE SERVICE] Creating ride for driver:', driverId);
-
+  const createRideDirectlyInFirestore = async (): Promise<string> => {
     const generateSearchIndex = (pickup: Location, drop: Location, dName: string): string[] => {
       const tokens = new Set<string>();
       const addTokens = (text?: string) => {
@@ -179,6 +177,7 @@ export const createRideInFirestore = async (
       carColor: rideData.carColor || '',
       description: rideData.description || '',
       createdAt: Timestamp.now(),
+      updatedAt: Timestamp.now(),
       status: 'active',
       bookedSeats: [],
       detourRadiusMeters: rideData.detourRadiusMeters ?? 0,
@@ -196,22 +195,43 @@ export const createRideInFirestore = async (
       optimizationSource: 'google',
     };
 
-    console.log('[RIDE SERVICE] Ride data to save:', firebaseRideData);
-
-    // Add document to rides collection (auto-generates ID)
+    console.warn('[RIDE SERVICE] Falling back to direct Firestore ride creation because the deployed backend route is missing.');
     const docRef = await addDoc(collection(db, 'rides'), firebaseRideData);
-    
-    // Initialize group chat for the ride
+
     try {
       await initializeGroupChat(docRef.id, 'carpool', driverId, driverName);
     } catch (chatErr) {
       console.warn('[RIDE SERVICE] Failed to initialize group chat:', chatErr);
     }
 
-    console.log('[RIDE SERVICE] ✅ Ride created successfully with ID:', docRef.id);
     return docRef.id;
+  };
+
+  try {
+    console.log('[RIDE SERVICE] Creating ride via backend for driver:', driverId);
+
+    const response = await apiClient.post('/create-ride', rideData);
+    if (!response.data?.success || !response.data?.rideId) {
+      throw new Error(response.data?.message || 'Failed to create ride');
+    }
+
+    console.log('[RIDE SERVICE] ✅ Ride created successfully with ID:', response.data.rideId);
+    return response.data.rideId;
   } catch (error: any) {
     console.error('[RIDE SERVICE] ❌ Failed to create ride:', error);
+    if (error?.status === 404 && error?.code === 'NOT_FOUND') {
+      try {
+        const rideId = await createRideDirectlyInFirestore();
+        console.log('[RIDE SERVICE] ✅ Ride created via Firestore fallback with ID:', rideId);
+        return rideId;
+      } catch (fallbackError: any) {
+        console.error('[RIDE SERVICE] ❌ Firestore fallback ride creation failed:', fallbackError);
+        throw {
+          code: fallbackError.code || 'CREATE_RIDE_ERROR',
+          message: fallbackError.message || 'Failed to create ride',
+        };
+      }
+    }
     throw {
       code: error.code || 'CREATE_RIDE_ERROR',
       message: error.message || 'Failed to create ride',
@@ -648,7 +668,7 @@ export const completeRide = async (rideId: string): Promise<void> => {
  * Delete rides that have expired (departure time is more than 6 hours in the past)
  * Called periodically to clean up old/expired rides from the database
  */
-export const deleteExpiredRides = async (): Promise<number> => {
+export const deleteExpiredRides = async (currentUserId?: string): Promise<number> => {
   try {
     console.log('[RIDE SERVICE] Checking for expired rides...');
     
@@ -669,7 +689,10 @@ export const deleteExpiredRides = async (): Promise<number> => {
       try {
         const data = doc.data();
         const departureDate = new Date(data.departureTime);
-        if (departureDate.getTime() < sixHoursAgo.getTime()) {
+        if (
+          departureDate.getTime() < sixHoursAgo.getTime() &&
+          (!currentUserId || data.driverId === currentUserId)
+        ) {
           await deleteDoc(doc.ref);
           deletedCount++;
           console.log('[RIDE SERVICE] ✅ Deleted expired ride:', doc.id);
@@ -694,7 +717,7 @@ export const deleteExpiredRides = async (): Promise<number> => {
  * Auto-delete ongoing rides that have been in_progress for more than 5 hours.
  * Sends a push notification to the driver informing them that the ride was stopped.
  */
-export const cleanupStaleInProgressRides = async (): Promise<number> => {
+export const cleanupStaleInProgressRides = async (currentUserId?: string): Promise<number> => {
   try {
     console.log('[RIDE SERVICE] Checking for stale in-progress rides (>5 hrs)...');
     const now = new Date();
@@ -711,6 +734,10 @@ export const cleanupStaleInProgressRides = async (): Promise<number> => {
     for (const docSnap of querySnapshot.docs) {
       try {
         const data = docSnap.data();
+        if (currentUserId && data.driverId !== currentUserId) {
+          continue;
+        }
+
         const startTimeStr = data.startedAt || data.departureTime;
         if (!startTimeStr) continue;
 
@@ -753,7 +780,7 @@ export const cleanupStaleInProgressRides = async (): Promise<number> => {
  */
 let rideCleanupInterval: any = null;
 
-export const startRideCleanupScheduler = (): void => {
+export const startRideCleanupScheduler = (currentUserId?: string): void => {
   if (rideCleanupInterval) {
     console.log('[RIDE SERVICE] Ride cleanup scheduler already running');
     return;
@@ -762,8 +789,8 @@ export const startRideCleanupScheduler = (): void => {
   console.log('[RIDE SERVICE] Starting ride cleanup scheduler...');
   
   const runCleanups = () => {
-    deleteExpiredRides().catch(err => console.error('[RIDE SERVICE] Expired cleanup failed:', err));
-    cleanupStaleInProgressRides().catch(err => console.error('[RIDE SERVICE] Stale cleanup failed:', err));
+    deleteExpiredRides(currentUserId).catch(err => console.error('[RIDE SERVICE] Expired cleanup failed:', err));
+    cleanupStaleInProgressRides(currentUserId).catch(err => console.error('[RIDE SERVICE] Stale cleanup failed:', err));
   };
 
   // Run immediately on start

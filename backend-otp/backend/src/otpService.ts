@@ -25,23 +25,19 @@ const getOTPDocId = (email: string): string => {
   return email.replace(/[.@]/g, '_').toLowerCase();
 };
 
-export const sendOTP = async (email: string): Promise<{ success: boolean; message: string; otp: string }> => {
+export const sendOTP = async (email: string): Promise<{ success: boolean; message: string; otp: string; expiresAt: Date; createdAt: Date }> => {
+  const tStart = Date.now();
   try {
     const db = getDb();
     const docId = getOTPDocId(email);
     
-    console.log(`[OTP] Generate request for: ${email}`);
-    
-    // Delete any existing OTP for this email
-    try {
-      await db.collection('otpVerification').doc(docId).delete();
-      console.log(`[OTP] Deleted previous OTP for: ${email}`);
-    } catch (e) {
-      // Document might not exist, that's fine
-    }
+    console.log(`[OTP DIAGNOSTICS] Generate request for: ${email}`);
 
     // Generate new OTP
+    const tGenStart = Date.now();
     const otp = generateOTP();
+    const tGenEnd = Date.now();
+
     if (config.nodeEnv !== 'production') {
       console.log(`\n[DEV ONLY] 🔑 Generated OTP Code: ${otp} for email: ${email}\n`);
     }
@@ -60,17 +56,22 @@ export const sendOTP = async (email: string): Promise<{ success: boolean; messag
       used: false,
     };
 
-    // Save to Firestore
+    // Save to Firestore (doc.set overwrites cleanly without needing a prior delete roundtrip)
+    const tWriteStart = Date.now();
     await db.collection('otpVerification').doc(docId).set(otpData);
-    console.log(`[OTP] Saved to Firestore for: ${email}`);
+    const tWriteEnd = Date.now();
+
+    console.log(`[OTP DIAGNOSTICS] OTP Gen: ${tGenEnd - tGenStart}ms | Firestore Write: ${tWriteEnd - tWriteStart}ms | Total DB Prep: ${tWriteEnd - tStart}ms`);
 
     return {
       success: true,
       message: 'OTP generated and will be sent via email',
       otp,
+      createdAt: now.toDate(),
+      expiresAt: expiresAt.toDate(),
     };
   } catch (error: any) {
-    console.error(`[OTP] Failed to generate:`, error.message);
+    console.error(`[OTP DIAGNOSTICS] Failed to generate after ${Date.now() - tStart}ms:`, error.message);
     throw {
       code: 'OTP_GENERATION_FAILED',
       message: error.message || 'Failed to generate OTP',

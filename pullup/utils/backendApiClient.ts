@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
 import { Platform } from 'react-native';
 import { OTP_BACKEND_URL } from '@/config/environment';
+import { auth } from '@/utils/firebase';
 
 const REMOTE_BACKEND_URL = OTP_BACKEND_URL;
 
@@ -28,12 +29,18 @@ const addBypassToken = (url: string): string => {
 
 // Request interceptor for logging
 apiClient.interceptors.request.use(
-  (config) => {
+  async (config) => {
     console.log(`[BACKEND-API] ${config.method?.toUpperCase()} ${config.url}`);
     
     // Add bypass token to headers if available
     if (BYPASS_TOKEN) {
       config.headers['x-vercel-protection-bypass'] = BYPASS_TOKEN;
+    }
+
+    const firebaseUser = auth.currentUser;
+    if (firebaseUser && !firebaseUser.isAnonymous) {
+      const idToken = await firebaseUser.getIdToken();
+      config.headers.Authorization = `Bearer ${idToken}`;
     }
     
     return config;
@@ -132,6 +139,26 @@ export const verifyOTPViaBackend = async (
 };
 
 /**
+ * Refresh/mint Firebase Custom Token for persistent logged-in user
+ */
+export const refreshCustomTokenViaBackend = async (
+  userId: string
+): Promise<{ success: boolean; firebaseToken?: string }> => {
+  try {
+    console.log('[BACKEND-API] Refreshing custom token for user:', userId);
+    const response = await apiClient.post('/refresh-custom-token', { userId });
+    if (response.data.success && response.data.firebaseToken) {
+      console.log('[BACKEND-API] ✅ Custom token refreshed successfully');
+      return { success: true, firebaseToken: response.data.firebaseToken };
+    }
+    return { success: false };
+  } catch (error: any) {
+    console.error('[BACKEND-API] Failed to refresh custom token:', error?.message || error);
+    return { success: false };
+  }
+};
+
+/**
  * Check backend health
  */
 export const checkBackendHealth = async (): Promise<boolean> => {
@@ -147,3 +174,4 @@ export const checkBackendHealth = async (): Promise<boolean> => {
 };
 
 export default apiClient;
+

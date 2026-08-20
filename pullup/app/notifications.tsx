@@ -203,17 +203,17 @@ export default function NotificationsScreen() {
         if (targetScreen === 'my-bookings' || targetScreen === 'bookings') {
           router.push({
             pathname: '/(tabs)/my-bookings',
-            params: { bookingId: targetId },
+            params: { bookingId: targetId, rideId: notification.rideId || '' },
           } as any);
         } else if (targetScreen === 'ride-details') {
           router.push({
             pathname: '/ride-details',
-            params: { rideId: targetId },
+            params: { rideId: targetId, bookingId: notification.bookingId || '' },
           } as any);
         } else if (targetScreen === 'group-chat' || targetScreen === 'chat') {
           router.push({
             pathname: '/group-chat',
-            params: { rideId: targetId },
+            params: { rideId: targetId, bookingId: notification.bookingId || '' },
           } as any);
         } else if (targetScreen === 'taxi-pool-details') {
           router.push({

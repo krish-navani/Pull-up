@@ -533,11 +533,7 @@
 const BACKEND_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:3000' : 'https://backend-eight-gamma-77.vercel.app';
 
-const ADMIN_SECRET = (() => {
-    // Try to read from localStorage (admin can store it once)
-    return localStorage.getItem('pullup_admin_secret') || prompt('Enter Admin Secret (PULLUP_ADMIN_SECRET):') || '';
-})();
-if (ADMIN_SECRET) localStorage.setItem('pullup_admin_secret', ADMIN_SECRET);
+const ADMIN_SECRET = prompt('Enter Admin Secret (PULLUP_ADMIN_SECRET):') || '';
 
 const firebaseConfig = {
     apiKey: "AIzaSyDAH_IkC3mEa0I3K58YZ6NnnCNWH7u7v98",
@@ -555,51 +551,13 @@ const auth = firebase.auth();
 let allUsers = [], allRides = [], allBookings = [], allAuditLogs = [], globalStats = {};
 let currentLicUser = null;
 
-// ── PIN Lock ─────────────────────────────────────────────────────────────────
-const CORRECT_PIN = '100726';
-const SESSION_KEY = 'pullup_admin_auth_v2';
-let pinBuffer = '', wrongAttempts = 0, lockoutUntil = 0;
-
-function renderDots() {
-    document.querySelectorAll('.pin-dot').forEach((d,i) => {
-        d.classList.toggle('filled', i < pinBuffer.length);
-        d.classList.remove('error');
-    });
-}
-function pinError(msg) {
-    document.querySelectorAll('.pin-dot').forEach(d => { d.classList.remove('filled'); d.classList.add('error'); });
-    document.getElementById('pinError').textContent = msg;
-    pinBuffer = '';
-    setTimeout(() => document.querySelectorAll('.pin-dot').forEach(d => d.classList.remove('error')), 600);
-}
-function pressKey(val) {
-    const now = Date.now();
-    if (now < lockoutUntil) { document.getElementById('pinError').textContent = `Locked. Wait ${Math.ceil((lockoutUntil-now)/1000)}s.`; return; }
-    if (val === 'del') { pinBuffer = pinBuffer.slice(0,-1); renderDots(); document.getElementById('pinError').textContent=''; return; }
-    if (pinBuffer.length >= 6) return;
-    pinBuffer += val; renderDots();
-    if (pinBuffer.length === 6) setTimeout(checkPin, 120);
-}
-function checkPin() {
-    if (pinBuffer === CORRECT_PIN) {
-        sessionStorage.setItem(SESSION_KEY, '1');
-        document.getElementById('pinOverlay').classList.add('hidden');
-        initialize();
-    } else {
-        wrongAttempts++;
-        if (wrongAttempts >= 3) { lockoutUntil = Date.now()+30000; pinError('Too many attempts. Locked 30s.'); wrongAttempts=0; } 
-        else { pinError(`Wrong PIN. ${3-wrongAttempts} attempt(s) left.`); }
-    }
-}
+// ── Access Gate ──────────────────────────────────────────────────────────────
+// Admin authorization is enforced by the backend on every request. The frontend
+// does not contain hardcoded PINs or persist the admin secret.
 document.addEventListener('DOMContentLoaded', () => {
-    if (sessionStorage.getItem(SESSION_KEY) === '1') { document.getElementById('pinOverlay').classList.add('hidden'); initialize(); }
-    document.addEventListener('keydown', e => {
-        if (document.getElementById('pinOverlay').classList.contains('hidden')) return;
-        if (e.key >= '0' && e.key <= '9') pressKey(e.key);
-        if (e.key === 'Backspace') pressKey('del');
-    });
+    document.getElementById('pinOverlay').classList.add('hidden');
+    initialize();
 });
-
 // ── Initialize ────────────────────────────────────────────────────────────────
 async function initialize() {
     document.getElementById('mainContent').style.display = 'block';

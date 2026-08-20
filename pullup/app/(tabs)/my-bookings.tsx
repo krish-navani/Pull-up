@@ -6,6 +6,7 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as WebBrowser from 'expo-web-browser';
 import apiClient from '@/utils/backendApiClient';
+import { OTP_BACKEND_URL } from '@/config/environment';
 import {
     ActivityIndicator,
     Alert,
@@ -28,7 +29,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { subscribeToCreatorPools, subscribeToMemberPools, TaxiPool } from '@/utils/taxiPoolService';
 import { collection, doc, onSnapshot, query, where, getDoc, updateDoc, Timestamp } from 'firebase/firestore';
-import { db } from '@/utils/firebase';
+import { db, auth as firebaseAuth } from '@/utils/firebase';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import { fetchRoute } from '@/utils/routeUtils';
 import { getRideDirectionType } from '@/utils/atlasLocationUtils';
@@ -302,6 +303,7 @@ export default function MyBookingsScreen() {
     bookings, 
     rides, 
     auth, 
+    firebaseAuthReady,
     cancelBooking, 
     loadPassengerBookings, 
     loadAllAvailableRides,
@@ -312,6 +314,12 @@ export default function MyBookingsScreen() {
     startRide,
     completeRide
   } = useAppContext();
+
+  const canStartRealtimeListeners =
+    firebaseAuthReady &&
+    auth.isSignedIn &&
+    !!firebaseAuth.currentUser &&
+    !!auth.user?.id;
   const [cancelBookingId, setCancelBookingId] = useState<string | null>(null);
   const [isCancelingBooking, setIsCancelingBooking] = useState(false);
   const [isProcessingPayment, setIsProcessingPayment] = useState(false);
@@ -358,35 +366,22 @@ export default function MyBookingsScreen() {
       });
 
       if (res.data?.success) {
-        const { orderId } = res.data;
-        
-        console.log('[MY-BOOKINGS] (BYPASS MODE) Directly verifying payment order:', orderId);
-        const verifyRes = await apiClient.post('/verify-payment', {
-          razorpay_payment_id: `pay_mock_${Math.random().toString(36).substring(7)}`,
-          razorpay_order_id: orderId,
-          razorpay_signature: `sig_mock_${Math.random().toString(36).substring(7)}`,
-          bookingId,
-        });
+        const { orderId, amount } = res.data;
+        const checkoutUrl =
+          `${OTP_BACKEND_URL}/api/otp/checkout-page?type=booking` +
+          `&orderId=${encodeURIComponent(orderId)}` +
+          `&amount=${encodeURIComponent(String(amount))}` +
+          `&bookingId=${encodeURIComponent(bookingId)}`;
 
-        if (verifyRes.data?.success) {
-          if (auth.user?.id) {
-            await loadPassengerBookings(auth.user.id);
-            await loadAllAvailableRides();
-          }
-          Alert.alert('Success 🎉', 'Payment verified and booking confirmed! (Bypassed Razorpay WebView)');
-        } else {
-          throw new Error(verifyRes.data?.message || 'Verification failed');
-        }
+        await WebBrowser.openBrowserAsync(checkoutUrl);
       } else {
         throw new Error(res.data?.message || 'Failed to create payment order');
       }
     } catch (err: any) {
       Alert.alert('Error', err?.message || 'Failed to initiate payment.');
-    } finally {
       setIsProcessingPayment(false);
     }
   };
-
   const updateBookingTransitState = async (
     bookingId: string,
     rideId: string,
@@ -434,14 +429,15 @@ export default function MyBookingsScreen() {
 
   // Listen to bookings for the selected hosted ride in real-time (bypassing context bookings array)
   useEffect(() => {
-    if (!selectedRideForDetails || !auth.user) {
+    const currentUserId = auth.user?.id;
+    if (!canStartRealtimeListeners || !selectedRideForDetails || !currentUserId) {
       setSelectedRideBookings([]);
       return;
     }
     const q = query(
       collection(db, 'bookings'),
       where('rideId', '==', selectedRideForDetails),
-      where('driverId', '==', auth.user.id)
+      where('driverId', '==', currentUserId)
     );
     console.log('[MY-BOOKINGS] Subscribing to bookings for hosted ride:', selectedRideForDetails);
     const unsubscribe = onSnapshot(q, (snapshot) => {
@@ -451,8 +447,10 @@ export default function MyBookingsScreen() {
     }, (err) => {
       console.error('[MY-BOOKINGS] Ride bookings subscription error:', err);
     });
-    return () => unsubscribe();
-  }, [selectedRideForDetails]);
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [selectedRideForDetails, canStartRealtimeListeners, auth.user?.id]);
   const [selectedStatus, setSelectedStatus] = useState<'active' | 'in_progress' | 'completed' | 'cancelled'>('active');
   const [joinedTaxiPools, setJoinedTaxiPools] = useState<TaxiPool[]>([]);
   const [createdTaxiPools, setCreatedTaxiPools] = useState<TaxiPool[]>([]);
@@ -473,23 +471,24 @@ export default function MyBookingsScreen() {
 
   // Subscribe to taxi pools in real time
   useEffect(() => {
-    if (!auth.user?.id) return;
+    const currentUserId = auth.user?.id;
+    if (!canStartRealtimeListeners || !currentUserId) return;
     
-    console.log('[MY COMMUTES] Subscribing to member pools for:', auth.user.id);
-    const unsubJoined = subscribeToMemberPools(auth.user.id, (pools) => {
+    console.log('[MY COMMUTES] Subscribing to member pools for:', currentUserId);
+    const unsubJoined = subscribeToMemberPools(currentUserId, (pools) => {
       setJoinedTaxiPools(pools);
     });
 
-    console.log('[MY COMMUTES] Subscribing to creator pools for:', auth.user.id);
-    const unsubCreated = subscribeToCreatorPools(auth.user.id, (pools) => {
+    console.log('[MY COMMUTES] Subscribing to creator pools for:', currentUserId);
+    const unsubCreated = subscribeToCreatorPools(currentUserId, (pools) => {
       setCreatedTaxiPools(pools);
     });
 
     return () => {
-      unsubJoined();
-      unsubCreated();
+      if (unsubJoined) unsubJoined();
+      if (unsubCreated) unsubCreated();
     };
-  }, [auth.user?.id]);
+  }, [canStartRealtimeListeners, auth.user?.id]);
 
   // Cinematic 2-stage stagger on mount
   useEffect(() => {

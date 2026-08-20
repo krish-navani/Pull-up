@@ -290,4 +290,5 @@ export interface AppContextType {
   getVehicleInfo: (driverId: string) => Promise<any>;
   updateProfileData: (userId: string, updates: Partial<User>) => Promise<User>;
   unreadChatsCount?: number;
+  firebaseAuthReady?: boolean;
 }

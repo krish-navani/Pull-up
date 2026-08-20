@@ -103,7 +103,7 @@ function RootLayoutContent() {
             resolvedScreen = 'wallet';
           } else if (type === 'marketing') {
             resolvedScreen = 'notifications';
-          } else if (['driver_arrived', 'passenger_confirmed_pickup', 'ride_started'].includes(type)) {
+          } else if (['driver_arrived', 'passenger_confirmed_pickup', 'ride_started', 'live_tracking', 'live-tracking', 'location_update'].includes(type)) {
             // Live tracking events — open the navigation screen directly
             resolvedScreen = 'navigation';
           }
@@ -153,6 +153,18 @@ function RootLayoutContent() {
           handleNotificationRouting(remoteMessage.data);
         }
       });
+    }
+
+    Notifications.requestPermissionsAsync().catch(() => {});
+    if (Platform.OS === 'android') {
+      Notifications.setNotificationChannelAsync('default', {
+        name: 'PullUp alerts',
+        importance: Notifications.AndroidImportance.MAX,
+        vibrationPattern: [0, 250, 250, 250],
+        lightColor: '#D4500A',
+        sound: 'default',
+        showBadge: true,
+      }).catch(() => {});
     }
 
     Notifications.getLastNotificationResponseAsync()

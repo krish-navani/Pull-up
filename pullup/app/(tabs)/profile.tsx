@@ -620,7 +620,7 @@ export default function ProfileScreen() {
               <View style={styles.idCardGlow} />
               
               <View style={styles.idCardHeaderRow}>
-                <TouchableOpacity onPress={handleProfilePicturePress} activeOpacity={0.8} style={{ position: 'relative' }}>
+                <TouchableOpacity onPress={handleProfilePicturePress} activeOpacity={0.8} style={{ position: 'relative', flexShrink: 0 }}>
                   <PulsingAvatarRing isVerified={auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'verified'}>
                     <UserAvatar imageUrl={auth.user?.profileImage} name={auth.user?.fullName} size={64} />
                   </PulsingAvatarRing>
@@ -658,7 +658,7 @@ export default function ProfileScreen() {
                 </TouchableOpacity>
 
                 <View style={styles.userInfoContainer}>
-                  <Text style={styles.fullName}>{auth.user.fullName}</Text>
+                  <Text style={styles.fullName} numberOfLines={1} ellipsizeMode="tail">{auth.user.fullName}</Text>
                   <View style={styles.verifiedBadge}>
                     <MaterialCommunityIcons
                       name="check-circle"
@@ -1223,6 +1223,7 @@ const styles = StyleSheet.create({
   userInfoContainer: {
     justifyContent: 'center',
     flex: 1,
+    minWidth: 0,
   } as ViewStyle,
   fullName: {
     fontSize: 20,
@@ -1230,6 +1231,7 @@ const styles = StyleSheet.create({
     color: WARM_CORE.text,
     marginBottom: 6,
     letterSpacing: -0.2,
+    flexShrink: 1,
   } as TextStyle,
   verifiedBadge: {
     flexDirection: 'row',

@@ -1,7 +1,7 @@
 import { Request, Response, Router } from 'express';
 import { config } from './config.js';
 import { sendOTPEmail } from './emailService.js';
-import { rateLimiter, validateEmail, validateOTP } from './middleware.js';
+import { rateLimiter, verifyRateLimiter, validateEmail, validateOTP } from './middleware.js';
 import { sendOTP, verifyOTP } from './otpService.js';
 import { getDb } from './firebase.js';
 import Razorpay from 'razorpay';
@@ -439,19 +439,22 @@ router.post('/send-otp', rateLimiter, async (req: Request, res: Response) => {
     // Generate and save OTP
     const otpResult = await sendOTP(fullEmail);
     const otpGeneratedTime = Date.now();
+    const dbTimeMs = otpGeneratedTime - requestReceivedTime;
     if (config.nodeEnv !== 'production') {
-      console.log(`[OTP GENERATED] [${new Date(otpGeneratedTime).toISOString()}] Code: ${otpResult.otp} (took ${otpGeneratedTime - requestReceivedTime}ms)`);
+      console.log(`[OTP GENERATED] [${new Date(otpGeneratedTime).toISOString()}] Code: ${otpResult.otp} (DB took ${dbTimeMs}ms)`);
     } else {
-      console.log(`[OTP GENERATED] [${new Date(otpGeneratedTime).toISOString()}] OTP issued (took ${otpGeneratedTime - requestReceivedTime}ms)`);
+      console.log(`[OTP GENERATED] [${new Date(otpGeneratedTime).toISOString()}] OTP issued (DB took ${dbTimeMs}ms)`);
     }
 
     // Send OTP via email (acting as SMS/delivery provider)
+    let emailDeliveryTimeMs = 0;
     try {
       const emailStartTime = Date.now();
       console.log(`[SMS/EMAIL PROVIDER CALLED] [${new Date(emailStartTime).toISOString()}] Sending to: ${fullEmail}`);
-      await sendOTPEmail(fullEmail, otpResult.otp, config.otp.expiryMinutes);
+      await sendOTPEmail(fullEmail, otpResult.otp, config.otp.expiryMinutes, otpResult.expiresAt);
       const emailEndTime = Date.now();
-      console.log(`[SMS/EMAIL PROVIDER SUCCESS] [${new Date(emailEndTime).toISOString()}] Sent successfully (took ${emailEndTime - emailStartTime}ms)`);
+      emailDeliveryTimeMs = emailEndTime - emailStartTime;
+      console.log(`[SMS/EMAIL PROVIDER SUCCESS] [${new Date(emailEndTime).toISOString()}] Sent successfully (took ${emailDeliveryTimeMs}ms)`);
     } catch (emailError: any) {
       console.error(`[SMS/EMAIL PROVIDER ERROR] [${new Date().toISOString()}] Failed:`, emailError.message);
       const responseTime = Date.now();
@@ -464,7 +467,9 @@ router.post('/send-otp', rateLimiter, async (req: Request, res: Response) => {
     }
 
     const finalResponseTime = Date.now();
-    console.log(`[RESPONSE SENT TO CLIENT] [${new Date(finalResponseTime).toISOString()}] Status: 200 (Success, total time: ${finalResponseTime - requestReceivedTime}ms)`);
+    const totalPipelineTimeMs = finalResponseTime - requestReceivedTime;
+    console.log(`[PERF TIMING - SEND-OTP] Total pipeline time: ${totalPipelineTimeMs}ms (OTP Gen+DB: ${dbTimeMs}ms | Email Delivery: ${emailDeliveryTimeMs}ms)`);
+    console.log(`[RESPONSE SENT TO CLIENT] [${new Date(finalResponseTime).toISOString()}] Status: 200 (Success, total time: ${totalPipelineTimeMs}ms)`);
     res.json({
       success: true,
       message: 'OTP sent to your email',
@@ -482,7 +487,7 @@ router.post('/send-otp', rateLimiter, async (req: Request, res: Response) => {
 });
 
 // Verify OTP endpoint
-router.post('/verify-otp', rateLimiter, async (req: Request, res: Response) => {
+router.post('/verify-otp', verifyRateLimiter, async (req: Request, res: Response) => {
   try {
     const { email, otp } = req.body;
 
@@ -576,6 +581,29 @@ router.post('/verify-otp', rateLimiter, async (req: Request, res: Response) => {
       code: error.code || 'OTP_VERIFICATION_ERROR',
       message: error.message || 'Failed to verify OTP',
     });
+  }
+});
+
+// Endpoint to refresh/mint custom Firebase token for logged-in users
+router.post('/refresh-custom-token', async (req: Request, res: Response) => {
+  try {
+    const { userId } = req.body;
+    if (!userId || typeof userId !== 'string') {
+      return res.status(400).json({ success: false, message: 'userId is required' });
+    }
+
+    const db = getDb();
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ success: false, message: 'User document not found' });
+    }
+
+    const firebaseToken = await admin.auth().createCustomToken(userId);
+    console.log(`[API] Refreshed custom token for user: ${userId}`);
+    return res.json({ success: true, firebaseToken, userId });
+  } catch (err: any) {
+    console.error('[API] /refresh-custom-token error:', err);
+    return res.status(500).json({ success: false, message: err.message || 'Failed to refresh token' });
   }
 });
 
@@ -3173,11 +3201,13 @@ export async function triggerNotification(
       isAllowed = false; // Promotional notifications strictly disabled for production launch
     }
 
-    // Resolve active token (prioritize valid Expo token)
+    // Resolve active token (prioritize real native FCM token if present, fallback to Expo token)
     let activeToken: string | null = null;
     const rawExpo = userData.expoPushToken;
     const rawFcm = userData.fcmToken;
-    if (rawExpo && (rawExpo.startsWith('ExponentPushToken') || rawExpo.startsWith('ExpoPushToken'))) {
+    if (rawFcm && !rawFcm.startsWith('ExponentPushToken') && !rawFcm.startsWith('ExpoPushToken')) {
+      activeToken = rawFcm;
+    } else if (rawExpo && (rawExpo.startsWith('ExponentPushToken') || rawExpo.startsWith('ExpoPushToken'))) {
       activeToken = rawExpo;
     } else if (rawFcm && (rawFcm.startsWith('ExponentPushToken') || rawFcm.startsWith('ExpoPushToken'))) {
       activeToken = rawFcm;

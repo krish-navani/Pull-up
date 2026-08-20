@@ -189,7 +189,7 @@ function RepeatButtonAnimated({ onPress, style, children, disabled }: any) {
 
 export default function RideHistoryScreen() {
   const router = useRouter();
-  const { bookings, rides, auth, loadAllRidesIncludingHistory, loadPassengerBookings } = useAppContext();
+  const { bookings, rides, auth, loadAllRidesIncludingHistory, loadPassengerBookings, loadDriverRides } = useAppContext();
   const [selectedFilter, setSelectedFilter] = useState<'ongoing' | 'completed' | 'cancelled'>('ongoing');
   const [isRepeating, setIsRepeating] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -248,16 +248,25 @@ export default function RideHistoryScreen() {
     ).start();
   }, []);
 
+  const currentRole = auth.user?.role || 'passenger';
+
   // Load bookings and rides on screen focus to get current statuses
   useFocusEffect(
     useCallback(() => {
       const loadData = async () => {
         try {
           setIsLoading(true);
-          console.log('[RIDE HISTORY] Loading data for history view (rides & bookings)');
-          const promises: Promise<any>[] = [loadAllRidesIncludingHistory()];
+          console.log('[RIDE HISTORY] Loading data for history view (rides & bookings) for role:', currentRole);
+          const promises: Promise<any>[] = [];
           if (auth.user?.id) {
-            promises.push(loadPassengerBookings(auth.user.id));
+            if (currentRole === 'driver') {
+              promises.push(loadDriverRides(auth.user.id));
+            } else {
+              promises.push(loadAllRidesIncludingHistory());
+              promises.push(loadPassengerBookings(auth.user.id));
+            }
+          } else {
+            promises.push(loadAllRidesIncludingHistory());
           }
           await Promise.all(promises);
           console.log('[RIDE HISTORY] ✅ History data loaded');
@@ -268,7 +277,7 @@ export default function RideHistoryScreen() {
         }
       };
       loadData();
-    }, [auth.user?.id, loadAllRidesIncludingHistory, loadPassengerBookings])
+    }, [auth.user?.id, currentRole, loadAllRidesIncludingHistory, loadPassengerBookings, loadDriverRides])
   );
 
   // Get historical bookings where current user is the passenger
@@ -332,9 +341,20 @@ export default function RideHistoryScreen() {
           return true;
         });
 
+  // Items to display in history list, separated by current role (driver vs passenger)
+  const historyItems = currentRole === 'driver'
+    ? rides.filter(r => {
+        if (r.driverId !== auth.user?.id) return false;
+        if (selectedFilter === 'ongoing') {
+          return r.status === 'in_progress' || r.status === 'active';
+        }
+        return r.status === selectedFilter;
+      })
+    : filteredBookings;
+
   // Empty state animations trigger
   useEffect(() => {
-    if (!isLoading && filteredBookings.length === 0) {
+    if (!isLoading && historyItems.length === 0) {
       Animated.spring(emptyIconScale, { toValue: 1, damping: 8, stiffness: 130, mass: 0.7, useNativeDriver: true }).start();
       Animated.loop(
         Animated.sequence([
@@ -345,7 +365,7 @@ export default function RideHistoryScreen() {
     } else {
       emptyIconScale.setValue(0);
     }
-  }, [isLoading, filteredBookings.length]);
+  }, [isLoading, historyItems.length]);
 
   const formatTime = (timeString: string) => {
     const date = new Date(timeString);
@@ -355,10 +375,17 @@ export default function RideHistoryScreen() {
   const handleRefresh = useCallback(async () => {
     try {
       setIsRefreshing(true);
-      console.log('[RIDE HISTORY] Refreshing history data (rides & bookings)...');
-      const promises: Promise<any>[] = [loadAllRidesIncludingHistory()];
+      console.log('[RIDE HISTORY] Refreshing history data (rides & bookings) for role:', currentRole);
+      const promises: Promise<any>[] = [];
       if (auth.user?.id) {
-        promises.push(loadPassengerBookings(auth.user.id));
+        if (currentRole === 'driver') {
+          promises.push(loadDriverRides(auth.user.id));
+        } else {
+          promises.push(loadAllRidesIncludingHistory());
+          promises.push(loadPassengerBookings(auth.user.id));
+        }
+      } else {
+        promises.push(loadAllRidesIncludingHistory());
       }
       await Promise.all(promises);
       console.log('[RIDE HISTORY] ✅ Refreshed history data');
@@ -367,7 +394,7 @@ export default function RideHistoryScreen() {
     } finally {
       setIsRefreshing(false);
     }
-  }, [auth.user?.id, loadAllRidesIncludingHistory, loadPassengerBookings]);
+  }, [auth.user?.id, currentRole, loadAllRidesIncludingHistory, loadPassengerBookings, loadDriverRides]);
 
   const formatDate = (timeString: string) => {
     const date = new Date(timeString);
@@ -401,8 +428,9 @@ export default function RideHistoryScreen() {
   const onBookNowOut = () =>
     Animated.spring(bookBtnScale, { toValue: 1, damping: 16, stiffness: 200, mass: 0.8, useNativeDriver: true }).start();
 
-  const renderHistoryCard = (booking: any, index: number) => {
-    const ride = rides.find(r => r.id === booking.rideId);
+  const renderHistoryCard = (item: any, index: number) => {
+    const isDriver = currentRole === 'driver';
+    const ride = isDriver ? item : rides.find(r => r.id === item.rideId);
     if (!ride) return null;
 
     const statusConfig = getStatusConfig(ride.status);
@@ -414,12 +442,34 @@ export default function RideHistoryScreen() {
     if (isToday) dateText = 'Today';
     if (isYesterday) dateText = 'Yesterday';
 
+    // Calculate seats and price for display
+    let seatsCount = 0;
+    let priceText = '';
+    let seatsLabel = '';
+
+    if (isDriver) {
+      const bookedSeats = ride.bookedSeats || [];
+      seatsCount = bookedSeats.filter((b: any) => b.status === 'accepted' || b.status === 'confirmed').reduce((sum: number, b: any) => sum + b.seatsBooked, 0);
+      priceText = `₹${(ride.price * seatsCount).toFixed(0)}`;
+      seatsLabel = `${seatsCount} / ${ride.totalSeats} seats filled`;
+    } else {
+      seatsCount = item.seatsBooked;
+      priceText = `₹${(ride.price * seatsCount).toFixed(0)}`;
+      seatsLabel = `${seatsCount} seat${seatsCount > 1 ? 's' : ''}`;
+    }
+
     return (
       <PressableHistoryCard
-        key={`${selectedFilter}-${booking.id}`}
+        key={`${selectedFilter}-${isDriver ? ride.id : item.id}`}
         index={index}
         style={styles.historyCard}
-        onPress={() => router.push({ pathname: '/ride-details', params: { rideId: ride.id, bookingId: booking.id } })}
+        onPress={() => {
+          if (isDriver) {
+            router.push({ pathname: '/ride-details', params: { rideId: ride.id } });
+          } else {
+            router.push({ pathname: '/ride-details', params: { rideId: ride.id, bookingId: item.id } });
+          }
+        }}
       >
         {/* Status Badge and Date */}
         <View style={styles.cardTopSection}>
@@ -464,39 +514,45 @@ export default function RideHistoryScreen() {
         {/* Divider */}
         <View style={styles.cardDivider} />
 
-        {/* Driver Info and Price */}
+        {/* Driver/Rider Info and Price */}
         <View style={styles.cardBottomSection}>
           <View style={styles.driverSection}>
             <View style={styles.driverAvatar}>
-              <Text style={styles.driverInitial}>{ride.driverName.charAt(0)}</Text>
+              <Text style={styles.driverInitial}>
+                {isDriver ? (auth.user?.fullName?.charAt(0) || 'D') : ride.driverName.charAt(0)}
+              </Text>
             </View>
             <View style={styles.driverInfo}>
-              <Text style={styles.driverName}>{ride.driverName}</Text>
+              <Text style={styles.driverName}>
+                {isDriver ? 'You (Driver)' : ride.driverName}
+              </Text>
               <Text style={styles.carModel}>{ride.carModel}</Text>
             </View>
           </View>
 
           <View style={styles.priceSection}>
-            <Text style={styles.price}>₹{(ride.price * booking.seatsBooked).toFixed(0)}</Text>
-            <Text style={styles.priceLabel}>{booking.seatsBooked} seat{booking.seatsBooked > 1 ? 's' : ''}</Text>
+            <Text style={styles.price}>{priceText}</Text>
+            <Text style={styles.priceLabel}>{seatsLabel}</Text>
           </View>
         </View>
 
         {/* Repeat Ride Button */}
-        <RepeatButtonAnimated
-          style={styles.repeatButton}
-          onPress={() => handleRepeatRide(ride)}
-          disabled={isRepeating === ride.id}
-        >
-          {isRepeating === ride.id ? (
-            <ActivityIndicator size="small" color="#FFFFFF" />
-          ) : (
-            <>
-              <MaterialCommunityIcons name="refresh" size={16} color="#FFFFFF" />
-              <Text style={styles.repeatButtonText}>Repeat Ride</Text>
-            </>
-          )}
-        </RepeatButtonAnimated>
+        {!isDriver && (
+          <RepeatButtonAnimated
+            style={styles.repeatButton}
+            onPress={() => handleRepeatRide(ride)}
+            disabled={isRepeating === ride.id}
+          >
+            {isRepeating === ride.id ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <>
+                <MaterialCommunityIcons name="refresh" size={16} color="#FFFFFF" />
+                <Text style={styles.repeatButtonText}>Repeat Ride</Text>
+              </>
+            )}
+          </RepeatButtonAnimated>
+        )}
       </PressableHistoryCard>
     );
   };
@@ -614,7 +670,7 @@ export default function RideHistoryScreen() {
               <HistorySkeletonCard delay={80} />
               <HistorySkeletonCard delay={160} />
             </View>
-          ) : filteredBookings.length === 0 ? (
+          ) : historyItems.length === 0 ? (
             <View style={styles.emptyState}>
               <Animated.View
                 style={[
@@ -632,33 +688,35 @@ export default function RideHistoryScreen() {
                 />
               </Animated.View>
               <Text style={styles.emptyStateText}>
-                {selectedFilter === 'ongoing' ? 'No Ongoing Rides' : selectedFilter === 'cancelled' ? 'No Cancelled Rides' : 'No Completed Rides'}
+                {selectedFilter === 'ongoing' ? (currentRole === 'driver' ? 'No Active Offered Rides' : 'No Ongoing Rides') : selectedFilter === 'cancelled' ? 'No Cancelled Rides' : 'No Completed Rides'}
               </Text>
               <Text style={styles.emptyStateSubText}>
                 {selectedFilter === 'ongoing'
-                  ? 'Your active rides will appear here'
+                  ? (currentRole === 'driver' ? 'Your active posted rides will appear here' : 'Your active rides will appear here')
                   : selectedFilter === 'cancelled' 
                   ? 'Your cancelled rides will appear here' 
                   : 'Completed rides will appear here'}
               </Text>
-
-              <Animated.View style={{ transform: [{ scale: bookBtnBreath }] }}>
-                <Animated.View style={{ transform: [{ scale: bookBtnScale }] }}>
-                  <TouchableOpacity
-                    style={styles.bookNowButton}
-                    onPress={() => router.push('/(tabs)/home')}
-                    onPressIn={onBookNowIn}
-                    onPressOut={onBookNowOut}
-                    activeOpacity={1}
-                  >
-                    <MaterialCommunityIcons name="car" size={18} color="#FFFFFF" />
-                    <Text style={styles.bookNowButtonText}>Find a Ride</Text>
-                  </TouchableOpacity>
+ 
+              {currentRole !== 'driver' && (
+                <Animated.View style={{ transform: [{ scale: bookBtnBreath }] }}>
+                  <Animated.View style={{ transform: [{ scale: bookBtnScale }] }}>
+                    <TouchableOpacity
+                      style={styles.bookNowButton}
+                      onPress={() => router.push('/(tabs)/home')}
+                      onPressIn={onBookNowIn}
+                      onPressOut={onBookNowOut}
+                      activeOpacity={1}
+                    >
+                      <MaterialCommunityIcons name="car" size={18} color="#FFFFFF" />
+                      <Text style={styles.bookNowButtonText}>Find a Ride</Text>
+                    </TouchableOpacity>
+                  </Animated.View>
                 </Animated.View>
-              </Animated.View>
+              )}
             </View>
           ) : (
-            filteredBookings.map((booking, index) => renderHistoryCard(booking, index))
+            historyItems.map((item, index) => renderHistoryCard(item, index))
           )}
         </ScrollView>
       </Animated.View>

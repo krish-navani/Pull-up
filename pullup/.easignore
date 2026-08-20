@@ -1,0 +1,68 @@
+# Dependencies are installed by EAS from package-lock.json.
+node_modules/
+**/node_modules/
+
+# Expo/local generated state.
+.expo/
+**/.expo/
+dist/
+web-build/
+expo-env.d.ts
+.metro-health-check*
+*.tsbuildinfo
+
+# Generated native projects; EAS prebuild regenerates Android from app.json/plugins.
+android/
+ios/
+.gradle/
+.kotlin/
+**/android/
+**/ios/
+**/.gradle/
+**/.kotlin/
+**/.cxx/
+**/build/
+
+# Local EAS/build inspection output.
+inspect-preview/
+inspect-preview*/
+**/inspect-preview*/
+extracted-preview*/
+preview-*-artifact.tar.gz
+tmp/
+**/tmp/
+*.tar.gz
+*.apk
+*.aab
+
+# Logs and crash dumps.
+*.log
+hs_err_pid*.log
+replay_pid*.log
+eas_build_decompressed.txt
+eas_build_raw*.log
+gradle_output.log
+prebuild_output.log
+
+# Local env/secrets that are not part of the cloud build upload.
+.env
+.env.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+*firebase-adminsdk*.json
+
+# Local editor/OS files.
+.DS_Store
+.vscode/
+**/.vscode/
+*.orig.*
+
+# Local helper scripts used only while debugging builds.
+download_logs.mjs
+extract_gradle_logs.mjs
+extract_prebuild_logs.mjs
+upload-fcm-credentials.mjs

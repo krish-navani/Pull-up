@@ -18,6 +18,7 @@
 import * as TaskManager from 'expo-task-manager';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { OTP_BACKEND_URL } from '@/config/environment';
+import { auth } from '@/utils/firebase';
 
 export const BACKGROUND_LOCATION_TASK = 'pullup-background-location';
 
@@ -82,22 +83,26 @@ TaskManager.defineTask(BACKGROUND_LOCATION_TASK, async ({ data, error }: any) =>
     return;
   }
 
-  // Read backend URL and secret from bundled env vars
-  // These are embedded at build time, so process.env works in background context
   const backendUrl = OTP_BACKEND_URL;
-  const bgSecret = process.env.EXPO_PUBLIC_PULLUP_BG_SECRET || 'pullup_commute_secure_pass_2026';
 
   if (!backendUrl) {
     console.error('[BG TASK] Missing EXPO_PUBLIC_OTP_BACKEND_URL env var');
     return;
   }
 
+  const firebaseUser = auth.currentUser;
+  if (!firebaseUser || firebaseUser.isAnonymous) {
+    console.warn('[BG TASK] No authenticated Firebase user available for background location update');
+    return;
+  }
+
   try {
+    const idToken = await firebaseUser.getIdToken();
     const response = await fetch(`${backendUrl}/api/otp/update-location`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-pullup-bg-secret': bgSecret,
+        Authorization: `Bearer ${idToken}`,
       },
       body: JSON.stringify({
         rideId,

@@ -17,8 +17,6 @@
       "infoPlist": {
         "UIBackgroundModes": [
           "location",
-          "remote-notification",
-          "location",
           "remote-notification"
         ],
         "ITSAppUsesNonExemptEncryption": false
@@ -32,7 +30,7 @@
       },
       "edgeToEdgeEnabled": false,
       "predictiveBackGestureEnabled": false,
-      "package": "com.pullup.app",
+      "package": "com.pullupapp",
       "googleServicesFile": "./google-services.json",
       "permissions": [
         "android.permission.ACCESS_FINE_LOCATION",

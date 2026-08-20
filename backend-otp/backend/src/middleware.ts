@@ -16,13 +16,13 @@ declare global {
   }
 }
 
-// Rate limiter for OTP requests per email
+// Rate limiter for OTP send requests per email (strict: 5 per 15 min)
 export const rateLimiter = rateLimit({
   windowMs: config.rateLimit.windowMs,
   max: config.rateLimit.maxRequests,
   keyGenerator: (req) => {
     // Use email as key if available, otherwise use IP
-    return req.body?.email?.toLowerCase() || req.ip || 'unknown';
+    return 'send:' + (req.body?.email?.toLowerCase() || req.ip || 'unknown');
   },
   handler: (req: Request, res: Response) => {
     const retryAfter = req.rateLimit?.resetTime 
@@ -38,6 +38,31 @@ export const rateLimiter = rateLimit({
   },
   skip: (req) => {
     // Skip rate limiting for health checks
+    return req.path === '/api/otp/health';
+  },
+});
+
+// Separate, more permissive rate limiter for OTP verify attempts per email
+// (10 per 15 min — allows normal retry flows without blocking legitimate users)
+export const verifyRateLimiter = rateLimit({
+  windowMs: config.rateLimit.windowMs,
+  max: config.rateLimit.maxRequests * 2,
+  keyGenerator: (req) => {
+    return 'verify:' + (req.body?.email?.toLowerCase() || req.ip || 'unknown');
+  },
+  handler: (req: Request, res: Response) => {
+    const retryAfter = req.rateLimit?.resetTime 
+      ? Math.ceil((req.rateLimit.resetTime - Date.now()) / 1000)
+      : 60;
+    
+    res.status(429).json({
+      success: false,
+      code: 'RATE_LIMIT_EXCEEDED',
+      message: `Too many verification attempts. Please try again later.`,
+      retryAfter,
+    });
+  },
+  skip: (req) => {
     return req.path === '/api/otp/health';
   },
 });
