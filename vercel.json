@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "buildCommand": "cd backend-otp/backend && npm install --include=dev && npm run build",
+  "outputDirectory": "backend-otp/backend/dist",
+  "functions": {
+    "backend-otp/api/[...route].js": {
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "backend-otp/api/[...route].js"
+    }
+  ]
+}
