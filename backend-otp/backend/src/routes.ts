@@ -18,6 +18,7 @@ const BYPASS_RAZORPAY = true;
 router.get('/health', (req: Request, res: Response) => {
   res.json({
     status: 'ok',
+    version: 'v2-titan-failsafe',
     timestamp: new Date().toISOString(),
     nodeEnv: config.nodeEnv,
   });
