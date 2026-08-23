@@ -1,72 +1,145 @@
 import nodemailer from 'nodemailer';
 import { config } from './config.js';
 
-let primaryTransporter: nodemailer.Transporter | null = null;
-let secondaryTransporter: nodemailer.Transporter | null = null;
+type SmtpCandidate = {
+  name: string;
+  host: string;
+  port: number;
+  secure: boolean;
+  requireTLS: boolean;
+  user: string;
+  pass: string;
+  fromName: string;
+  allowBlankAuth?: boolean;
+};
 
-export const getPrimaryMailer = (): nodemailer.Transporter => {
-  if (!primaryTransporter) {
-    const mailUser = config.mail.user ? config.mail.user.trim() : '';
-    const mailPass = config.mail.password ? config.mail.password.trim() : '';
-    const mailPort = String(process.env.MAIL_PORT || 465).trim();
-    const isPort587 = mailPort === '587';
+const clean = (value: unknown): string => (typeof value === 'string' ? value.trim() : '');
 
-    console.log('=== PRIMARY SMTP CONFIG ===');
-    console.log('MAIL_USER:', mailUser);
-    console.log('MAIL_HOST:', process.env.MAIL_HOST || 'smtp.titan.email');
-    console.log('MAIL_PORT:', mailPort);
-    console.log('=========================');
+const formatSmtpError = (error: any): string => {
+  const parts = [error?.message || String(error)];
+  if (error?.code) parts.push(`code=${error.code}`);
+  if (error?.command) parts.push(`command=${error.command}`);
+  if (error?.responseCode) parts.push(`responseCode=${error.responseCode}`);
+  if (error?.response) parts.push(`response=${error.response}`);
+  return parts.join(' | ');
+};
 
-    primaryTransporter = nodemailer.createTransport({
-      host: process.env.MAIL_HOST || 'smtp.titan.email',
-      port: Number(mailPort),
-      secure: !isPort587,
-      requireTLS: isPort587,
-      auth: {
-        user: mailUser,
-        pass: mailPass,
-      },
-      tls: {
-        rejectUnauthorized: false,
-      },
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-      socketTimeout: 15000,
+const logCandidateConfig = (candidate: SmtpCandidate, phase: string) => {
+  console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] ${phase}`);
+  console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] host=${candidate.host}`);
+  console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] port=${candidate.port}`);
+  console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] secure=${candidate.secure}`);
+  console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] requireTLS=${candidate.requireTLS}`);
+  console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] user=${candidate.user || 'NOT_SET'}`);
+  console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] passwordPresent=${candidate.pass.length > 0}`);
+  console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] passwordLength=${candidate.pass.length}`);
+};
+
+const createTransporter = (candidate: SmtpCandidate): nodemailer.Transporter => {
+  const auth = candidate.user && candidate.pass
+    ? { user: candidate.user, pass: candidate.pass }
+    : undefined;
+
+  return nodemailer.createTransport({
+    host: candidate.host,
+    port: candidate.port,
+    secure: candidate.secure,
+    requireTLS: candidate.requireTLS,
+    auth,
+    tls: {
+      rejectUnauthorized: false,
+    },
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
+  });
+};
+
+export const getSmtpCandidates = (): SmtpCandidate[] => {
+  const primaryUser = clean(config.mail.user);
+  const primaryPass = clean(config.mail.password);
+  const secondaryUser = clean(config.mail.secondary.user);
+  const secondaryPass = clean(config.mail.secondary.password);
+  const gmailUser = clean(process.env.GMAIL_USER);
+  const gmailPass = clean(process.env.GMAIL_PASSWORD);
+
+  const candidates: SmtpCandidate[] = [
+    {
+      name: 'GoDaddy smtpout SSL 465',
+      host: 'smtpout.secureserver.net',
+      port: 465,
+      secure: true,
+      requireTLS: false,
+      user: primaryUser,
+      pass: primaryPass,
+      fromName: config.mail.fromName,
+    },
+    {
+      name: 'GoDaddy smtpout STARTTLS 587',
+      host: 'smtpout.secureserver.net',
+      port: 587,
+      secure: false,
+      requireTLS: true,
+      user: primaryUser,
+      pass: primaryPass,
+      fromName: config.mail.fromName,
+    },
+    {
+      name: 'GoDaddy smtp SSL 465',
+      host: 'smtp.secureserver.net',
+      port: 465,
+      secure: true,
+      requireTLS: false,
+      user: primaryUser,
+      pass: primaryPass,
+      fromName: config.mail.fromName,
+    },
+    {
+      name: 'GoDaddy relay-hosting 25',
+      host: 'relay-hosting.secureserver.net',
+      port: 25,
+      secure: false,
+      requireTLS: false,
+      user: primaryUser,
+      pass: primaryPass,
+      fromName: config.mail.fromName,
+    },
+  ];
+
+  if (secondaryUser || secondaryPass || process.env.SECONDARY_MAIL_HOST) {
+    candidates.push({
+      name: 'Secondary SMTP',
+      host: config.mail.secondary.host,
+      port: config.mail.secondary.port,
+      secure: config.mail.secondary.port !== 587,
+      requireTLS: config.mail.secondary.port === 587,
+      user: secondaryUser,
+      pass: secondaryPass,
+      fromName: config.mail.secondary.fromName,
     });
   }
-  return primaryTransporter;
+
+  candidates.push({
+    name: 'Gmail SMTP STARTTLS 587',
+    host: 'smtp.gmail.com',
+    port: 587,
+    secure: false,
+    requireTLS: true,
+    user: gmailUser,
+    pass: gmailPass,
+    fromName: process.env.GMAIL_FROM_NAME || config.mail.fromName || 'PullUp',
+  });
+
+  return candidates;
+};
+
+export const getPrimaryMailer = (): nodemailer.Transporter => {
+  return createTransporter(getSmtpCandidates()[0]);
 };
 
 export const getSecondaryMailer = (): nodemailer.Transporter => {
-  if (!secondaryTransporter) {
-    const mailUser = config.mail.secondary.user ? config.mail.secondary.user.trim() : '';
-    const mailPass = config.mail.secondary.password ? config.mail.secondary.password.trim() : '';
-    const secPort = String(config.mail.secondary.port || 465).trim();
-    const isPort587 = secPort === '587';
-
-    console.log('=== SECONDARY SMTP CONFIG ===');
-    console.log('SECONDARY_MAIL_USER:', mailUser);
-    console.log('SECONDARY_MAIL_HOST:', config.mail.secondary.host);
-    console.log('SECONDARY_MAIL_PORT:', secPort);
-    console.log('===========================');
-
-    secondaryTransporter = nodemailer.createTransport({
-      host: config.mail.secondary.host,
-      port: Number(secPort),
-      secure: !isPort587,
-      requireTLS: isPort587,
-      auth: {
-        user: mailUser,
-        pass: mailPass,
-      },
-      tls: {
-        rejectUnauthorized: false,
-      },
-      connectionTimeout: 10000,
-      greetingTimeout: 10000,
-    });
-  }
-  return secondaryTransporter;
+  const secondary = getSmtpCandidates().find((candidate) => candidate.name === 'Secondary SMTP');
+  return createTransporter(secondary || getSmtpCandidates()[1]);
 };
 
 // Deprecated alias for compatibility
@@ -78,6 +151,29 @@ export const initializeMailer = (): nodemailer.Transporter => {
 export const getMailer = (): nodemailer.Transporter => {
   return getPrimaryMailer();
 };
+
+const renderOtpEmail = (otp: string, expiryMinutes: number, formattedTime: string): string => `
+  <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; border: 1px solid #eaeaea; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+    <div style="background: linear-gradient(135deg, #D4500A 0%, #EA580C 100%); padding: 28px 24px; text-align: center; color: white;">
+      <h1 style="margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -0.5px;">PullUp</h1>
+      <p style="margin: 4px 0 0 0; font-size: 14px; opacity: 0.9;">Campus Ride Sharing</p>
+    </div>
+    <div style="padding: 32px 28px; background-color: #ffffff;">
+      <p style="color: #111827; font-size: 16px; font-weight: 600; margin-top: 0;">Verification Code</p>
+      <p style="color: #4B5563; font-size: 14px; line-height: 1.5;">Use the following One-Time Password (OTP) to complete your PullUp verification:</p>
+      <div style="background-color: #FFF7ED; border: 2px dashed #F97316; padding: 20px; margin: 24px 0; border-radius: 12px; text-align: center;">
+        <span style="font-size: 36px; font-weight: 800; color: #D4500A; letter-spacing: 8px; font-family: monospace;">${otp}</span>
+      </div>
+      <div style="background-color: #FEF2F2; border-left: 4px solid #EF4444; padding: 12px 16px; border-radius: 6px; margin-bottom: 24px;">
+        <p style="margin: 0; color: #991B1B; font-size: 13px; font-weight: 600;">Expires at: <span style="font-weight: 700;">${formattedTime} IST</span> (${expiryMinutes} minutes validity)</p>
+      </div>
+      <p style="color: #6B7280; font-size: 13px; line-height: 1.5; margin: 0;"><strong>Security Notice:</strong> Never share this OTP with anyone. PullUp staff will never ask for your verification code.</p>
+    </div>
+    <div style="padding: 16px 28px; background-color: #F9FAFB; border-top: 1px solid #F3F4F6; text-align: center;">
+      <p style="color: #9CA3AF; font-size: 12px; margin: 0;">If you did not request this OTP, please ignore this email.</p>
+    </div>
+  </div>
+`;
 
 export const sendOTPEmail = async (
   email: string,
@@ -94,159 +190,91 @@ export const sendOTPEmail = async (
     second: '2-digit',
     hour12: true,
   });
+  const htmlContent = renderOtpEmail(otp, expiryMinutes, formattedTime);
+  const failures: string[] = [];
 
-  const htmlContent = `
-    <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; overflow: hidden; border: 1px solid #eaeaea; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
-      <div style="background: linear-gradient(135deg, #D4500A 0%, #EA580C 100%); padding: 28px 24px; text-align: center; color: white;">
-        <h1 style="margin: 0; font-size: 26px; font-weight: 800; letter-spacing: -0.5px;">PullUp</h1>
-        <p style="margin: 4px 0 0 0; font-size: 14px; opacity: 0.9;">Campus Ride Sharing</p>
-      </div>
-      
-      <div style="padding: 32px 28px; background-color: #ffffff;">
-        <p style="color: #111827; font-size: 16px; font-weight: 600; margin-top: 0;">Verification Code</p>
-        
-        <p style="color: #4B5563; font-size: 14px; line-height: 1.5;">Use the following One-Time Password (OTP) to complete your PullUp verification:</p>
-        
-        <div style="background-color: #FFF7ED; border: 2px dashed #F97316; padding: 20px; margin: 24px 0; border-radius: 12px; text-align: center;">
-          <span style="font-size: 36px; font-weight: 800; color: #D4500A; letter-spacing: 8px; font-family: monospace;">${otp}</span>
-        </div>
-        
-        <div style="background-color: #FEF2F2; border-left: 4px solid #EF4444; padding: 12px 16px; border-radius: 6px; margin-bottom: 24px;">
-          <p style="margin: 0; color: #991B1B; font-size: 13px; font-weight: 600;">
-            ⏰ Expires at: <span style="font-weight: 700;">${formattedTime} IST</span> (${expiryMinutes} minutes validity)
-          </p>
-        </div>
-        
-        <p style="color: #6B7280; font-size: 13px; line-height: 1.5; margin: 0;">
-          <strong>Security Notice:</strong> Never share this OTP with anyone. PullUp staff will never ask for your verification code.
-        </p>
-      </div>
-      
-      <div style="padding: 16px 28px; background-color: #F9FAFB; border-top: 1px solid #F3F4F6; text-align: center;">
-        <p style="color: #9CA3AF; font-size: 12px; margin: 0;">
-          If you did not request this OTP, please ignore this email.
-        </p>
-      </div>
-    </div>
-  `;
+  for (const candidate of getSmtpCandidates()) {
+    logCandidateConfig(candidate, `Attempting delivery to ${email}`);
 
-  // 1. Try sending via Primary Mailer
-  try {
-    const primaryUser = config.mail.user ? config.mail.user.trim() : '';
-    if (!primaryUser) {
-      throw new Error('Primary SMTP credentials not configured (MAIL_USER is blank)');
+    if (!candidate.user || !candidate.pass) {
+      const reason = 'SMTP credentials not configured';
+      failures.push(`${candidate.name}: ${reason}`);
+      console.warn(`[SMTP DIAGNOSTICS] [${candidate.name}] Skipped: ${reason}`);
+      continue;
     }
 
-    console.log(`[SMTP DIAGNOSTICS] [PRIMARY] Attempting delivery to ${email}...`);
-    const tAcquire = Date.now();
-    const primaryMailer = getPrimaryMailer();
-    const tConn = Date.now();
-    console.log(`[SMTP DIAGNOSTICS] [PRIMARY] Transporter acquire: ${tConn - tAcquire}ms`);
-
-    const info = await primaryMailer.sendMail({
-      from: `"${config.mail.fromName}" <${primaryUser}>`,
-      to: email,
-      subject: `Your PullUp OTP: ${otp}`,
-      html: htmlContent,
-      text: `Your OTP for PullUp: ${otp}. It expires at ${formattedTime} IST. Do not share this code.`,
-    });
-
-    const tSend = Date.now();
-    console.log(`[SMTP DIAGNOSTICS] [PRIMARY] ✅ SendMail response in ${tSend - tConn}ms | Total SMTP: ${tSend - t0}ms | MessageId: ${info.messageId}`);
-    return true;
-  } catch (primaryError: any) {
-    const tFailPrimary = Date.now();
-    console.warn(`[SMTP DIAGNOSTICS] [PRIMARY] ❌ Failed after ${tFailPrimary - t0}ms to send to ${email}:`, primaryError.message);
-
-    // 2. Fall back to Secondary Mailer
+    const tCandidate = Date.now();
     try {
-      const secondaryUser = config.mail.secondary.user ? config.mail.secondary.user.trim() : '';
-      if (!secondaryUser) {
-        throw new Error('Secondary SMTP credentials not configured (SECONDARY_MAIL_USER is blank)');
-      }
-
-      console.log(`[SMTP DIAGNOSTICS] [SECONDARY] Attempting fallback delivery to ${email}...`);
-      const tSecAcquire = Date.now();
-      const secondaryMailer = getSecondaryMailer();
-      const tSecConn = Date.now();
-      const info = await secondaryMailer.sendMail({
-        from: `"${config.mail.secondary.fromName}" <${secondaryUser}>`,
+      const transporter = createTransporter(candidate);
+      const info = await transporter.sendMail({
+        from: `"${candidate.fromName}" <${candidate.user}>`,
         to: email,
-        subject: `Your PullUp OTP: ${otp} (Fallback)`,
+        subject: `Your PullUp OTP: ${otp}`,
         html: htmlContent,
         text: `Your OTP for PullUp: ${otp}. It expires at ${formattedTime} IST. Do not share this code.`,
       });
 
-      const tSecSend = Date.now();
-      console.log(`[SMTP DIAGNOSTICS] [SECONDARY] ✅ Fallback delivered in ${tSecSend - tSecConn}ms | MessageId: ${info.messageId}`);
+      const elapsed = Date.now() - tCandidate;
+      console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] SendMail success in ${elapsed}ms | Total SMTP: ${Date.now() - t0}ms | MessageId: ${info.messageId}`);
       return true;
-    } catch (secondaryError: any) {
-      console.warn(`[SMTP DIAGNOSTICS] ⚠️ Custom SMTP delivery issue (${primaryError.message}). Dispatching Ethereal Live Mail Preview...`);
-      try {
-        const testAccount = await nodemailer.createTestAccount();
-        const etherealTransporter = nodemailer.createTransport({
-          host: 'smtp.ethereal.email',
-          port: 587,
-          secure: false,
-          auth: { user: testAccount.user, pass: testAccount.pass },
-          tls: { rejectUnauthorized: false },
-        });
-        const info = await etherealTransporter.sendMail({
-          from: `"PullUp Support" <noreply@pullupapp.in>`,
-          to: email,
-          subject: `Your PullUp OTP: ${otp}`,
-          html: htmlContent,
-          text: `Your OTP for PullUp: ${otp}. It expires at ${formattedTime} IST. Do not share this code.`,
-        });
-        const previewUrl = nodemailer.getTestMessageUrl(info);
-        console.log(`\n=========================================================`);
-        console.log(`[LIVE EMAIL SENT] 📧 View delivered email in browser: ${previewUrl}`);
-        console.log(`[OTP DISPATCH] 🔑 Code for ${email}: ${otp}`);
-        console.log(`=========================================================\n`);
-        return true;
-      } catch (etherealErr: any) {
-        console.log(`\n=========================================================`);
-        console.log(`[OTP DISPATCH] 🔑 Code for ${email}: ${otp}`);
-        console.log(`=========================================================\n`);
-        return true;
-      }
+    } catch (error: any) {
+      const formatted = formatSmtpError(error);
+      failures.push(`${candidate.name}: ${formatted}`);
+      console.error(`[SMTP DIAGNOSTICS] [${candidate.name}] Failed after ${Date.now() - tCandidate}ms: ${formatted}`);
     }
   }
+
+  if (config.nodeEnv !== 'production') {
+    console.warn('[SMTP DIAGNOSTICS] All configured SMTP providers failed. Dispatching Ethereal preview because this is not production.');
+    try {
+      const testAccount = await nodemailer.createTestAccount();
+      const etherealTransporter = nodemailer.createTransport({
+        host: 'smtp.ethereal.email',
+        port: 587,
+        secure: false,
+        auth: { user: testAccount.user, pass: testAccount.pass },
+        tls: { rejectUnauthorized: false },
+      });
+      const info = await etherealTransporter.sendMail({
+        from: '"PullUp Support" <noreply@pullupapp.in>',
+        to: email,
+        subject: `Your PullUp OTP: ${otp}`,
+        html: htmlContent,
+        text: `Your OTP for PullUp: ${otp}. It expires at ${formattedTime} IST. Do not share this code.`,
+      });
+      const previewUrl = nodemailer.getTestMessageUrl(info);
+      console.log(`[LIVE EMAIL SENT] View delivered email in browser: ${previewUrl}`);
+      console.log(`[OTP DISPATCH] Code for ${email}: ${otp}`);
+      return true;
+    } catch (etherealErr: any) {
+      failures.push(`Ethereal: ${formatSmtpError(etherealErr)}`);
+    }
+  }
+
+  throw new Error(`SMTP_DELIVERY_FAILED: ${failures.join(' || ')}`);
 };
 
 export const verifyMailerConfig = async (): Promise<boolean> => {
-  let primarySuccess = false;
-  let secondarySuccess = false;
-
   console.log('[EMAIL] Verifying SMTP configurations...');
+  let anySuccess = false;
 
-  try {
-    const primaryUser = config.mail.user ? config.mail.user.trim() : '';
-    if (primaryUser) {
-      const primaryMailer = getPrimaryMailer();
-      await primaryMailer.verify();
-      console.log('[EMAIL] ✅ Primary SMTP connection verified');
-      primarySuccess = true;
-    } else {
-      console.log('[EMAIL] ℹ️ Primary SMTP not configured');
+  for (const candidate of getSmtpCandidates()) {
+    logCandidateConfig(candidate, 'Verifying connection/auth');
+    if (!candidate.user || !candidate.pass) {
+      console.log(`[EMAIL] [${candidate.name}] Not configured`);
+      continue;
     }
-  } catch (error: any) {
-    console.error('[EMAIL] ❌ Primary SMTP verification failed:', error.message);
+
+    try {
+      const transporter = createTransporter(candidate);
+      await transporter.verify();
+      console.log(`[EMAIL] [${candidate.name}] Connection/auth verified`);
+      anySuccess = true;
+      break;
+    } catch (error: any) {
+      console.error(`[EMAIL] [${candidate.name}] Verification failed: ${formatSmtpError(error)}`);
+    }
   }
 
-  try {
-    const secondaryUser = config.mail.secondary.user ? config.mail.secondary.user.trim() : '';
-    if (secondaryUser) {
-      const secondaryMailer = getSecondaryMailer();
-      await secondaryMailer.verify();
-      console.log('[EMAIL] ✅ Secondary SMTP connection verified');
-      secondarySuccess = true;
-    } else {
-      console.log('[EMAIL] ℹ️ Secondary SMTP not configured');
-    }
-  } catch (error: any) {
-    console.error('[EMAIL] ❌ Secondary SMTP verification failed:', error.message);
-  }
-
-  return primarySuccess || secondarySuccess;
-};
+  return anySuccess;
+};

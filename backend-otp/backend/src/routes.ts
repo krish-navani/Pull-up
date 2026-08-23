@@ -2,7 +2,7 @@ import { Request, Response, Router } from 'express';
 import { config } from './config.js';
 import { sendOTPEmail } from './emailService.js';
 import { rateLimiter, verifyRateLimiter, validateEmail, validateOTP } from './middleware.js';
-import { sendOTP, verifyOTP } from './otpService.js';
+import { deleteOTP, sendOTP, verifyOTP } from './otpService.js';
 import { getDb } from './firebase.js';
 import Razorpay from 'razorpay';
 import crypto from 'crypto';
@@ -29,8 +29,17 @@ router.post('/test-notification', async (req: Request, res: Response) => {
   const { userId, type = 'booking_accepted', title = '🚗 Test Push', message = 'Push notification verified!' } = req.body;
   if (!userId) return res.status(400).json({ success: false, message: 'userId required' });
   try {
-    const sent = await triggerNotification(userId, type, title, message, 'test-ride-123');
-    res.json({ success: sent, message: sent ? 'Notification sent' : 'Notification failed' });
+    const dispatch = await triggerNotification(userId, type, title, message, 'test-ride-123');
+    res.json({
+      success: dispatch.pushSent,
+      pushSent: dispatch.pushSent,
+      notifId: dispatch.notificationId,
+      messageId: dispatch.messageId,
+      status: dispatch.status,
+      failureReason: dispatch.failureReason,
+      deliveryDetails: dispatch.deliveryDetails,
+      message: dispatch.pushSent ? 'Notification sent' : 'Notification failed'
+    });
   } catch (err: any) {
     res.status(500).json({ success: false, message: err.message });
   }
@@ -457,12 +466,16 @@ router.post('/send-otp', rateLimiter, async (req: Request, res: Response) => {
       emailDeliveryTimeMs = emailEndTime - emailStartTime;
       console.log(`[SMS/EMAIL PROVIDER SUCCESS] [${new Date(emailEndTime).toISOString()}] Sent successfully (took ${emailDeliveryTimeMs}ms)`);
     } catch (emailError: any) {
-      console.warn(`[SMS/EMAIL PROVIDER NOTICE] Email delivery attempted (${emailError.message}). Proceeding with OTP flow.`);
+      console.error(`[SMS/EMAIL PROVIDER FAILED] Email delivery failed (${emailError.message}). OTP will not be treated as sent.`);
+      await deleteOTP(fullEmail).catch((deleteErr: any) => {
+        console.error(`[OTP CLEANUP] Failed to delete undelivered OTP for ${fullEmail}:`, deleteErr.message);
+      });
       const responseTime = Date.now();
-      console.log(`[RESPONSE SENT TO CLIENT] [${new Date(responseTime).toISOString()}] Status: 200 (OTP issued, total time: ${responseTime - requestReceivedTime}ms)`);
-      return res.json({
-        success: true,
-        message: 'OTP sent to your email',
+      console.log(`[RESPONSE SENT TO CLIENT] [${new Date(responseTime).toISOString()}] Status: 502 (OTP email delivery failed, total time: ${responseTime - requestReceivedTime}ms)`);
+      return res.status(502).json({
+        success: false,
+        code: 'OTP_EMAIL_DELIVERY_FAILED',
+        message: 'OTP email could not be delivered. Please try again later.',
       });
     }
 
@@ -2024,13 +2037,13 @@ router.post('/accept-booking', async (req: Request, res: Response) => {
     // Send notifications & log analytics
     await triggerNotification(
       result.passengerId,
-      'booking_confirmed',
+      'booking_accepted',
       'Ride Confirmed! 🎉',
       `Your booking request was approved by the driver.`,
       result.rideId,
       bookingId,
-      'ride-details',
-      result.rideId
+      'my-bookings',
+      bookingId
     ).catch(e => console.error('[ACCEPT_BOOKING] Notif error:', e));
 
     // Log event to analytics
@@ -3102,6 +3115,72 @@ async function recordNotificationSuccess(db: any, userId: string) {
   }
 }
 
+type PushProvider = 'fcm' | 'expo';
+
+type SelectedPushToken = {
+  token: string | null;
+  provider: PushProvider | null;
+  reason: string | null;
+};
+
+type NotificationDispatchResult = {
+  pushSent: boolean;
+  notificationId: string | null;
+  status: 'sent' | 'failed' | 'skipped';
+  failureReason: string | null;
+  provider: PushProvider | null;
+  messageId: string | null;
+  deliveryDetails: Record<string, any>;
+};
+
+function normalizePushToken(token: unknown): string | null {
+  return typeof token === 'string' && token.trim().length > 0 ? token.trim() : null;
+}
+
+function isExpoPushToken(token: string | null): boolean {
+  return !!token && (token.startsWith('ExponentPushToken') || token.startsWith('ExpoPushToken'));
+}
+
+function isKnownTestPushToken(token: string | null): boolean {
+  if (!token) return false;
+  const lower = token.toLowerCase();
+  return lower.includes('e2e_test_token') || lower.includes('test_push_token') || lower === 'test-token' || lower === 'dummy' || lower === 'mock';
+}
+
+function isNativeFcmToken(token: string | null): boolean {
+  return !!token && token.length > 40 && !isExpoPushToken(token) && !isKnownTestPushToken(token);
+}
+
+function isValidExpoPushToken(token: string | null): boolean {
+  return isExpoPushToken(token) && !isKnownTestPushToken(token);
+}
+
+function selectPushToken(userData: Record<string, any>): SelectedPushToken {
+  const rawFcm = normalizePushToken(userData.fcmToken);
+  const rawExpo = normalizePushToken(userData.expoPushToken);
+  const platform = typeof userData.devicePlatform === 'string' ? userData.devicePlatform.toLowerCase() : 'unknown';
+
+  if (isNativeFcmToken(rawFcm)) {
+    return { token: rawFcm, provider: 'fcm', reason: null };
+  }
+
+  if (platform === 'android') {
+    if (isKnownTestPushToken(rawFcm) || isKnownTestPushToken(rawExpo)) {
+      return { token: null, provider: null, reason: 'MISSING_PUSH_TOKEN_TEST_TOKEN_REJECTED' };
+    }
+    return { token: null, provider: null, reason: 'MISSING_PUSH_TOKEN_NATIVE_FCM_REQUIRED' };
+  }
+
+  if (isValidExpoPushToken(rawExpo)) {
+    return { token: rawExpo, provider: 'expo', reason: null };
+  }
+
+  if (isKnownTestPushToken(rawFcm) || isKnownTestPushToken(rawExpo)) {
+    return { token: null, provider: null, reason: 'MISSING_PUSH_TOKEN_TEST_TOKEN_REJECTED' };
+  }
+
+  return { token: null, provider: null, reason: 'MISSING_PUSH_TOKEN' };
+}
 // Helper function to send unified notification and push alert
 export async function triggerNotification(
   userId: string,
@@ -3114,17 +3193,28 @@ export async function triggerNotification(
   targetId: string | null = null,
   campaignId: string | null = null,
   isRetry = false
-): Promise<boolean> {
+): Promise<NotificationDispatchResult> {
   const startTime = Date.now();
   console.log(`\n=========================================================`);
   console.log(`[STAGE 1: EVENT TRIGGERED] type=${type}, userId=${userId}, rideId=${rideId}, title="${title}"`);
+  let notificationId: string | null = null;
+  let deliveryDetails: Record<string, any> = {
+    provider: null,
+    httpStatus: null,
+    ticketId: null,
+    messageId: null,
+    latencyMs: 0,
+    sentAt: null,
+    failedAt: null,
+    responseBody: null
+  };
 
   try {
     const db = getDb();
 
     // Prepare in-app notification subcollection key & write history
     const dedupeBucket = Math.floor(Date.now() / (5 * 60 * 1000)).toString();
-    const notificationId = safeNotificationId(userId, type, rideId || bookingId || targetId || campaignId || 'general', dedupeBucket);
+    notificationId = safeNotificationId(userId, type, rideId || bookingId || targetId || campaignId || 'general', dedupeBucket);
     const notifRef = db.collection('users').doc(userId).collection('notifications').doc(notificationId);
     
     console.log(`[STAGE 2: NOTIFICATION HISTORY WRITTEN] notificationId=${notificationId}`);
@@ -3134,7 +3224,15 @@ export async function triggerNotification(
     const tRecipientResolved = Date.now();
     if (!userDoc.exists) {
       console.warn(`[STAGE 3: RECIPIENT RESOLVED] USER_NOT_FOUND userId=${userId} (${tRecipientResolved - startTime}ms)`);
-      return false;
+      return {
+        pushSent: false,
+        notificationId,
+        status: 'failed',
+        failureReason: 'USER_NOT_FOUND',
+        provider: null,
+        messageId: null,
+        deliveryDetails
+      };
     }
 
     const userData = userDoc.data() || {};
@@ -3170,7 +3268,15 @@ export async function triggerNotification(
 
       if (isDuplicate) {
         console.log(`[DEDUPLICATION] Suppressed duplicate notification of type ${type} for user ${userId} within 5 minutes.`);
-        return false;
+        return {
+          pushSent: false,
+          notificationId,
+          status: 'skipped',
+          failureReason: 'DUPLICATE_SUPPRESSED',
+          provider: null,
+          messageId: null,
+          deliveryDetails
+        };
       }
     } catch (e: any) {
       console.warn('[DEDUPLICATION] Check failed (could be missing index or empty collection), proceeding:', e.message);
@@ -3201,29 +3307,19 @@ export async function triggerNotification(
       isAllowed = false; // Promotional notifications strictly disabled for production launch
     }
 
-    // Resolve active token (prioritize real native FCM token if present, fallback to Expo token)
-    let activeToken: string | null = null;
-    const rawExpo = userData.expoPushToken;
-    const rawFcm = userData.fcmToken;
-    if (rawFcm && !rawFcm.startsWith('ExponentPushToken') && !rawFcm.startsWith('ExpoPushToken')) {
-      activeToken = rawFcm;
-    } else if (rawExpo && (rawExpo.startsWith('ExponentPushToken') || rawExpo.startsWith('ExpoPushToken'))) {
-      activeToken = rawExpo;
-    } else if (rawFcm && (rawFcm.startsWith('ExponentPushToken') || rawFcm.startsWith('ExpoPushToken'))) {
-      activeToken = rawFcm;
-    } else {
-      activeToken = rawFcm || rawExpo || null;
-    }
-
-    const isExpoToken = activeToken ? (activeToken.startsWith('ExponentPushToken') || activeToken.startsWith('ExpoPushToken')) : false;
+    // Resolve active token. Android production builds must use native FCM through Firebase Admin.
+    const selectedToken = selectPushToken(userData);
+    const activeToken = selectedToken.token;
     const tTokenResolved = Date.now();
-    console.log(`[STAGE 4: EXPO TOKEN LOADED] isAllowed=${isAllowed}, token=${activeToken ? activeToken.substring(0, 22) + '...' : 'NONE'}, isExpoToken=${isExpoToken} (${tTokenResolved - startTime}ms)`);
+    console.log(`[STAGE 4: PUSH TOKEN SELECTED] isAllowed=${isAllowed}, provider=${selectedToken.provider || 'none'}, reason=${selectedToken.reason || 'OK'}, token=${activeToken ? activeToken.substring(0, 22) + '...' : 'NONE'} (${tTokenResolved - startTime}ms)`);
 
     let pushSent = false;
     let failureReason: string | null = null;
-    let deliveryDetails: Record<string, any> = {
+    deliveryDetails = {
+      provider: selectedToken.provider,
       httpStatus: null,
       ticketId: null,
+      messageId: null,
       latencyMs: 0,
       sentAt: null,
       failedAt: null,
@@ -3231,12 +3327,12 @@ export async function triggerNotification(
     };
 
     const tPushStart = Date.now();
-    if (isAllowed && activeToken && !isExpoToken) {
-      console.log(`[STAGE 5: EXPO REQUEST SENT] Sending FCM push to ${activeToken.substring(0, 15)}...`);
+    if (isAllowed && activeToken && selectedToken.provider === 'fcm') {
+      console.log(`[STAGE 5: FCM REQUEST SENT] Sending native FCM push to ${activeToken.substring(0, 15)}...`);
       try {
-        let unreadCount = 1;
-        await withPushRetry('FCM send', () => admin.messaging().send({
-          token: activeToken!,
+        const unreadCount = 1;
+        const messageId = await withPushRetry('FCM send', () => admin.messaging().send({
+          token: activeToken,
           notification: { title, body: message },
           data: {
             type,
@@ -3255,27 +3351,39 @@ export async function triggerNotification(
 
         const tPushEnd = Date.now();
         pushSent = true;
+        deliveryDetails.provider = 'fcm';
         deliveryDetails.httpStatus = 200;
+        deliveryDetails.messageId = messageId;
         deliveryDetails.latencyMs = tPushEnd - tPushStart;
         deliveryDetails.sentAt = new Date().toISOString();
         console.log(`[STAGE 6: HTTP STATUS] status=200`);
-        console.log(`[STAGE 7: EXPO RESPONSE BODY] FCM message accepted`);
-        console.log(`[STAGE 8: EXPO TICKET ID] fcm_direct`);
+        console.log(`[STAGE 7: FCM RESPONSE BODY] messageId=${messageId}`);
+        console.log(`[STAGE 8: FCM MESSAGE ID] ${messageId}`);
       } catch (err: any) {
         const tPushEnd = Date.now();
         pushSent = false;
         failureReason = err.message || err.code || 'FCM_SEND_FAILED';
+        deliveryDetails.provider = 'fcm';
         deliveryDetails.httpStatus = err.code || 500;
         deliveryDetails.latencyMs = tPushEnd - tPushStart;
         deliveryDetails.failedAt = new Date().toISOString();
+        deliveryDetails.responseBody = { code: err.code || null, message: err.message || null };
         console.log(`[STAGE 6: HTTP STATUS] status=${deliveryDetails.httpStatus}`);
-        console.log(`[STAGE 7: EXPO RESPONSE BODY] ${failureReason}`);
-        console.log(`[STAGE 8: EXPO TICKET ID] NONE`);
+        console.log(`[STAGE 7: FCM RESPONSE BODY] ${JSON.stringify(deliveryDetails.responseBody)}`);
+        console.log(`[STAGE 8: FCM MESSAGE ID] NONE`);
         if (err.code === 'messaging/registration-token-not-registered' || err.code === 'messaging/invalid-registration-token') {
+          try {
+            await db.collection('users').doc(userId).update({
+              fcmToken: admin.firestore.FieldValue.delete(),
+              lastTokenRefresh: new Date().toISOString(),
+            });
+          } catch (clearErr: any) {
+            console.error('[NOTIFICATIONS] Failed to clear invalid FCM token:', clearErr.message);
+          }
           await recordNotificationFailure(db, userId, failureReason!);
         }
       }
-    } else if (isAllowed && activeToken && isExpoToken) {
+    } else if (isAllowed && activeToken && selectedToken.provider === 'expo') {
       const requestPayload = {
         to: activeToken,
         sound: 'default',
@@ -3324,6 +3432,7 @@ export async function triggerNotification(
 
           const tPushEnd = Date.now();
           const latencyMs = tPushEnd - tPushStart;
+          deliveryDetails.provider = 'expo';
           deliveryDetails.latencyMs = latencyMs;
           deliveryDetails.httpStatus = expoResponse.status;
 
@@ -3346,6 +3455,14 @@ export async function triggerNotification(
               failureReason = ticket?.message || ticket?.details?.error || 'ExpoTicketError';
               deliveryDetails.failedAt = new Date().toISOString();
               if (ticket?.details?.error === 'DeviceNotRegistered' || ticket?.details?.error === 'InvalidCredentials' || ticket?.details?.error === 'InvalidPushToken') {
+                try {
+                  await db.collection('users').doc(userId).update({
+                    expoPushToken: admin.firestore.FieldValue.delete(),
+                    lastTokenRefresh: new Date().toISOString(),
+                  });
+                } catch (clearErr: any) {
+                  console.error('[NOTIFICATIONS] Failed to clear invalid Expo token:', clearErr.message);
+                }
                 await recordNotificationFailure(db, userId, failureReason!);
               }
             }
@@ -3363,8 +3480,10 @@ export async function triggerNotification(
         const tPushEnd = Date.now();
         pushSent = false;
         failureReason = err.name === 'AbortError' ? 'EXPO_TIMEOUT_7S' : (err.message || 'EXPO_FETCH_FAILED');
+        deliveryDetails.provider = 'expo';
         deliveryDetails.latencyMs = tPushEnd - tPushStart;
         deliveryDetails.failedAt = new Date().toISOString();
+        deliveryDetails.responseBody = { name: err.name || null, message: err.message || null };
         console.log(`[STAGE 6: HTTP STATUS] status=FETCH_ERROR`);
         console.log(`[STAGE 7: EXPO RESPONSE BODY] error=${failureReason}`);
         console.log(`[STAGE 8: EXPO TICKET ID] NONE`);
@@ -3373,12 +3492,11 @@ export async function triggerNotification(
       if (!isAllowed) {
         failureReason = 'USER_PREFERENCE_MUTED';
       } else if (!activeToken) {
-        failureReason = 'MISSING_PUSH_TOKEN';
+        failureReason = selectedToken.reason || 'MISSING_PUSH_TOKEN';
       }
       deliveryDetails.failedAt = new Date().toISOString();
       console.log(`[STAGE 5-8: SKIPPED] pushSent=false reason=${failureReason}`);
     }
-
     // Determine final status
     const finalStatus = pushSent ? 'sent' : 'failed';
     console.log(`[STAGE 9: FINAL FIRESTORE STATUS] status=${finalStatus}`);
@@ -3420,10 +3538,30 @@ export async function triggerNotification(
       }, { merge: true }).catch(e => console.error('[ANALYTICS] Campaign updates failed:', e));
     }
 
-    return pushSent;
+    return {
+      pushSent,
+      notificationId,
+      status: finalStatus,
+      failureReason: pushSent ? null : (failureReason || 'UNDELIVERED'),
+      provider: deliveryDetails.provider || selectedToken.provider,
+      messageId: deliveryDetails.messageId || null,
+      deliveryDetails
+    };
   } catch (error: any) {
     console.error('[TRIGGER NOTIFICATION ERROR]', error);
-    return false;
+    return {
+      pushSent: false,
+      notificationId,
+      status: 'failed',
+      failureReason: error.message || 'TRIGGER_NOTIFICATION_ERROR',
+      provider: deliveryDetails.provider || null,
+      messageId: deliveryDetails.messageId || null,
+      deliveryDetails: {
+        ...deliveryDetails,
+        failedAt: deliveryDetails.failedAt || new Date().toISOString(),
+        responseBody: deliveryDetails.responseBody || { message: error.message || null },
+      }
+    };
   }
 }
 
@@ -3590,7 +3728,7 @@ router.post('/send-notification', async (req: Request, res: Response) => {
   }
 
   try {
-    const pushSent = await triggerNotification(
+    const dispatch = await triggerNotification(
       userId,
       type,
       title,
@@ -3601,7 +3739,18 @@ router.post('/send-notification', async (req: Request, res: Response) => {
       targetId,
       campaignId
     );
-    res.json({ success: true, pushSent });
+    const httpStatus = dispatch.pushSent || dispatch.status === 'skipped' ? 200 : 424;
+    res.status(httpStatus).json({
+      success: dispatch.pushSent,
+      pushSent: dispatch.pushSent,
+      notifId: dispatch.notificationId,
+      notificationId: dispatch.notificationId,
+      provider: dispatch.provider,
+      messageId: dispatch.messageId,
+      status: dispatch.status,
+      failureReason: dispatch.failureReason,
+      deliveryDetails: dispatch.deliveryDetails
+    });
   } catch (error: any) {
     console.error('[ROUTES] /send-notification error:', error);
     res.status(500).json({ success: false, message: error.message });
@@ -3727,7 +3876,7 @@ export async function processNotificationQueue(): Promise<number> {
       
       console.log(`[QUEUE RETRY] Attempting retry ${attempts} for user ${data.userId}, doc ID ${docSnap.id}`);
       
-      const success = await triggerNotification(
+      const dispatch = await triggerNotification(
         data.userId,
         data.type,
         data.title,
@@ -3739,6 +3888,7 @@ export async function processNotificationQueue(): Promise<number> {
         data.campaignId,
         true // isRetry = true (prevents infinite queue loop)
       );
+      const success = dispatch.pushSent;
       
       const updateData: Record<string, any> = {
         attempts,
@@ -4736,7 +4886,7 @@ router.post('/debug-notification', async (req: Request, res: Response) => {
 
     // Step 4: Send Push Notification (Backend Dispatch)
     try {
-      const pushSent = await triggerNotification(
+      const dispatch = await triggerNotification(
         userId,
         'general',
         '⚡ PullUp Diagnostics',
@@ -4745,7 +4895,7 @@ router.post('/debug-notification', async (req: Request, res: Response) => {
         'debug'
       );
 
-      if (pushSent) {
+      if (dispatch.pushSent) {
         result.EXPO_SEND = 'PASS';
         result.EXPO_RECEIPT = 'PASS';
         result.DEVICE = 'PASS';

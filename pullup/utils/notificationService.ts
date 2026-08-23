@@ -1,5 +1,4 @@
 import {
-    addDoc,
     collection,
     deleteDoc,
     doc,
@@ -8,7 +7,6 @@ import {
     onSnapshot,
     orderBy,
     query,
-    serverTimestamp,
     Timestamp,
     Unsubscribe,
     updateDoc,
@@ -50,6 +48,8 @@ export type NotificationType =
   | 'general'
   | 'booking_expired'
   | 'driver_arrived'           // Driver is within 50m of passenger pickup
+  | 'live_tracking'
+  | 'location_update'
   | 'passenger_confirmed_pickup'; // Passenger confirmed they boarded
 
 export interface Notification {
@@ -81,20 +81,31 @@ export const sendNotification = async (
   senderName?: string,
   actionUrl?: string
 ): Promise<string> => {
-  // Fetch token for logging
+  // Fetch token for tracing only; delivery is handled by the backend Admin SDK.
   let token = 'unknown';
+  let tokenType = 'none';
   try {
     const userRef = doc(db, 'users', userId);
     const userSnap = await getDoc(userRef);
     if (userSnap.exists()) {
-      token = userSnap.data()?.expoPushToken || 'unknown';
+      const userData = userSnap.data();
+      const fcmToken = typeof userData?.fcmToken === 'string' ? userData.fcmToken.trim() : '';
+      const expoPushToken = typeof userData?.expoPushToken === 'string' ? userData.expoPushToken.trim() : '';
+      if (fcmToken && !fcmToken.startsWith('ExponentPushToken') && !fcmToken.startsWith('ExpoPushToken')) {
+        token = `${fcmToken.slice(0, 22)}...`;
+        tokenType = 'fcm';
+      } else if (expoPushToken) {
+        token = `${expoPushToken.slice(0, 22)}...`;
+        tokenType = 'expo';
+      }
     }
   } catch (err) {
     console.warn('[NOTIFICATIONS] Failed to fetch recipient token for logging:', err);
   }
 
-  console.log(`[NOTIFICATION SENT]
+  console.log(`[NOTIFICATION DISPATCH REQUEST]
 recipientId: ${userId}
+tokenType: ${tokenType}
 token: ${token}
 type: ${type}`);
 
@@ -158,34 +169,26 @@ type: ${type}`);
       }),
     });
 
-    if (!response.ok) {
-      throw new Error(`Server returned status code: ${response.status}`);
+    const resData = await response.json().catch(() => ({}));
+
+    if (!response.ok || resData.pushSent === false) {
+      const reason = resData.failureReason || resData.message || `HTTP_${response.status}`;
+      const err = new Error(`Backend notification dispatch failed: ${reason}`);
+      (err as any).details = resData;
+      throw err;
     }
 
-    const resData = await response.json();
-    return resData.notifId || Math.random().toString(36).substring(7);
-  } catch (error) {
-    console.warn('[NOTIFICATIONS] API dispatch failed, falling back to local Firestore write:', error);
-
-    // Fallback: Write directly to subcollection if backend is unavailable
-    const notificationsRef = collection(db, 'users', userId, 'notifications');
-    const notificationDoc = await addDoc(notificationsRef, {
-      userId,
-      type,
-      title,
-      message,
-      rideId,
-      bookingId: bookingId || null,
-      senderId: senderId || null,
-      senderName: senderName || null,
-      read: false,
-      createdAt: serverTimestamp(),
-      actionUrl: actionUrl || null,
-      targetScreen: targetScreen || null,
-      targetId: targetId || null,
+    console.log('[NOTIFICATIONS] Backend dispatch result:', {
+      notifId: resData.notifId,
+      provider: resData.provider,
+      messageId: resData.messageId,
+      status: resData.status,
     });
 
-    return notificationDoc.id;
+    return resData.notifId || resData.notificationId || Math.random().toString(36).substring(7);
+  } catch (error) {
+    console.warn('[NOTIFICATIONS] API dispatch failed; no local push fallback will be created:', error);
+    throw error;
   }
 };
 
@@ -234,20 +237,13 @@ export const subscribeToNotifications = (
         querySnapshot.docChanges().forEach((change) => {
           if (change.type === 'added') {
             const notifData = change.doc.data();
-            const createdTime = notifData.createdAt ? new Date(notifData.createdAt).getTime() : 0;
-            if (Date.now() - createdTime < 2 * 60 * 1000) {
-              Notifications.scheduleNotificationAsync({
-                content: {
-                  title: notifData.title || 'PullUp Alert',
-                  body: notifData.message || '',
-                  sound: 'default',
-                  channelId: 'default',
-                  badge: 1,
-                  data: notifData,
-                },
-                trigger: null,
-              }).catch((err) => console.warn('[NOTIFICATIONS] Error scheduling tray notification:', err));
-            }
+            console.log('[NOTIFICATIONS] History document added:', {
+              id: change.doc.id,
+              type: notifData.type,
+              status: notifData.status,
+              provider: notifData.deliveryDetails?.provider,
+              messageId: notifData.deliveryDetails?.messageId,
+            });
           }
         });
 
