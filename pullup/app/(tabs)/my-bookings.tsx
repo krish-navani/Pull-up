@@ -2,7 +2,7 @@ import { useAppContext } from '@/context/AppContext';
 import { Booking } from '@/types';
 import { WARM_CORE } from '@/constants/theme';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import * as WebBrowser from 'expo-web-browser';
 import apiClient from '@/utils/backendApiClient';
@@ -299,6 +299,7 @@ const getTimeRemaining = (departureTimeStr: string) => {
 
 export default function MyBookingsScreen() {
   const router = useRouter();
+  const routeParams = useLocalSearchParams<{ bookingId?: string | string[]; rideId?: string | string[]; targetId?: string | string[] }>();
   const { 
     bookings, 
     rides, 
@@ -426,6 +427,9 @@ export default function MyBookingsScreen() {
   const [subTab, setSubTab] = useState<'car' | 'taxi'>('car');
   const [selectedRideForDetails, setSelectedRideForDetails] = useState<string | null>(null);
   const [selectedRideBookings, setSelectedRideBookings] = useState<any[]>([]);
+  const [realtimeHostedCarPools, setRealtimeHostedCarPools] = useState<any[]>([]);
+  const [hasLoadedRealtimeHostedCarPools, setHasLoadedRealtimeHostedCarPools] = useState(false);
+  const handledRouteTargetRef = useRef<string | null>(null);
 
   // Listen to bookings for the selected hosted ride in real-time (bypassing context bookings array)
   useEffect(() => {
@@ -451,6 +455,102 @@ export default function MyBookingsScreen() {
       if (unsubscribe) unsubscribe();
     };
   }, [selectedRideForDetails, canStartRealtimeListeners, auth.user?.id]);
+
+  // Keep Hosting tied to the driver's ride docs so created rides and pending
+  // request banners update from the same Firestore source.
+  useEffect(() => {
+    const currentUserId = auth.user?.id;
+    if (!canStartRealtimeListeners || !currentUserId) {
+      setRealtimeHostedCarPools([]);
+      setHasLoadedRealtimeHostedCarPools(false);
+      return;
+    }
+
+    const q = query(collection(db, 'rides'), where('driverId', '==', currentUserId));
+    console.log('[MY-BOOKINGS] Subscribing to hosted rides for:', currentUserId);
+    const unsubscribe = onSnapshot(
+      q,
+      (snapshot) => {
+        const driverRides = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data();
+          return {
+            id: docSnap.id,
+            ...data,
+            bookedSeats: Array.isArray(data.bookedSeats) ? data.bookedSeats : [],
+          };
+        });
+        console.log('[MY-BOOKINGS] Hosted rides update, count:', driverRides.length);
+        setRealtimeHostedCarPools(driverRides);
+        setHasLoadedRealtimeHostedCarPools(true);
+      },
+      (err) => {
+        console.error('[MY-BOOKINGS] Hosted rides subscription error:', err);
+      }
+    );
+
+    return () => unsubscribe();
+  }, [canStartRealtimeListeners, auth.user?.id]);
+
+  const getParamString = (value?: string | string[]) => Array.isArray(value) ? value[0] : value;
+
+  useEffect(() => {
+    const currentUserId = auth.user?.id;
+    const requestedBookingId = getParamString(routeParams.bookingId) || getParamString(routeParams.targetId);
+    const requestedRideId = getParamString(routeParams.rideId);
+    const routeKey = `${requestedBookingId || ''}:${requestedRideId || ''}:${currentUserId || ''}`;
+
+    if (!canStartRealtimeListeners || !currentUserId || (!requestedBookingId && !requestedRideId)) return;
+    if (handledRouteTargetRef.current === routeKey) return;
+    handledRouteTargetRef.current = routeKey;
+
+    let isCancelled = false;
+    const openRequestedTarget = async () => {
+      try {
+        if (requestedBookingId) {
+          const bookingSnap = await getDoc(doc(db, 'bookings', requestedBookingId));
+          if (!isCancelled && bookingSnap.exists()) {
+            const bookingData = bookingSnap.data();
+            if (bookingData.driverId === currentUserId) {
+              setActiveTab('hosting');
+              setSubTab('car');
+              setSelectedRideForDetails(bookingData.rideId);
+              setSelectedRideBookings((prev) => {
+                const routedBooking = { id: bookingSnap.id, ...bookingData };
+                return [routedBooking, ...prev.filter((b) => b.id !== bookingSnap.id)];
+              });
+              return;
+            }
+            if (bookingData.passengerId === currentUserId) {
+              setActiveTab('riding');
+              setSubTab('car');
+              return;
+            }
+          }
+        }
+
+        const rideIdToOpen = requestedRideId || requestedBookingId;
+        if (rideIdToOpen) {
+          const rideSnap = await getDoc(doc(db, 'rides', rideIdToOpen));
+          if (!isCancelled && rideSnap.exists()) {
+            const rideData = rideSnap.data();
+            if (rideData.driverId === currentUserId) {
+              setActiveTab('hosting');
+              setSubTab('car');
+              setSelectedStatus(['active', 'in_progress', 'completed', 'cancelled'].includes(rideData.status) ? rideData.status : 'active');
+              setSelectedRideForDetails(rideSnap.id);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('[MY-BOOKINGS] Failed to open notification target:', error);
+      }
+    };
+
+    openRequestedTarget();
+    return () => {
+      isCancelled = true;
+    };
+  }, [routeParams.bookingId, routeParams.rideId, routeParams.targetId, canStartRealtimeListeners, auth.user?.id]);
   const [selectedStatus, setSelectedStatus] = useState<'active' | 'in_progress' | 'completed' | 'cancelled'>('active');
   const [joinedTaxiPools, setJoinedTaxiPools] = useState<TaxiPool[]>([]);
   const [createdTaxiPools, setCreatedTaxiPools] = useState<TaxiPool[]>([]);
@@ -603,7 +703,8 @@ export default function MyBookingsScreen() {
     return result;
   })();
 
-  const hostedCarPools = (rides ?? []).filter(r => r.driverId === auth.user?.id);
+  const hostedCarPoolSource = hasLoadedRealtimeHostedCarPools ? realtimeHostedCarPools : (rides ?? []);
+  const hostedCarPools = hostedCarPoolSource.filter(r => r.driverId === auth.user?.id);
   const filteredHostedCarPools = hostedCarPools
     .filter(ride => ride.status === selectedStatus)
     .sort((a, b) => new Date(a.departureTime).getTime() - new Date(b.departureTime).getTime());
@@ -717,18 +818,49 @@ export default function MyBookingsScreen() {
   };
 
   const getDriverRideEarnings = (ride: any) => {
-    const acceptedSeatsCount = ride.bookedSeats
+    const acceptedSeatsCount = (ride.bookedSeats ?? [])
       .filter((bs: any) => bs.status === 'accepted' || bs.status === 'confirmed')
       .reduce((sum: number, bs: any) => sum + bs.seatsBooked, 0);
     return acceptedSeatsCount * ride.price;
   };
 
   const getDetailedRide = (rideId: string) => {
-    return rides.find(r => r.id === rideId);
+    return hostedCarPools.find(r => r.id === rideId) || rides.find(r => r.id === rideId);
   };
 
   const getCurrentRidePassengers = (rideId: string) => {
     return bookings.filter(b => b.rideId === rideId);
+  };
+
+  const getPassengersForSelectedRide = () => {
+    if (!selectedRideForDetails) return selectedRideBookings;
+    const ride = getDetailedRide(selectedRideForDetails);
+    if (!ride) return selectedRideBookings;
+
+    const bookingByPassengerId = new Map(
+      selectedRideBookings
+        .filter((booking) => booking.passengerId)
+        .map((booking) => [booking.passengerId, booking])
+    );
+    const passengersFromRide = (ride.bookedSeats ?? []).map((seat: any) => {
+      const firestoreBooking = bookingByPassengerId.get(seat.passengerId);
+      return {
+        id: `${ride.id}_${seat.passengerId}`,
+        rideId: ride.id,
+        driverId: ride.driverId,
+        passengerId: seat.passengerId,
+        passengerName: seat.passengerName,
+        seatsBooked: seat.seatsBooked ?? 1,
+        status: seat.status ?? 'pending',
+        paymentStatus: seat.paymentStatus ?? 'pending',
+        bookedAt: seat.bookedAt,
+        ...seat,
+        ...(firestoreBooking ?? {}),
+      };
+    });
+    const passengerIdsFromRide = new Set(passengersFromRide.map((booking: any) => booking.passengerId));
+    const bookingsNotInRideSeats = selectedRideBookings.filter((booking) => !passengerIdsFromRide.has(booking.passengerId));
+    return [...passengersFromRide, ...bookingsNotInRideSeats];
   };
 
   // Render hosted car pools (driver view)
@@ -736,7 +868,7 @@ export default function MyBookingsScreen() {
     const statusBadge = getDriverStatusBadge(ride.status);
     const confirmedSeats = ride.totalSeats - ride.availableSeats;
     const earnings = getDriverRideEarnings(ride);
-    const pendingCount = ride.bookedSeats.filter((b: any) => b.status === 'pending').length;
+    const pendingCount = (ride.bookedSeats ?? []).filter((b: any) => b.status === 'pending').length;
 
     return (
       <PressableCard
@@ -1496,10 +1628,10 @@ export default function MyBookingsScreen() {
       </SafeAreaView>
 
       {/* RIDE DETAILS MODAL */}
-      {selectedRideForDetails && (
+      {selectedRideForDetails && getDetailedRide(selectedRideForDetails) && (
         <RideDetailsModal
           ride={getDetailedRide(selectedRideForDetails)!}
-          passengers={selectedRideBookings}
+          passengers={getPassengersForSelectedRide()}
           earnings={getDriverRideEarnings(getDetailedRide(selectedRideForDetails)!)}
           onClose={() => setSelectedRideForDetails(null)}
           onAcceptPassenger={async (passengerId) => {

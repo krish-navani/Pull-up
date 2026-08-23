@@ -57,9 +57,9 @@ const testProvider = async (provider) => {
     requireTLS: provider.requireTLS,
     auth: { user: provider.user, pass: provider.pass },
     tls: { rejectUnauthorized: false },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 15000,
+    connectionTimeout: 5000,
+    greetingTimeout: 5000,
+    socketTimeout: 7000,
   });
 
   try {

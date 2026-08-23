@@ -395,12 +395,11 @@ export const createJoinRequest = async (
 
     console.log('[TAXI POOL SERVICE] ✅ Created Join Request:', docRef.id);
 
-    // Send notification to pool creator (reuse standard booking_request or similar notification type)
-    // We can pass the poolId as the rideId parameter
+    // Send notification to the pool creator with the taxi-pool route type.
     try {
       await sendNotification(
         creatorId,
-        'booking_request',
+        'pool_request',
         'New Pool Request',
         `${passenger.fullName} requested to join your Taxi Pool`,
         poolId,
@@ -492,7 +491,7 @@ export const acceptJoinRequest = async (
     try {
       await sendNotification(
         passenger.id,
-        'booking_accepted',
+        'pool_accepted',
         'Pool Request Approved',
         `You have been accepted into the Taxi Pool!`,
         poolId,

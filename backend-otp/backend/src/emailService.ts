@@ -49,9 +49,9 @@ const createTransporter = (candidate: SmtpCandidate): nodemailer.Transporter => 
     tls: {
       rejectUnauthorized: false,
     },
-    connectionTimeout: 10000,
-    greetingTimeout: 10000,
-    socketTimeout: 15000,
+    connectionTimeout: 5000,
+    greetingTimeout: 5000,
+    socketTimeout: 7000,
   });
 };
 

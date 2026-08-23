@@ -1458,7 +1458,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       try {
         console.log('[CONTEXT] Loading driver rides for:', driverId);
         const rides = await getDriverRides(driverId);
-        dispatch({ type: 'SET_RIDES', payload: rides });
+        dispatch({ type: 'MERGE_RIDES', payload: rides });
         console.log('[CONTEXT] ✅ Loaded', rides.length, 'driver rides');
       } catch (error: any) {
         console.error('[CONTEXT] ❌ Failed to load driver rides:', error);
@@ -1472,7 +1472,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       try {
         console.log('[CONTEXT] Loading all available rides for passengers');
         const rides = await getAllRides();
-        dispatch({ type: 'SET_RIDES', payload: rides });
+        dispatch({ type: 'MERGE_RIDES', payload: rides });
         dispatch({ type: 'SET_ERROR', payload: null }); // Clear any previous errors
         console.log('[CONTEXT] ✅ Loaded', rides.length, 'available rides');
       } catch (error: any) {
@@ -1550,7 +1550,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        const ride = state.rides.find(r => r.id === rideId);
+        let ride = state.rides.find(r => r.id === rideId);
+        if (!ride) {
+          const { getRideById: fetchRideById } = require('../utils/rideService');
+          ride = await fetchRideById(rideId);
+          if (ride) {
+            dispatch({ type: 'MERGE_RIDES', payload: [ride] });
+          }
+        }
         if (!ride) {
           throw new Error('Ride not found');
         }
@@ -1621,7 +1628,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           throw new Error('Booking not found in Firestore');
         }
 
-        const ride = state.rides.find(r => r.id === rideId);
+        let ride = state.rides.find(r => r.id === rideId);
+        if (!ride) {
+          const { getRideById: fetchRideById } = require('../utils/rideService');
+          ride = await fetchRideById(rideId);
+          if (ride) {
+            dispatch({ type: 'MERGE_RIDES', payload: [ride] });
+          }
+        }
         if (!ride) {
           throw new Error('Ride not found');
         }
