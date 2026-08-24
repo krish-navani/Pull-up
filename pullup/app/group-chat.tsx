@@ -99,7 +99,12 @@ export default function GroupChatScreen() {
     });
 
     const unsubMessages = subscribeToGroupMessages(rideId, messageLimit, (chatMessages) => {
-      setMessages(chatMessages);
+      setMessages((prev) => {
+        const pendingOptimistic = prev.filter(
+          (m) => m.id.startsWith('temp_') && !chatMessages.some((c) => c.text === m.text && c.senderId === m.senderId)
+        );
+        return [...chatMessages, ...pendingOptimistic];
+      });
       setLoading(false);
     });
 
@@ -314,7 +319,10 @@ export default function GroupChatScreen() {
   };
 
   const handleSend = async () => {
-    if (!messageText.trim() || !auth.user || sending) return;
+    if (!messageText.trim() || !auth.user) return;
+
+    const textToSend = messageText.trim();
+    setMessageText('');
 
     if (typingTimeoutRef.current) {
       clearTimeout(typingTimeoutRef.current);
@@ -322,21 +330,35 @@ export default function GroupChatScreen() {
     isCurrentlyTyping.current = false;
     setTypingStatus(false);
 
-    setSending(true);
+    // Optimistic message append (0ms perceived UI send latency)
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    const optimisticMsg: GroupChatMessage = {
+      id: tempId,
+      rideId,
+      senderId: auth.user.id,
+      senderName: auth.user.fullName,
+      senderPhoto: auth.user.profileImage || '',
+      text: textToSend,
+      createdAt: { seconds: Math.floor(Date.now() / 1000), nanoseconds: 0 },
+      type: 'text',
+      readBy: [auth.user.id],
+    };
+
+    setMessages((prev) => [...prev, optimisticMsg]);
+
     try {
       await sendGroupMessage(
         rideId,
         auth.user.id,
         auth.user.fullName,
         auth.user.profileImage || '',
-        messageText,
+        textToSend,
         'text'
       );
-      setMessageText('');
     } catch (err) {
+      console.warn('[GROUP CHAT] Send message error, removing optimistic item:', err);
+      setMessages((prev) => prev.filter((m) => m.id !== tempId));
       Alert.alert('Error', 'Failed to send message.');
-    } finally {
-      setSending(false);
     }
   };
 

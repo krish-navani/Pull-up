@@ -215,10 +215,10 @@ export default function NotificationsScreen() {
             pathname: '/group-chat',
             params: { rideId: targetId, bookingId: notification.bookingId || '' },
           } as any);
-        } else if (targetScreen === 'taxi-pool-details') {
+        } else if (targetScreen === 'taxi-pool-details' || (notification.type && notification.type.startsWith('pool_'))) {
           router.push({
             pathname: '/taxi-pool-details',
-            params: { poolId: targetId },
+            params: { poolId: targetId || notification.rideId },
           } as any);
         } else if (targetScreen === 'profile') {
           router.push('/(tabs)/profile' as any);
@@ -231,6 +231,11 @@ export default function NotificationsScreen() {
             router.push(notification.actionUrl as any);
           }
         }
+      } else if (notification.type && notification.type.startsWith('pool_')) {
+        router.push({
+          pathname: '/taxi-pool-details',
+          params: { poolId: notification.rideId },
+        } as any);
       } else if (notification.actionUrl) {
         if (notification.actionUrl.includes('taxi-pool-details')) {
           router.push({

@@ -660,7 +660,7 @@ export default function NavigationScreen() {
 
   const panelHeight = panelAnim.interpolate({
     inputRange: [0, 1],
-    outputRange: [190, 420],
+    outputRange: [240, Math.min(SCREEN_H * 0.72, 600)],
   });
 
   // ── Shared Location View ────────────────────────────────────────────────────
@@ -867,59 +867,86 @@ export default function NavigationScreen() {
           <View style={styles.panelHandleBar} />
         </TouchableOpacity>
 
-        {/* Status row */}
-        <View style={styles.panelStatusRow}>
-          <View style={styles.statusBadge}>
-            <Text style={styles.statusBadgeText}>
-              {ride.status === 'in_progress' ? '🚀 IN TRANSIT' : ride.status.toUpperCase()}
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={{ paddingBottom: 60 }}
+          showsVerticalScrollIndicator={true}
+          nestedScrollEnabled={true}
+        >
+          {/* Google Maps External Navigation Redirect */}
+          <TouchableOpacity
+            style={styles.googleMapsRedirectBtn}
+            onPress={() => {
+              const destLat = ride?.dropLocation?.latitude;
+              const destLng = ride?.dropLocation?.longitude;
+              if (destLat && destLng) {
+                const url = Platform.select({
+                  ios: `maps://app?daddr=${destLat},${destLng}`,
+                  android: `google.navigation:q=${destLat},${destLng}`,
+                }) || `https://www.google.com/maps/dir/?api=1&destination=${destLat},${destLng}`;
+                Linking.openURL(url).catch(() => {
+                  Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${destLat},${destLng}`);
+                });
+              }
+            }}
+            activeOpacity={0.8}
+          >
+            <MaterialCommunityIcons name="google-maps" size={18} color="#FFF" style={{ marginRight: 6 }} />
+            <Text style={styles.googleMapsRedirectBtnText}>Open in Google Maps Navigation</Text>
+          </TouchableOpacity>
+
+          {/* Status row */}
+          <View style={styles.panelStatusRow}>
+            <View style={styles.statusBadge}>
+              <Text style={styles.statusBadgeText}>
+                {ride.status === 'in_progress' ? '🚀 IN TRANSIT' : ride.status.toUpperCase()}
+              </Text>
+            </View>
+            <Text style={styles.etaText}>{routeDuration}</Text>
+            <Text style={styles.distText}>{routeDistance}</Text>
+          </View>
+
+          {/* Route pill */}
+          <View style={styles.routePill}>
+            <View style={styles.routePillDot} />
+            <Text style={styles.routePillText} numberOfLines={1}>
+              {ride.pickupLocation.address.split(',')[0]}
+            </Text>
+            <MaterialCommunityIcons name="arrow-right" size={14} color={WARM_CORE.textSecondary} style={{ marginHorizontal: 4 }} />
+            <Text style={styles.routePillDest} numberOfLines={1}>
+              {ride.dropLocation.address.split(',')[0]}
             </Text>
           </View>
-          <Text style={styles.etaText}>{routeDuration}</Text>
-          <Text style={styles.distText}>{routeDistance}</Text>
-        </View>
 
-        {/* Route pill */}
-        <View style={styles.routePill}>
-          <View style={styles.routePillDot} />
-          <Text style={styles.routePillText} numberOfLines={1}>
-            {ride.pickupLocation.address.split(',')[0]}
-          </Text>
-          <MaterialCommunityIcons name="arrow-right" size={14} color={WARM_CORE.textSecondary} style={{ marginHorizontal: 4 }} />
-          <Text style={styles.routePillDest} numberOfLines={1}>
-            {ride.dropLocation.address.split(',')[0]}
-          </Text>
-        </View>
-
-        {/* Progress Timeline */}
-        <View style={styles.timelineContainer}>
-          {stages.map((stage, idx) => {
-            const isCompleted = idx < currentStageIndex;
-            const isActive = idx === currentStageIndex;
-            const color = isCompleted ? '#10B981' : isActive ? WARM_CORE.primary : '#9CA3AF';
-            return (
-              <React.Fragment key={stage.label}>
-                <View style={styles.timelineStep}>
-                  <View style={[styles.timelineDot, { backgroundColor: color }]}>
-                    <MaterialCommunityIcons name={stage.icon as any} size={10} color="#FFF" />
+          {/* Progress Timeline */}
+          <View style={styles.timelineContainer}>
+            {stages.map((stage, idx) => {
+              const isCompleted = idx < currentStageIndex;
+              const isActive = idx === currentStageIndex;
+              const color = isCompleted ? '#10B981' : isActive ? WARM_CORE.primary : '#9CA3AF';
+              return (
+                <React.Fragment key={stage.label}>
+                  <View style={styles.timelineStep}>
+                    <View style={[styles.timelineDot, { backgroundColor: color }]}>
+                      <MaterialCommunityIcons name={stage.icon as any} size={10} color="#FFF" />
+                    </View>
+                    <Text style={[styles.timelineLabel, { color }]}>{stage.label}</Text>
                   </View>
-                  <Text style={[styles.timelineLabel, { color }]}>{stage.label}</Text>
-                </View>
-                {idx < stages.length - 1 && (
-                  <View style={[styles.timelineLink, { backgroundColor: idx < currentStageIndex ? '#10B981' : WARM_CORE.border }]} />
-                )}
-              </React.Fragment>
-            );
-          })}
-        </View>
+                  {idx < stages.length - 1 && (
+                    <View style={[styles.timelineLink, { backgroundColor: idx < currentStageIndex ? '#10B981' : WARM_CORE.border }]} />
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </View>
 
-        {/* Expanded content */}
-        {panelExpanded && (
-          <ScrollView style={styles.expandedContent} showsVerticalScrollIndicator={false}>
-            {/* Passenger list */}
-            {acceptedBookings.length > 0 && (
-              <View style={styles.passengerSection}>
-                <Text style={styles.sectionTitle}>Passengers</Text>
-                {acceptedBookings.map((b: any, idx: number) => (
+          {/* Passenger list */}
+          {acceptedBookings.length > 0 && (
+            <View style={styles.passengerSection}>
+              <Text style={styles.sectionTitle}>Passengers & Boarding Status</Text>
+              {acceptedBookings.map((b: any, idx: number) => {
+                const phoneToCall = b.passengerPhone || b.phone || (b.passengerId ? auth.user?.phone : null);
+                return (
                   <View key={idx} style={styles.passengerRow}>
                     <View style={[styles.passengerAvatar, b.pickedUp && { backgroundColor: '#10B981' }]}>
                       <Text style={styles.passengerAvatarText}>{(b.passengerName || 'P')[0].toUpperCase()}</Text>
@@ -930,6 +957,19 @@ export default function NavigationScreen() {
                         {b.droppedOff ? '✅ Dropped off' : b.pickedUp ? '🚗 On board' : b.notifiedArrived ? '🔔 Driver arrived' : b.notifiedNearby ? '📍 Driver nearby' : '⏳ Waiting'}
                       </Text>
                     </View>
+
+                    {/* Phone Call button for Driver */}
+                    {phoneToCall && (
+                      <TouchableOpacity
+                        onPress={() => Linking.openURL(`tel:${phoneToCall}`)}
+                        style={styles.callPassengerBtn}
+                        activeOpacity={0.8}
+                      >
+                        <MaterialCommunityIcons name="phone" size={16} color="#10B981" />
+                        <Text style={styles.callPassengerBtnText}>Call</Text>
+                      </TouchableOpacity>
+                    )}
+
                     {isDriver && !b.pickedUp && (
                       <TouchableOpacity onPress={() => togglePassengerPickedUp(b.id, b.pickedUp)} style={styles.pickupBtn}>
                         <MaterialCommunityIcons name="check" size={16} color={WARM_CORE.primary} />
@@ -943,68 +983,70 @@ export default function NavigationScreen() {
                       </TouchableOpacity>
                     )}
                   </View>
-                ))}
-              </View>
-            )}
+                );
+              })}
+            </View>
+          )}
 
-            {/* Driver view — finish ride button */}
-            {isDriver && ride.status === 'in_progress' && (
-              <View style={styles.finishSection}>
-                <Animated.View style={{ transform: [{ scale: isWithin2km ? pulseAnim : 1 }] }}>
-                  <TouchableOpacity
-                    onPress={handleCompleteRide}
-                    style={[styles.finishRideBtn, !isWithin2km && styles.finishRideBtnDisabled]}
-                    activeOpacity={isWithin2km ? 0.8 : 1}
-                  >
-                    <MaterialCommunityIcons
-                      name={isWithin2km ? 'flag-checkered' : 'map-marker-distance'}
-                      size={22}
-                      color={isWithin2km ? WARM_CORE.white : '#9CA3AF'}
-                      style={{ marginRight: 8 }}
-                    />
-                    <View>
-                      <Text style={[styles.finishRideBtnText, !isWithin2km && { color: '#9CA3AF' }]}>
-                        {isWithin2km ? '🎉 Finish Ride' : 'Finish Ride'}
+          {/* Passenger View — Driver Call Card */}
+          {!isDriver && ride.driverName && (
+            <View style={styles.driverContactCard}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.driverContactName}>Driver: {ride.driverName}</Text>
+                <Text style={styles.driverContactSub}>Call driver to coordinate your pickup</Text>
+              </View>
+              <TouchableOpacity
+                onPress={() => {
+                  const num = ride.driverPhone || '9999999999';
+                  Linking.openURL(`tel:${num}`);
+                }}
+                style={styles.callDriverBtn}
+                activeOpacity={0.8}
+              >
+                <MaterialCommunityIcons name="phone" size={18} color="#FFF" style={{ marginRight: 6 }} />
+                <Text style={styles.callDriverBtnText}>Call Driver</Text>
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* Driver view — finish ride button */}
+          {isDriver && ride.status === 'in_progress' && (
+            <View style={styles.finishSection}>
+              <Animated.View style={{ transform: [{ scale: isWithin2km ? pulseAnim : 1 }] }}>
+                <TouchableOpacity
+                  onPress={handleCompleteRide}
+                  style={[styles.finishRideBtn, !isWithin2km && styles.finishRideBtnDisabled]}
+                  activeOpacity={isWithin2km ? 0.8 : 1}
+                >
+                  <MaterialCommunityIcons
+                    name={isWithin2km ? 'flag-checkered' : 'map-marker-distance'}
+                    size={22}
+                    color={isWithin2km ? WARM_CORE.white : '#9CA3AF'}
+                    style={{ marginRight: 8 }}
+                  />
+                  <View>
+                    <Text style={[styles.finishRideBtnText, !isWithin2km && { color: '#9CA3AF' }]}>
+                      {isWithin2km ? '🎉 Finish Ride' : 'Finish Ride'}
+                    </Text>
+                    {!isWithin2km && (
+                      <Text style={styles.finishRideSubtext}>
+                        {distanceToDestKm.toFixed(1)} km to destination
                       </Text>
-                      {!isWithin2km && (
-                        <Text style={styles.finishRideSubtext}>
-                          {distanceToDestKm.toFixed(1)} km to destination
-                        </Text>
-                      )}
-                    </View>
-                  </TouchableOpacity>
-                </Animated.View>
-              </View>
-            )}
-          </ScrollView>
-        )}
+                    )}
+                  </View>
+                </TouchableOpacity>
+              </Animated.View>
+            </View>
+          )}
 
-        {/* Compact driver CTA (only shown in collapsed state) */}
-        {!panelExpanded && isDriver && ride.status !== 'in_progress' && ride.pickupChecklistCompleted !== true && acceptedBookings.length > 0 && (
-          <TouchableOpacity onPress={handleConfirmBoarding2} style={styles.startRideCTA}>
-            <MaterialCommunityIcons name="play-circle-outline" size={20} color={WARM_CORE.white} style={{ marginRight: 8 }} />
-            <Text style={styles.startRideCTAText}>Confirm Boarding & Start</Text>
-          </TouchableOpacity>
-        )}
-        {!panelExpanded && isDriver && ride.status === 'in_progress' && (
-          <Animated.View style={{ transform: [{ scale: isWithin2km ? pulseAnim : 1 }] }}>
-            <TouchableOpacity
-              onPress={handleCompleteRide}
-              style={[styles.startRideCTA, !isWithin2km && styles.startRideCTADisabled]}
-              activeOpacity={isWithin2km ? 0.8 : 0.9}
-            >
-              <MaterialCommunityIcons
-                name={isWithin2km ? 'flag-checkered' : 'map-marker-distance'}
-                size={20}
-                color={isWithin2km ? WARM_CORE.white : '#9CA3AF'}
-                style={{ marginRight: 8 }}
-              />
-              <Text style={[styles.startRideCTAText, !isWithin2km && { color: '#6B7280' }]}>
-                {isWithin2km ? '🎉 Finish Ride' : `Finish Ride · ${distanceToDestKm.toFixed(1)} km away`}
-              </Text>
+          {/* Driver CTA for starting */}
+          {isDriver && ride.status !== 'in_progress' && ride.pickupChecklistCompleted !== true && acceptedBookings.length > 0 && (
+            <TouchableOpacity onPress={handleConfirmBoarding2} style={styles.startRideCTA}>
+              <MaterialCommunityIcons name="play-circle-outline" size={20} color={WARM_CORE.white} style={{ marginRight: 8 }} />
+              <Text style={styles.startRideCTAText}>Confirm Boarding & Start</Text>
             </TouchableOpacity>
-          </Animated.View>
-        )}
+          )}
+        </ScrollView>
       </Animated.View>
 
       {/* ─── PASSENGER: DRIVER ARRIVED MODAL ─────────────────────────────────── */}
@@ -1016,8 +1058,21 @@ export default function NavigationScreen() {
             </View>
             <Text style={styles.arrivedTitle}>Your Driver Has Arrived!</Text>
             <Text style={styles.arrivedSubtitle}>
-              {ride.driverName} is at your pickup location. Please head out to board the vehicle.
+              {ride.driverName} is at your pickup location. Call to coordinate or confirm boarding.
             </Text>
+
+            {/* Direct Call Driver Button */}
+            <TouchableOpacity
+              onPress={() => {
+                const num = ride.driverPhone || '9999999999';
+                Linking.openURL(`tel:${num}`);
+              }}
+              style={[styles.arrivedConfirmBtn, { backgroundColor: '#10B981', marginBottom: 10 }]}
+            >
+              <MaterialCommunityIcons name="phone" size={20} color={WARM_CORE.white} style={{ marginRight: 8 }} />
+              <Text style={styles.arrivedConfirmText}>Call Driver to Coordinate</Text>
+            </TouchableOpacity>
+
             <TouchableOpacity
               onPress={handleConfirmBoarding}
               style={styles.arrivedConfirmBtn}
@@ -1028,7 +1083,7 @@ export default function NavigationScreen() {
               ) : (
                 <>
                   <MaterialCommunityIcons name="check-circle" size={20} color={WARM_CORE.white} style={{ marginRight: 8 }} />
-                  <Text style={styles.arrivedConfirmText}>I'm in the Car</Text>
+                  <Text style={styles.arrivedConfirmText}>Yes, I'm in the Car</Text>
                 </>
               )}
             </TouchableOpacity>
@@ -1501,4 +1556,78 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, color: WARM_CORE.text, fontSize: 14, marginRight: 10,
   },
   chatSendBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: WARM_CORE.primary, justifyContent: 'center', alignItems: 'center' },
+
+  // ─── Google Maps & Phone Action Styles ───────────────────────────────────
+  googleMapsRedirectBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#D4500A',
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginBottom: 12,
+    marginTop: 4,
+    shadowColor: '#D4500A',
+    shadowOpacity: 0.25,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  googleMapsRedirectBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  callPassengerBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+    marginRight: 6,
+  },
+  callPassengerBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#10B981',
+    marginLeft: 4,
+  },
+  driverContactCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 14,
+    padding: 14,
+    marginTop: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  },
+  driverContactName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  },
+  driverContactSub: {
+    fontSize: 11,
+    color: WARM_CORE.textSecondary,
+    marginTop: 2,
+  },
+  callDriverBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#10B981',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  callDriverBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 12,
+  },
 });
