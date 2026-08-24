@@ -212,6 +212,7 @@ service cloud.firestore {
       allow read:   if isSignedIn() && (
         resource == null || 
         resource.data.passengerId == getPersistentUserId() || 
+        resource.data.creatorId == getPersistentUserId() ||
         (
           exists(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)) && 
           getPersistentUserId() == get(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)).data.creatorId
@@ -220,12 +221,16 @@ service cloud.firestore {
       allow create: if isSignedIn() && request.resource.data.passengerId == getPersistentUserId();
       allow update: if isSignedIn() && (
         resource.data.passengerId == getPersistentUserId() ||
+        resource.data.creatorId == getPersistentUserId() ||
         (
           exists(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)) && 
           getPersistentUserId() == get(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)).data.creatorId
         )
       );
-      allow delete: if isSignedIn() && resource.data.passengerId == getPersistentUserId();
+      allow delete: if isSignedIn() && (
+        resource.data.passengerId == getPersistentUserId() ||
+        resource.data.creatorId == getPersistentUserId()
+      );
     }
 
     // ─── Wallets ────────────────────────────────────────────────────────────
