@@ -51,6 +51,7 @@ export interface TaxiPool {
 export interface PoolRequest {
   id: string;
   poolId: string;
+  creatorId?: string;
   passengerId: string;
   passengerName: string;
   passengerImage?: string;
@@ -384,6 +385,7 @@ export const createJoinRequest = async (
     // Add new request
     const docRef = await addDoc(requestsRef, {
       poolId,
+      creatorId,
       passengerId: passenger.id,
       passengerName: passenger.fullName,
       passengerImage: passenger.profileImage || null,
@@ -801,6 +803,62 @@ export const completeTaxiPoolRide = async (poolId: string): Promise<void> => {
   } catch (error) {
     console.error('[TAXI POOL SERVICE] Error completing taxi pool ride:', error);
     throw error;
+  }
+};
+
+/**
+ * Check and notify members 5 minutes before scheduled taxi pool departure
+ */
+export const checkAndNotifyUpcomingTaxiPools = async (): Promise<void> => {
+  try {
+    const now = new Date();
+    const poolsRef = collection(db, 'taxiPools');
+    const q = query(poolsRef, where('status', 'in', ['OPEN', 'FULL']));
+    const snap = await getDocs(q);
+
+    for (const poolDoc of snap.docs) {
+      const pool = poolDoc.data();
+      if (pool.notified5MinBefore) continue;
+
+      if (!pool.departureTime) continue;
+      const departure = new Date(pool.departureTime);
+      const diffMinutes = (departure.getTime() - now.getTime()) / (60 * 1000);
+
+      // Trigger notification if departure is 0 to 6 minutes away
+      if (diffMinutes >= 0 && diffMinutes <= 6) {
+        await updateDoc(doc(db, 'taxiPools', poolDoc.id), {
+          notified5MinBefore: true,
+        });
+
+        const membersRef = collection(db, 'poolMembers');
+        const membersQuery = query(membersRef, where('poolId', '==', poolDoc.id));
+        const membersSnap = await getDocs(membersQuery);
+
+        const recipientIds = new Set<string>();
+        if (pool.creatorId) recipientIds.add(pool.creatorId);
+        membersSnap.docs.forEach((m) => {
+          const mData = m.data();
+          if (mData.passengerId) recipientIds.add(mData.passengerId);
+        });
+
+        for (const recipientId of recipientIds) {
+          await sendNotification(
+            recipientId,
+            'pool_joined',
+            '🚕 Taxi Pool Departing in 5 Mins!',
+            `Your taxi pool to ${pool.destination?.address?.split(',')[0] || 'destination'} departs in 5 minutes. Are you at the pickup location?`,
+            poolDoc.id,
+            undefined,
+            pool.creatorId,
+            pool.creatorName || 'Taxi Pool Host',
+            `/taxi-pool-details?id=${poolDoc.id}`
+          );
+        }
+        console.log(`[TAXI POOL SERVICE] Sent 5-min departure notification for pool ${poolDoc.id}`);
+      }
+    }
+  } catch (err) {
+    console.warn('[TAXI POOL SERVICE] Error checking upcoming taxi pools:', err);
   }
 };
 

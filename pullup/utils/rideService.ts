@@ -138,6 +138,7 @@ export const createRideInFirestore = async (
     availableSeats: number;
     totalSeats: number;
     carModel: string;
+    fuelType?: 'Petrol' | 'Diesel' | 'EV';
     carColor?: string;
     description?: string;
     detourRadiusMeters?: number;
@@ -174,6 +175,7 @@ export const createRideInFirestore = async (
       availableSeats: rideData.availableSeats,
       totalSeats: rideData.totalSeats,
       carModel: rideData.carModel,
+      fuelType: rideData.fuelType || 'Petrol',
       carColor: rideData.carColor || '',
       description: rideData.description || '',
       createdAt: Timestamp.now(),
@@ -195,8 +197,42 @@ export const createRideInFirestore = async (
       optimizationSource: 'google',
     };
 
-    console.warn('[RIDE SERVICE] Falling back to direct Firestore ride creation because the deployed backend route is missing.');
+    console.warn('[RIDE SERVICE] Creating ride in Firestore with fuelType:', firebaseRideData.fuelType);
     const docRef = await addDoc(collection(db, 'rides'), firebaseRideData);
+
+    try {
+      if (rideData.carModel && driverId) {
+        const userRef = doc(db, 'users', driverId);
+        const userSnap = await getDoc(userRef);
+        if (userSnap.exists()) {
+          const userData = userSnap.data();
+          const existingSavedCars: Array<{ id: string; model: string; fuelType: 'Petrol' | 'Diesel' | 'EV' }> = Array.isArray(userData.savedCars) ? userData.savedCars : [];
+          const fuel = rideData.fuelType || 'Petrol';
+          const modelTrimmed = rideData.carModel.trim();
+          
+          const alreadySaved = existingSavedCars.some(c => c.model.toLowerCase() === modelTrimmed.toLowerCase() && c.fuelType === fuel);
+          if (!alreadySaved) {
+            const newCar = {
+              id: `${Date.now()}_${Math.random().toString(36).substring(7)}`,
+              model: modelTrimmed,
+              fuelType: fuel
+            };
+            await updateDoc(userRef, {
+              savedCars: [...existingSavedCars, newCar],
+              carModel: modelTrimmed,
+              fuelType: fuel,
+            });
+          } else {
+            await updateDoc(userRef, {
+              carModel: modelTrimmed,
+              fuelType: fuel,
+            });
+          }
+        }
+      }
+    } catch (saveCarErr) {
+      console.warn('[RIDE SERVICE] Failed to update user savedCars:', saveCarErr);
+    }
 
     try {
       await initializeGroupChat(docRef.id, 'carpool', driverId, driverName);

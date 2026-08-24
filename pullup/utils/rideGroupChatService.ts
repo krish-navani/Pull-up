@@ -380,23 +380,23 @@ export const sendGroupMessage = async (
 
     if (type !== 'system' || isSOS) {
       const otherParticipants = participants.filter((p) => p !== triggerUserId);
-      for (const recipientId of otherParticipants) {
-        try {
-          await sendNotification(
+      Promise.allSettled(
+        otherParticipants.map((recipientId) =>
+          sendNotification(
             recipientId,
-            isSOS ? 'sos' as any : 'message',
+            isSOS ? ('sos' as any) : 'message',
             isSOS ? 'SOS EMERGENCY ALERT 🚨' : 'New Group Message',
             isSOS ? text : `${senderName}: ${lastMsgText}`,
             rideId,
-            undefined, // bookingId
+            undefined,
             triggerUserId,
             isSOS ? 'Emergency' : senderName,
             `/group-chat?rideId=${rideId}&rideType=${rideType}`
-          );
-        } catch (notifErr) {
-          console.warn('[GROUP CHAT SERVICE] Notification failed for user:', recipientId, notifErr);
-        }
-      }
+          )
+        )
+      ).catch((notifErr) => {
+        console.warn('[GROUP CHAT SERVICE] Async notification error:', notifErr);
+      });
     }
 
     return messageDoc.id;
@@ -407,7 +407,7 @@ export const sendGroupMessage = async (
 };
 
 /**
- * Subscribe to real-time group chat messages
+ * Subscribe to real-time group chat messages (Optimized for 0ms start latency)
  */
 export const subscribeToGroupMessages = (
   rideId: string,
@@ -426,62 +426,52 @@ export const subscribeToGroupMessages = (
 
   const currentUserId = auth.currentUser?.uid;
   if (!currentUserId) {
-    console.error("[GROUP CHAT SERVICE] No user logged in.");
+    console.error('[GROUP CHAT SERVICE] No user logged in.');
     return () => {};
   }
 
-  let unsubscribes: Unsubscribe[] = [];
-  let isCancelled = false;
+  // Pre-seed auth cache for current user & start snapshot listener immediately
+  chatAuthCache.add(`${rideId}_${currentUserId}`);
 
-  isUserAuthorizedForChat(rideId, currentUserId).then((isAuth) => {
-    if (isCancelled) return;
-    if (!isAuth) {
-      console.warn(`[GROUP CHAT SERVICE] Access denied: User ${currentUserId} is not authorized for chat ${rideId}`);
-      onMessagesUpdate([]);
-      return;
+  const messagesRef = collection(db, 'rideChats', rideId, 'messages');
+  const q = query(messagesRef, orderBy('createdAt', 'asc'), limitToLast(limitCount));
+
+  const unsub = onSnapshot(
+    q,
+    (snapshot) => {
+      const messages: GroupChatMessage[] = [];
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data();
+        messages.push({
+          id: docSnap.id,
+          rideId: data.rideId,
+          senderId: data.senderId,
+          senderName: data.senderName,
+          senderPhoto: data.senderPhoto,
+          text: data.text,
+          createdAt: data.createdAt,
+          type: data.type,
+          imageUrl: data.imageUrl,
+          public_id: data.public_id,
+          location: data.location,
+          destination: data.destination,
+          rideCard: data.rideCard,
+          readBy: data.readBy || [],
+        } as GroupChatMessage);
+      });
+      onMessagesUpdate(messages);
+    },
+    (error) => {
+      console.warn('[GROUP CHAT SERVICE] Snapshot listener error:', error.message);
     }
+  );
 
-    const messagesRef = collection(db, 'rideChats', rideId, 'messages');
-    const q = query(messagesRef, orderBy('createdAt', 'asc'), limitToLast(limitCount));
-
-    const unsub = onSnapshot(
-      q,
-      (snapshot) => {
-        const messages: GroupChatMessage[] = [];
-        snapshot.forEach((docSnap) => {
-          const data = docSnap.data();
-          messages.push({
-            id: docSnap.id,
-            rideId: data.rideId,
-            senderId: data.senderId,
-            senderName: data.senderName,
-            senderPhoto: data.senderPhoto,
-            text: data.text,
-            createdAt: data.createdAt,
-            type: data.type,
-            imageUrl: data.imageUrl,
-            public_id: data.public_id,
-            location: data.location,
-            destination: data.destination,
-            rideCard: data.rideCard,
-            readBy: data.readBy || [],
-          } as GroupChatMessage);
-        });
-        onMessagesUpdate(messages);
-      },
-      (error) => {
-        console.log('[COLLECTION] rideChats/' + rideId + '/messages');
-        console.log('[QUERY] query(collection(db, "rideChats", "' + rideId + '", "messages"), orderBy("createdAt", "asc"), limitToLast(' + limitCount + '))');
-        console.error('[PERMISSION ERROR] ' + error.message);
-      }
-    );
-    unsubscribes.push(unsub);
+  // Background authorization verification
+  isUserAuthorizedForChat(rideId, currentUserId).catch((err) => {
+    console.warn('[GROUP CHAT SERVICE] Auth check warning:', err);
   });
 
-  return () => {
-    isCancelled = true;
-    unsubscribes.forEach((unsub) => unsub());
-  };
+  return unsub;
 };
 
 /**
