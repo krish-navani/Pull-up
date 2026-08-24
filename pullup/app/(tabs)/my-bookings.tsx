@@ -554,6 +554,7 @@ export default function MyBookingsScreen() {
   const [selectedStatus, setSelectedStatus] = useState<'active' | 'in_progress' | 'completed' | 'cancelled'>('active');
   const [joinedTaxiPools, setJoinedTaxiPools] = useState<TaxiPool[]>([]);
   const [createdTaxiPools, setCreatedTaxiPools] = useState<TaxiPool[]>([]);
+  const [hostedPoolRequests, setHostedPoolRequests] = useState<any[]>([]);
 
   // ── Entry animations (3-stage stagger like home.tsx) ────────────────────
   const headerAnim = useRef({ opacity: new Animated.Value(0), translateY: new Animated.Value(18) }).current;
@@ -584,9 +585,22 @@ export default function MyBookingsScreen() {
       setCreatedTaxiPools(pools);
     });
 
+    const reqsQuery = query(
+      collection(db, 'poolRequests'),
+      where('creatorId', '==', currentUserId),
+      where('status', '==', 'requested')
+    );
+    const unsubReqs = onSnapshot(reqsQuery, (snapshot) => {
+      const reqs = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
+      setHostedPoolRequests(reqs);
+    }, (err) => {
+      console.warn('[MY COMMUTES] Hosted pool requests subscription warning:', err);
+    });
+
     return () => {
       if (unsubJoined) unsubJoined();
       if (unsubCreated) unsubCreated();
+      if (unsubReqs) unsubReqs();
     };
   }, [canStartRealtimeListeners, auth.user?.id]);
 
@@ -653,26 +667,42 @@ export default function MyBookingsScreen() {
     }
   }, [auth.user?.id, loadPassengerBookings, loadAllAvailableRides]);
 
-  // Get bookings where current user is the passenger AND ride/booking is active
+  // Helper to categorize any ride/booking/pool into status tabs (active | in_progress | completed | cancelled)
+  const getItemCategory = useCallback((
+    mainStatus?: string,
+    departureTime?: string,
+    secondaryStatus?: string
+  ): 'active' | 'in_progress' | 'completed' | 'cancelled' => {
+    const s1 = (mainStatus || '').toLowerCase();
+    const s2 = (secondaryStatus || '').toLowerCase();
+
+    if (s1 === 'cancelled' || s1 === 'rejected' || s2 === 'cancelled' || s2 === 'rejected') {
+      return 'cancelled';
+    }
+    if (s1 === 'completed' || s2 === 'completed') {
+      return 'completed';
+    }
+    if (s1 === 'in_progress' || s1 === 'arrived' || s2 === 'in_progress') {
+      return 'in_progress';
+    }
+
+    // Departure time check: if departure time was over 1 hour ago and not in_progress, classify as History (completed)
+    if (departureTime) {
+      const depMs = new Date(departureTime).getTime();
+      if (!isNaN(depMs) && depMs < Date.now() - 60 * 60 * 1000) {
+        return 'completed';
+      }
+    }
+
+    return 'active';
+  }, []);
+
+  // 1. Passenger Car Pool Bookings (Filtered by selectedStatus)
   const rawPassengerBookings = (bookings ?? []).filter((b, idx, self) => {
     if (b.passengerId !== auth.user?.id) return false;
-    const ride = (rides ?? []).find(r => r.id === b.rideId);
-    
-    // Check ride lifecycle
-    const rideStatus = ride ? (ride.status as string) : '';
-    const isRideActive = ride && (rideStatus === 'active' || rideStatus === 'in_progress' || rideStatus === 'arrived' || rideStatus === 'scheduled');
-    if (!isRideActive) return false;
-
-    // Check booking lifecycle (exclude finished/terminal statuses)
-    const bookingStatus = (b.status as string);
-    const isBookingActive = bookingStatus === 'pending' || bookingStatus === 'accepted' || bookingStatus === 'confirmed' || bookingStatus === 'arrived';
-    if (!isBookingActive) return false;
-
-    // Deduplicate duplicate document IDs
     return self.findIndex(o => o.id === b.id) === idx;
   });
 
-  // Keep only the most relevant booking per rideId
   const passengerBookings = (() => {
     const groups: { [rideId: string]: Booking[] } = {};
     for (const b of rawPassengerBookings) {
@@ -682,32 +712,53 @@ export default function MyBookingsScreen() {
       groups[b.rideId].push(b);
     }
 
-    const result: Booking[] = [];
+    const deduplicated: Booking[] = [];
     for (const rideId in groups) {
       const rideBookings = groups[rideId];
       if (rideBookings.length === 1) {
-        result.push(rideBookings[0]);
+        deduplicated.push(rideBookings[0]);
       } else {
         const active = rideBookings.find(b => {
           const s = b.status as string;
           return s === 'pending' || s === 'accepted' || s === 'confirmed' || s === 'arrived';
         });
         if (active) {
-          result.push(active);
+          deduplicated.push(active);
         } else {
           rideBookings.sort((a, b) => new Date(b.bookedAt).getTime() - new Date(a.bookedAt).getTime());
-          result.push(rideBookings[0]);
+          deduplicated.push(rideBookings[0]);
         }
       }
     }
-    return result;
+
+    return deduplicated.filter((b) => {
+      const ride = (rides ?? []).find(r => r.id === b.rideId);
+      const cat = getItemCategory(b.status, ride?.departureTime, ride?.status);
+      return cat === selectedStatus;
+    });
   })();
 
+  // 2. Passenger Joined Taxi Pools (Filtered by selectedStatus)
+  const filteredJoinedTaxiPools = joinedTaxiPools.filter((pool) => {
+    const cat = getItemCategory(pool.status, pool.departureTime);
+    return cat === selectedStatus;
+  });
+
+  // 3. Hosted Car Pools (Filtered by selectedStatus)
   const hostedCarPoolSource = hasLoadedRealtimeHostedCarPools ? realtimeHostedCarPools : (rides ?? []);
   const hostedCarPools = hostedCarPoolSource.filter(r => r.driverId === auth.user?.id);
   const filteredHostedCarPools = hostedCarPools
-    .filter(ride => ride.status === selectedStatus)
+    .filter((ride) => {
+      const cat = getItemCategory(ride.status, ride.departureTime);
+      return cat === selectedStatus;
+    })
     .sort((a, b) => new Date(a.departureTime).getTime() - new Date(b.departureTime).getTime());
+
+  // 4. Created Taxi Pools (Filtered by selectedStatus)
+  const filteredCreatedTaxiPools = createdTaxiPools.filter((pool) => {
+    const cat = getItemCategory(pool.status, pool.departureTime);
+    return cat === selectedStatus;
+  });
 
   // Empty state animations
   useEffect(() => {
@@ -1164,6 +1215,9 @@ export default function MyBookingsScreen() {
   const renderTaxiPoolCard = (pool: TaxiPool, isHosting: boolean) => {
     const seatsLeft = pool.maxMembers - pool.memberCount;
     const depTime = new Date(pool.departureTime);
+    const pendingRequestsCount = isHosting
+      ? hostedPoolRequests.filter((r: any) => r.poolId === pool.id).length
+      : 0;
     
     // Status colors
     let statusBg = 'rgba(16, 185, 129, 0.1)';
@@ -1174,7 +1228,7 @@ export default function MyBookingsScreen() {
     } else if (pool.status === 'CANCELLED') {
       statusBg = 'rgba(239, 68, 68, 0.1)';
       statusText = '#EF4444';
-    } else if (pool.status === 'CLOSED') {
+    } else if (pool.status === 'CLOSED' || pool.status === 'completed') {
       statusBg = 'rgba(107, 114, 128, 0.1)';
       statusText = '#6B7280';
     }
@@ -1228,6 +1282,16 @@ export default function MyBookingsScreen() {
             <MaterialCommunityIcons name="arrow-right" size={14} color={WARM_CORE.primary} />
           </View>
         </View>
+
+        {/* Pending Requests Alert Banner */}
+        {isHosting && pendingRequestsCount > 0 && (
+          <View style={styles.pendingRequestsBanner}>
+            <MaterialCommunityIcons name="bell-alert" size={13} color="#D97706" />
+            <Text style={styles.pendingRequestsText}>
+              {pendingRequestsCount} pending request{pendingRequestsCount > 1 ? 's' : ''} — Tap to manage
+            </Text>
+          </View>
+        )}
       </TouchableOpacity>
     );
   };
@@ -1465,31 +1529,30 @@ export default function MyBookingsScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* Status Tab Filter (Only if Hosting -> Car Pools is active) */}
-          {activeTab === 'hosting' && subTab === 'car' && (
-            <View style={styles.driverTabContainer}>
-              {(['active', 'in_progress', 'completed', 'cancelled'] as const).map(status => {
-                const isSelected = selectedStatus === status;
-                let statusLabel = '';
-                if (status === 'active') statusLabel = 'Upcoming';
-                else if (status === 'in_progress') statusLabel = 'Ongoing';
-                else statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
-                
-                return (
-                  <TouchableOpacity
-                    key={status}
-                    style={[styles.driverTab, isSelected && styles.driverTabActive]}
-                    onPress={() => setSelectedStatus(status)}
-                  >
-                    <Text style={[styles.driverTabLabel, isSelected && styles.driverTabLabelActive]}>
-                      {statusLabel}
-                    </Text>
-                    {isSelected && <View style={styles.driverTabUnderline} />}
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          )}
+          {/* Status Tab Filter (Always visible for all subtabs: Upcoming, Ongoing, History, Cancelled) */}
+          <View style={styles.driverTabContainer}>
+            {(['active', 'in_progress', 'completed', 'cancelled'] as const).map(status => {
+              const isSelected = selectedStatus === status;
+              let statusLabel = '';
+              if (status === 'active') statusLabel = 'Upcoming';
+              else if (status === 'in_progress') statusLabel = 'Ongoing';
+              else if (status === 'completed') statusLabel = 'History';
+              else statusLabel = 'Cancelled';
+              
+              return (
+                <TouchableOpacity
+                  key={status}
+                  style={[styles.driverTab, isSelected && styles.driverTabActive]}
+                  onPress={() => setSelectedStatus(status)}
+                >
+                  <Text style={[styles.driverTabLabel, isSelected && styles.driverTabLabelActive]}>
+                    {statusLabel}
+                  </Text>
+                  {isSelected && <View style={styles.driverTabUnderline} />}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
 
           <ScrollView
             style={styles.container}
@@ -1521,17 +1584,21 @@ export default function MyBookingsScreen() {
                     >
                       <MaterialCommunityIcons name="car-off" size={48} color={WARM_CORE.textSecondary} />
                     </Animated.View>
-                    <Text style={styles.emptyStateText}>No Joined Car Pools</Text>
-                    <Text style={styles.emptyStateSubText}>
-                      {"You haven't booked any car pool seats yet"}
+                    <Text style={styles.emptyStateText}>
+                      {selectedStatus === 'active' ? 'No Upcoming Car Pools' : selectedStatus === 'completed' ? 'No Car Pool History' : `No ${selectedStatus} Car Pools`}
                     </Text>
-                    <TouchableOpacity
-                      style={styles.bookNowButton}
-                      onPress={() => router.push('/(tabs)/home')}
-                    >
-                      <MaterialCommunityIcons name="magnify" size={16} color={WARM_CORE.white} style={{ marginRight: 6 }} />
-                      <Text style={styles.bookNowButtonText}>Find Car Pools</Text>
-                    </TouchableOpacity>
+                    <Text style={styles.emptyStateSubText}>
+                      {selectedStatus === 'active' ? "You haven't booked any upcoming car pool seats" : 'Your past car pool rides will appear here'}
+                    </Text>
+                    {selectedStatus === 'active' && (
+                      <TouchableOpacity
+                        style={styles.bookNowButton}
+                        onPress={() => router.push('/(tabs)/home')}
+                      >
+                        <MaterialCommunityIcons name="magnify" size={16} color={WARM_CORE.white} style={{ marginRight: 6 }} />
+                        <Text style={styles.bookNowButtonText}>Find Car Pools</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 ) : (
                   <View>
@@ -1539,7 +1606,7 @@ export default function MyBookingsScreen() {
                   </View>
                 )
               ) : (
-                joinedTaxiPools.length === 0 ? (
+                filteredJoinedTaxiPools.length === 0 ? (
                   <View style={styles.emptyState}>
                     <Animated.View
                       style={[
@@ -1549,21 +1616,25 @@ export default function MyBookingsScreen() {
                     >
                       <MaterialCommunityIcons name="taxi" size={48} color={WARM_CORE.textSecondary} />
                     </Animated.View>
-                    <Text style={styles.emptyStateText}>No Joined Taxi Pools</Text>
-                    <Text style={styles.emptyStateSubText}>
-                      {"You haven't joined any taxi pools yet"}
+                    <Text style={styles.emptyStateText}>
+                      {selectedStatus === 'active' ? 'No Upcoming Taxi Pools' : selectedStatus === 'completed' ? 'No Taxi Pool History' : `No ${selectedStatus} Taxi Pools`}
                     </Text>
-                    <TouchableOpacity
-                      style={styles.bookNowButton}
-                      onPress={() => router.push('/(tabs)/home')}
-                    >
-                      <MaterialCommunityIcons name="magnify" size={16} color={WARM_CORE.white} style={{ marginRight: 6 }} />
-                      <Text style={styles.bookNowButtonText}>Find Taxi Pools</Text>
-                    </TouchableOpacity>
+                    <Text style={styles.emptyStateSubText}>
+                      {selectedStatus === 'active' ? "You haven't joined any upcoming taxi pools" : 'Your past taxi pools will appear here'}
+                    </Text>
+                    {selectedStatus === 'active' && (
+                      <TouchableOpacity
+                        style={styles.bookNowButton}
+                        onPress={() => router.push('/(tabs)/home')}
+                      >
+                        <MaterialCommunityIcons name="magnify" size={16} color={WARM_CORE.white} style={{ marginRight: 6 }} />
+                        <Text style={styles.bookNowButtonText}>Find Taxi Pools</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 ) : (
                   <View>
-                    {joinedTaxiPools.map((pool) => renderTaxiPoolCard(pool, false))}
+                    {filteredJoinedTaxiPools.map((pool) => renderTaxiPoolCard(pool, false))}
                   </View>
                 )
               )
@@ -1580,12 +1651,12 @@ export default function MyBookingsScreen() {
                       <MaterialCommunityIcons name="car-off" size={48} color={WARM_CORE.textSecondary} />
                     </Animated.View>
                     <Text style={styles.emptyStateText}>
-                      {selectedStatus === 'active' ? 'No Upcoming Car Pools' : `No ${selectedStatus} Car Pools`}
+                      {selectedStatus === 'active' ? 'No Upcoming Car Pools' : selectedStatus === 'completed' ? 'No Car Pool History' : `No ${selectedStatus} Car Pools`}
                     </Text>
                     <Text style={styles.emptyStateSubText}>
                       {selectedStatus === 'active'
                         ? 'Post a car pool from the + option to get started'
-                        : 'Your rides will appear here'}
+                        : 'Your hosted rides will appear here'}
                     </Text>
                   </View>
                 ) : (
@@ -1594,7 +1665,7 @@ export default function MyBookingsScreen() {
                   </View>
                 )
               ) : (
-                createdTaxiPools.length === 0 ? (
+                filteredCreatedTaxiPools.length === 0 ? (
                   <View style={styles.emptyState}>
                     <Animated.View
                       style={[
@@ -1604,21 +1675,27 @@ export default function MyBookingsScreen() {
                     >
                       <MaterialCommunityIcons name="plus-circle-outline" size={48} color={WARM_CORE.textSecondary} />
                     </Animated.View>
-                    <Text style={styles.emptyStateText}>No Hosted Taxi Pools</Text>
-                    <Text style={styles.emptyStateSubText}>
-                      {"You haven't created any taxi pools yet"}
+                    <Text style={styles.emptyStateText}>
+                      {selectedStatus === 'active' ? 'No Upcoming Hosted Taxi Pools' : selectedStatus === 'completed' ? 'No Taxi Pool History' : `No ${selectedStatus} Taxi Pools`}
                     </Text>
-                    <TouchableOpacity
-                      style={styles.bookNowButton}
-                      onPress={() => router.push('/create-taxi-pool')}
-                    >
-                      <MaterialCommunityIcons name="plus" size={18} color={WARM_CORE.white} style={{ marginRight: 6 }} />
-                      <Text style={styles.bookNowButtonText}>Create a Taxi Pool</Text>
-                    </TouchableOpacity>
+                    <Text style={styles.emptyStateSubText}>
+                      {selectedStatus === 'active'
+                        ? "You haven't created any active taxi pools"
+                        : 'Your past hosted taxi pools will appear here'}
+                    </Text>
+                    {selectedStatus === 'active' && (
+                      <TouchableOpacity
+                        style={styles.bookNowButton}
+                        onPress={() => router.push('/create-taxi-pool')}
+                      >
+                        <MaterialCommunityIcons name="plus" size={18} color={WARM_CORE.white} style={{ marginRight: 6 }} />
+                        <Text style={styles.bookNowButtonText}>Create a Taxi Pool</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 ) : (
                   <View>
-                    {createdTaxiPools.map((pool) => renderTaxiPoolCard(pool, true))}
+                    {filteredCreatedTaxiPools.map((pool) => renderTaxiPoolCard(pool, true))}
                   </View>
                 )
               )

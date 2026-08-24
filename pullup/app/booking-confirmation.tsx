@@ -308,7 +308,7 @@ export default function BookingConfirmationScreen() {
   const [selectedPickup, setSelectedPickup] = useState<any>(null);
   const [selectedDrop, setSelectedDrop] = useState<any>(null);
   const [acknowledged, setAcknowledged] = useState(false);
-  const [boardingChoice, setBoardingChoice] = useState<'home' | 'saved_pickup' | 'custom'>('home');
+  const [boardingChoice, setBoardingChoice] = useState<'ride_pickup' | 'home' | 'saved_pickup' | 'custom'>('ride_pickup');
   const [detourData, setDetourData] = useState<any>({
     status: 'pending',
     extraDistanceMeters: 0,
@@ -350,11 +350,14 @@ export default function BookingConfirmationScreen() {
     }
   };
 
-  const handleBoardingChoiceChange = (choice: 'home' | 'saved_pickup' | 'custom') => {
+  const handleBoardingChoiceChange = (choice: 'ride_pickup' | 'home' | 'saved_pickup' | 'custom') => {
     setBoardingChoice(choice);
     setErrorMessage(null);
     if (ride) {
-      if (choice === 'home') {
+      if (choice === 'ride_pickup') {
+        setSelectedPickup(ride.pickupLocation);
+        setSelectedDrop(ride.dropLocation);
+      } else if (choice === 'home') {
         const homeLoc = auth.user?.homeAddress;
         if (homeLoc) {
           if (direction === 'home-to-atlas') setSelectedPickup(homeLoc);
@@ -380,11 +383,10 @@ export default function BookingConfirmationScreen() {
 
   useEffect(() => {
     if (ride) {
-      const homeAddress = auth.user?.homeAddress;
-      setSelectedPickup(direction === 'home-to-atlas' && homeAddress ? homeAddress : ride.pickupLocation);
-      setSelectedDrop(direction === 'atlas-to-home' && homeAddress ? homeAddress : ride.dropLocation);
+      setSelectedPickup(ride.pickupLocation);
+      setSelectedDrop(ride.dropLocation);
     }
-  }, [ride, direction, auth.user?.homeAddress]);
+  }, [ride?.id]);
 
   useEffect(() => {
     const targetLoc = direction === 'home-to-atlas' ? selectedPickup : selectedDrop;
@@ -643,16 +645,16 @@ export default function BookingConfirmationScreen() {
           {/* Boarding Choice Selector */}
           <View style={st.boardingChoiceRow}>
             <TouchableOpacity
+              style={[st.boardingChoiceBtn, boardingChoice === 'ride_pickup' && st.boardingChoiceBtnActive]}
+              onPress={() => handleBoardingChoiceChange('ride_pickup')}
+            >
+              <Text style={[st.boardingChoiceText, boardingChoice === 'ride_pickup' && st.boardingChoiceTextActive]}>Ride Pickup</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
               style={[st.boardingChoiceBtn, boardingChoice === 'home' && st.boardingChoiceBtnActive]}
               onPress={() => handleBoardingChoiceChange('home')}
             >
               <Text style={[st.boardingChoiceText, boardingChoice === 'home' && st.boardingChoiceTextActive]}>Home</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[st.boardingChoiceBtn, boardingChoice === 'saved_pickup' && st.boardingChoiceBtnActive]}
-              onPress={() => handleBoardingChoiceChange('saved_pickup')}
-            >
-              <Text style={[st.boardingChoiceText, boardingChoice === 'saved_pickup' && st.boardingChoiceTextActive]}>Saved Pickup</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[st.boardingChoiceBtn, boardingChoice === 'custom' && st.boardingChoiceBtnActive]}
@@ -673,7 +675,7 @@ export default function BookingConfirmationScreen() {
               setErrorMessage(null);
             }}
             placeholder="Search pickup address..."
-            readOnly={boardingChoice !== 'custom' || direction !== 'home-to-atlas'}
+            readOnly={boardingChoice === 'ride_pickup'}
           />
 
           <View style={{ height: 12 }} />
@@ -686,7 +688,7 @@ export default function BookingConfirmationScreen() {
               setErrorMessage(null);
             }}
             placeholder="Search drop-off address..."
-            readOnly={boardingChoice !== 'custom' || direction !== 'atlas-to-home'}
+            readOnly={boardingChoice === 'ride_pickup'}
           />
 
           <View style={{ height: 16 }} />

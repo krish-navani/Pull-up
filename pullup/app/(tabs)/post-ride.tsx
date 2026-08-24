@@ -9,12 +9,15 @@ import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchRoute } from '@/utils/routeUtils';
 import { simplifyDouglasPeucker } from '@/utils/routeMatching';
+import { doc, getDoc, updateDoc } from 'firebase/firestore';
+import { db } from '@/utils/firebase';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import {
     ActivityIndicator,
     Alert,
     Animated,
     Easing,
+    Modal,
     Platform,
     ScrollView,
     StatusBar,
@@ -470,9 +473,20 @@ function PostRideScreenInner() {
     price: '',
     availableSeats: 2,
     carModel: '',
+    fuelType: 'Petrol' as 'Petrol' | 'Diesel' | 'EV',
     notes: '',
-    detourRadiusMeters: 0,
+    detourRadiusMeters: null as number | null,
   });
+  const [savedCars, setSavedCars] = useState<Array<{ id: string; model: string; fuelType: 'Petrol' | 'Diesel' | 'EV'; color?: string }>>([]);
+  const [showSavedCarsDropdown, setShowSavedCarsDropdown] = useState(false);
+
+  // Add New Vehicle Modal state
+  const [showAddCarModal, setShowAddCarModal] = useState(false);
+  const [newCarModel, setNewCarModel] = useState('');
+  const [newCarColor, setNewCarColor] = useState('');
+  const [newCarFuelType, setNewCarFuelType] = useState<'Petrol' | 'Diesel' | 'EV'>('Petrol');
+  const [isSavingCar, setIsSavingCar] = useState(false);
+
   const [isRecurringWeekdays, setIsRecurringWeekdays] = useState(false);
   const [error, setError] = useState('');
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -481,6 +495,94 @@ function PostRideScreenInner() {
   const [pickerDate, setPickerDate] = useState(new Date());
   const hasDetectedLocation = useRef(false);
   const isDetectingRef = useRef(false);
+
+  // Handler to save new car to Firestore
+  const handleAddNewCar = async () => {
+    if (!newCarModel.trim()) {
+      Alert.alert('Required', 'Please enter your car model name');
+      return;
+    }
+    const currentUserId = auth.user?.id;
+    if (!currentUserId) return;
+
+    setIsSavingCar(true);
+    try {
+      const userRef = doc(db, 'users', currentUserId);
+      const userSnap = await getDoc(userRef);
+      let existingCars: Array<{ id: string; model: string; fuelType: 'Petrol' | 'Diesel' | 'EV'; color?: string }> = [];
+      if (userSnap.exists()) {
+        const data = userSnap.data();
+        if (Array.isArray(data.savedCars)) {
+          existingCars = data.savedCars;
+        }
+      }
+
+      const createdCar = {
+        id: `${Date.now()}_${Math.random().toString(36).substring(7)}`,
+        model: newCarModel.trim(),
+        fuelType: newCarFuelType,
+        color: newCarColor.trim() || undefined,
+      };
+
+      const updatedCars = [...existingCars, createdCar];
+      await updateDoc(userRef, {
+        savedCars: updatedCars,
+        carModel: createdCar.model,
+        fuelType: createdCar.fuelType,
+      });
+
+      setSavedCars(updatedCars);
+      setFormData(prev => ({
+        ...prev,
+        carModel: createdCar.model,
+        fuelType: createdCar.fuelType,
+      }));
+
+      setNewCarModel('');
+      setNewCarColor('');
+      setNewCarFuelType('Petrol');
+      setShowAddCarModal(false);
+      setShowSavedCarsDropdown(false);
+    } catch (err) {
+      console.error('[POST RIDE] Failed to save vehicle:', err);
+      Alert.alert('Error', 'Failed to save vehicle. Please try again.');
+    } finally {
+      setIsSavingCar(false);
+    }
+  };
+
+  // Load creator's saved vehicles from Firestore
+  useEffect(() => {
+    const currentUserId = auth.user?.id;
+    if (!currentUserId) return;
+
+    const loadUserCars = async () => {
+      try {
+        const userSnap = await getDoc(doc(db, 'users', currentUserId));
+        if (userSnap.exists()) {
+          const userData = userSnap.data();
+          const cars: Array<{ id: string; model: string; fuelType: 'Petrol' | 'Diesel' | 'EV' }> = Array.isArray(userData.savedCars) ? userData.savedCars : [];
+          setSavedCars(cars);
+
+          // Populate initial car model and fuel type from saved cars or profile defaults
+          setFormData((prev) => {
+            if (prev.carModel) return prev;
+            const primaryModel = cars[0]?.model || userData.carModel || '';
+            const primaryFuel = cars[0]?.fuelType || userData.fuelType || 'Petrol';
+            return {
+              ...prev,
+              carModel: primaryModel,
+              fuelType: primaryFuel,
+            };
+          });
+        }
+      } catch (err) {
+        console.warn('[POST RIDE] Failed to load saved vehicles:', err);
+      }
+    };
+
+    loadUserCars();
+  }, [auth.user?.id]);
 
   const [routeInfo, setRouteInfo] = useState<{
     points: any[];
@@ -535,9 +637,6 @@ function PostRideScreenInner() {
             const minSugg = Math.round(distanceKm * 8);
             const maxSugg = Math.round(distanceKm * 12);
             setPriceSuggestion(`₹${minSugg}-₹${maxSugg}`);
-            if (!formData.price) {
-              setFormData(prev => ({ ...prev, price: Math.round(distanceKm * 10).toString() }));
-            }
           }
         }
       } catch (err) {
@@ -577,8 +676,9 @@ function PostRideScreenInner() {
       price: '',
       availableSeats: 2,
       carModel: '',
+      fuelType: 'Petrol' as 'Petrol' | 'Diesel' | 'EV',
       notes: '',
-      detourRadiusMeters: 0,
+      detourRadiusMeters: null as number | null,
     };
   }, []);
 
@@ -853,7 +953,8 @@ function PostRideScreenInner() {
           availableSeats: formData.availableSeats,
           totalSeats: formData.availableSeats,
           carModel: formData.carModel,
-          detourRadiusMeters: formData.detourRadiusMeters,
+          fuelType: formData.fuelType,
+          detourRadiusMeters: formData.detourRadiusMeters ?? 0,
           routePolyline: (routeInfo as any)?.polyline || '',
           simplifiedCoordinates: simplifiedCoords,
           baselineDistanceMeters: routeInfo?.distanceMeters || 0,
@@ -1261,22 +1362,149 @@ function PostRideScreenInner() {
 
         {/* CAR INFO SECTION */}
         <Animated.View style={[styles.section, { opacity: section4Anim.opacity, transform: [{ translateY: section4Anim.translateY }] }]}>
-          <Text style={styles.sectionTitle}>CAR INFO</Text>
-
-          <View style={styles.optionalCard}>
-            <View style={styles.optionalIcon}>
-              <MaterialCommunityIcons name="car" size={18} color={WARM_CORE.textSecondary} />
-            </View>
-            <TextInput
-              style={styles.optionalInput}
-              placeholder="Car model (e.g., Toyota Camry)"
-              placeholderTextColor={WARM_CORE.textSecondary}
-              value={formData.carModel}
-              onChangeText={value => handleInputChange('carModel', value)}
-              editable={!isLoading}
-            />
+          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <Text style={[styles.sectionTitle, { marginBottom: 0 }]}>YOUR VEHICLE</Text>
+            <TouchableOpacity
+              style={styles.addCarInlineBtn}
+              onPress={() => setShowAddCarModal(true)}
+              activeOpacity={0.8}
+            >
+              <MaterialCommunityIcons name="plus-circle" size={16} color={WARM_CORE.primary} style={{ marginRight: 4 }} />
+              <Text style={styles.addCarInlineBtnText}>+ Add New Car</Text>
+            </TouchableOpacity>
           </View>
 
+          {/* Vehicle Dropdown Card */}
+          <View style={{ marginBottom: 12 }}>
+            <TouchableOpacity
+              style={styles.dropdownButton}
+              onPress={() => setShowSavedCarsDropdown(prev => !prev)}
+              activeOpacity={0.85}
+            >
+              <View style={styles.dropdownButtonLeft}>
+                <View style={[styles.carIconBox, formData.fuelType === 'EV' && { backgroundColor: 'rgba(16, 185, 129, 0.12)' }]}>
+                  <MaterialCommunityIcons
+                    name={formData.fuelType === 'EV' ? 'lightning-bolt' : 'car'}
+                    size={20}
+                    color={formData.fuelType === 'EV' ? '#10B981' : WARM_CORE.primary}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.carSelectedTitle} numberOfLines={1}>
+                    {formData.carModel || 'No Car Selected'}
+                  </Text>
+                  <Text style={styles.carSelectedSub}>
+                    {formData.carModel ? `Fuel: ${formData.fuelType}` : 'Tap to select or add a car'}
+                  </Text>
+                </View>
+              </View>
+              <MaterialCommunityIcons
+                name={showSavedCarsDropdown ? 'chevron-up' : 'chevron-down'}
+                size={22}
+                color={WARM_CORE.textSecondary}
+              />
+            </TouchableOpacity>
+
+            {showSavedCarsDropdown && (
+              <View style={styles.dropdownContainer}>
+                {savedCars.length > 0 ? (
+                  savedCars.map((car) => {
+                    const isSelected = formData.carModel === car.model;
+                    return (
+                      <TouchableOpacity
+                        key={car.id}
+                        style={[styles.dropdownOption, isSelected && styles.dropdownOptionActive]}
+                        onPress={() => {
+                          setFormData(prev => ({
+                            ...prev,
+                            carModel: car.model,
+                            fuelType: car.fuelType || 'Petrol',
+                          }));
+                          setShowSavedCarsDropdown(false);
+                        }}
+                      >
+                        <MaterialCommunityIcons
+                          name={car.fuelType === 'EV' ? 'lightning-bolt' : 'gas-station'}
+                          size={18}
+                          color={car.fuelType === 'EV' ? '#10B981' : WARM_CORE.primary}
+                          style={{ marginRight: 10 }}
+                        />
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.dropdownOptionText, isSelected && { fontWeight: '700', color: WARM_CORE.primary }]}>
+                            {car.model} {car.color ? `(${car.color})` : ''}
+                          </Text>
+                        </View>
+                        <View style={[styles.fuelBadgeMini, car.fuelType === 'EV' && { backgroundColor: 'rgba(16, 185, 129, 0.12)' }]}>
+                          <Text style={[styles.fuelBadgeMiniText, car.fuelType === 'EV' && { color: '#10B981' }]}>
+                            {car.fuelType}
+                          </Text>
+                        </View>
+                        {isSelected && (
+                          <MaterialCommunityIcons name="check-circle" size={18} color={WARM_CORE.primary} style={{ marginLeft: 8 }} />
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })
+                ) : (
+                  <View style={{ padding: 16, alignItems: 'center' }}>
+                    <Text style={{ color: WARM_CORE.textSecondary, fontSize: 13 }}>No saved vehicles found.</Text>
+                  </View>
+                )}
+
+                <TouchableOpacity
+                  style={[styles.dropdownOption, styles.addNewCarOption]}
+                  onPress={() => {
+                    setShowSavedCarsDropdown(false);
+                    setShowAddCarModal(true);
+                  }}
+                >
+                  <MaterialCommunityIcons name="plus-circle" size={18} color={WARM_CORE.primary} style={{ marginRight: 8 }} />
+                  <Text style={styles.addNewCarOptionText}>+ Add a New Car</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+
+          {/* Quick Fuel Type Adjuster */}
+          <View style={{ marginBottom: 12 }}>
+            <Text style={styles.seatsLabel}>Fuel Type</Text>
+            <View style={styles.fuelChipsRow}>
+              {[
+                { label: 'Petrol', icon: 'gas-station', value: 'Petrol' as const },
+                { label: 'Diesel', icon: 'oil', value: 'Diesel' as const },
+                { label: 'EV (Electric)', icon: 'lightning-bolt', value: 'EV' as const }
+              ].map((fuel) => {
+                const isSelected = formData.fuelType === fuel.value;
+                return (
+                  <TouchableOpacity
+                    key={fuel.value}
+                    style={[
+                      styles.fuelChip,
+                      isSelected && styles.fuelChipActive,
+                      isSelected && fuel.value === 'EV' && { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderColor: '#10B981' }
+                    ]}
+                    onPress={() => setFormData(prev => ({ ...prev, fuelType: fuel.value }))}
+                  >
+                    <MaterialCommunityIcons
+                      name={fuel.icon as any}
+                      size={16}
+                      color={isSelected ? (fuel.value === 'EV' ? '#10B981' : WARM_CORE.primary) : WARM_CORE.textSecondary}
+                      style={{ marginRight: 6 }}
+                    />
+                    <Text style={[
+                      styles.fuelChipText,
+                      isSelected && styles.fuelChipTextActive,
+                      isSelected && fuel.value === 'EV' && { color: '#10B981' }
+                    ]}>
+                      {fuel.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+
+          {/* Notes Card */}
           <View style={[styles.optionalCard, styles.notesCard]}>
             <View style={styles.optionalIcon}>
               <MaterialCommunityIcons name="note-text" size={18} color={WARM_CORE.textSecondary} />
@@ -1336,6 +1564,96 @@ function PostRideScreenInner() {
           isLoading={isLoading}
         />
       </ScrollView>
+
+      {/* ADD NEW VEHICLE MODAL */}
+      <Modal
+        visible={showAddCarModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowAddCarModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Add New Vehicle</Text>
+              <TouchableOpacity onPress={() => setShowAddCarModal(false)}>
+                <MaterialCommunityIcons name="close" size={22} color={WARM_CORE.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView bounces={false} style={{ maxHeight: 380 }}>
+              <Text style={styles.inputLabel}>Car Model</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="e.g. Tata Nexon, Honda City"
+                placeholderTextColor={WARM_CORE.textSecondary}
+                value={newCarModel}
+                onChangeText={setNewCarModel}
+                autoCapitalize="words"
+              />
+
+              <Text style={styles.inputLabel}>Color (Optional)</Text>
+              <TextInput
+                style={styles.modalInput}
+                placeholder="e.g. Silver, Black"
+                placeholderTextColor={WARM_CORE.textSecondary}
+                value={newCarColor}
+                onChangeText={setNewCarColor}
+                autoCapitalize="words"
+              />
+
+              <Text style={styles.inputLabel}>Fuel Type</Text>
+              <View style={styles.fuelChipsRow}>
+                {[
+                  { label: 'Petrol', icon: 'gas-station', value: 'Petrol' as const },
+                  { label: 'Diesel', icon: 'oil', value: 'Diesel' as const },
+                  { label: 'EV', icon: 'lightning-bolt', value: 'EV' as const }
+                ].map((fuel) => {
+                  const isSelected = newCarFuelType === fuel.value;
+                  return (
+                    <TouchableOpacity
+                      key={fuel.value}
+                      style={[
+                        styles.fuelChip,
+                        isSelected && styles.fuelChipActive,
+                        isSelected && fuel.value === 'EV' && { backgroundColor: 'rgba(16, 185, 129, 0.15)', borderColor: '#10B981' }
+                      ]}
+                      onPress={() => setNewCarFuelType(fuel.value)}
+                    >
+                      <MaterialCommunityIcons
+                        name={fuel.icon as any}
+                        size={16}
+                        color={isSelected ? (fuel.value === 'EV' ? '#10B981' : WARM_CORE.primary) : WARM_CORE.textSecondary}
+                        style={{ marginRight: 4 }}
+                      />
+                      <Text style={[
+                        styles.fuelChipText,
+                        isSelected && styles.fuelChipTextActive,
+                        isSelected && fuel.value === 'EV' && { color: '#10B981' }
+                      ]}>
+                        {fuel.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </ScrollView>
+
+            <TouchableOpacity
+              style={[styles.saveCarButton, isSavingCar && { opacity: 0.7 }]}
+              onPress={handleAddNewCar}
+              disabled={isSavingCar}
+              activeOpacity={0.85}
+            >
+              {isSavingCar ? (
+                <ActivityIndicator color={WARM_CORE.white} size="small" />
+              ) : (
+                <Text style={styles.saveCarButtonText}>Save & Select Vehicle</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       {showDatePicker && DateTimePicker != null && (
         <DateTimePicker
@@ -2335,6 +2653,202 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     color: WARM_CORE.textSecondary,
     lineHeight: 15,
+  },
+
+  /* DROPDOWN & FUEL SELECTION STYLES */
+  dropdownButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginTop: 6,
+  },
+  dropdownButtonText: {
+    flex: 1,
+    fontSize: 14,
+    fontWeight: '600',
+    color: WARM_CORE.text,
+  },
+  dropdownContainer: {
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    marginTop: 6,
+    overflow: 'hidden',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+  },
+  dropdownOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+  },
+  dropdownOptionText: {
+    flex: 1,
+    fontSize: 14,
+    color: WARM_CORE.text,
+  },
+  fuelBadgeMini: {
+    backgroundColor: 'rgba(212, 80, 10, 0.1)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  fuelBadgeMiniText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: WARM_CORE.primary,
+  },
+  fuelChipsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 6,
+  },
+  fuelChip: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    backgroundColor: WARM_CORE.card,
+  },
+  fuelChipActive: {
+    backgroundColor: 'rgba(212, 80, 10, 0.1)',
+    borderColor: WARM_CORE.primary,
+  },
+  addCarInlineBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(212, 80, 10, 0.08)',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16,
+  },
+  addCarInlineBtnText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: WARM_CORE.primary,
+  },
+  dropdownButtonLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  carIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    backgroundColor: 'rgba(212, 80, 10, 0.1)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  carSelectedTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  },
+  carSelectedSub: {
+    fontSize: 12,
+    color: WARM_CORE.textSecondary,
+    marginTop: 1,
+  },
+  dropdownOptionActive: {
+    backgroundColor: 'rgba(212, 80, 10, 0.05)',
+  },
+  addNewCarOption: {
+    borderTopWidth: 1,
+    borderTopColor: WARM_CORE.border,
+    backgroundColor: 'rgba(212, 80, 10, 0.04)',
+  },
+  addNewCarOptionText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: WARM_CORE.primary,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    width: '100%',
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 20,
+    padding: 20,
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: WARM_CORE.border,
+  },
+  modalTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  },
+  inputLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: WARM_CORE.textSecondary,
+    marginBottom: 6,
+    marginTop: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.3,
+  },
+  modalInput: {
+    backgroundColor: WARM_CORE.background,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    fontSize: 14,
+    color: WARM_CORE.text,
+  },
+  saveCarButton: {
+    backgroundColor: WARM_CORE.primary,
+    borderRadius: 14,
+    paddingVertical: 14,
+    alignItems: 'center',
+    marginTop: 20,
+  },
+  saveCarButtonText: {
+    color: WARM_CORE.white,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  fuelChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: WARM_CORE.textSecondary,
+  },
+  fuelChipTextActive: {
+    color: WARM_CORE.primary,
   },
 });
 

@@ -378,11 +378,12 @@ export default function TaxiPoolDetailsScreen() {
     };
   }, [poolId, auth.user]);
 
-  // Subscribe to pending requests ONLY if current user is the pool creator
+  // Subscribe to pending requests for the pool creator
   useEffect(() => {
-    if (!poolId || !pool || !auth.user || pool.creatorId !== auth.user.id) return;
+    if (!poolId || !auth.user) return;
+    if (pool && pool.creatorId !== auth.user.id) return;
 
-    console.log('[POOL DETAILS] Creator detected, subscribing to requests list...');
+    console.log('[POOL DETAILS] Subscribing to pool requests list for pool:', poolId);
     const unsubRequests = subscribeToPoolRequests(poolId, (updatedRequests) => {
       setRequests(updatedRequests);
     });
@@ -390,7 +391,7 @@ export default function TaxiPoolDetailsScreen() {
     return () => {
       unsubRequests();
     };
-  }, [poolId, pool, auth.user]);
+  }, [poolId, pool?.creatorId, auth.user?.id]);
 
   // Fetch route and fit map bounds
   useEffect(() => {
@@ -856,7 +857,7 @@ export default function TaxiPoolDetailsScreen() {
           )}
 
           {/* CREATOR SECTION: Incoming requests list */}
-          {isCreator && pool.status === 'OPEN' && (
+          {isCreator && pool.status !== 'CANCELLED' && pool.status !== 'completed' && (
             <>
               <View style={styles.divider} />
               <Text style={styles.sectionLabel}>Incoming Join Requests</Text>
