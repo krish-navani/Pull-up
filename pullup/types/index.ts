@@ -37,6 +37,9 @@ export interface User {
   licenseRejectionReason?: string;
   licenseUploadedAt?: string;
   licenseConfirmed?: boolean;
+  carModel?: string;
+  fuelType?: 'Petrol' | 'Diesel' | 'EV';
+  savedCars?: Array<{ id: string; model: string; fuelType: 'Petrol' | 'Diesel' | 'EV' }>;
 
   // Safety Layer
   verifiedStudent?: boolean;
@@ -67,8 +70,9 @@ export interface Location {
   latitude: number;
   longitude: number;
   address: string;
-  city: string;
+  city?: string;
   placeId?: string;
+  shortAddress?: string;
   locality?: string;
   state?: string;
 }
@@ -84,6 +88,7 @@ export interface Ride {
   availableSeats: number;
   totalSeats: number;
   carModel: string;
+  fuelType?: 'Petrol' | 'Diesel' | 'EV';
   carColor?: string;
   description?: string;
   createdAt: string;

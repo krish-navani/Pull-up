@@ -226,15 +226,27 @@ export class GeofenceEngine {
             notifiedNearby: true, // also mark nearby so we don't double-notify
           });
 
-          // Send strong "driver arrived" push notification to passenger
+          // Send "driver arrived" push notification to passenger
           await sendNotification(
             booking.passengerId,
             'driver_arrived',
             '🚗 Driver Has Arrived!',
-            `${ride.driverName || 'Your driver'} is at your pickup point. Please come out now!`,
+            `${ride.driverName || 'Your driver'} has arrived at your pickup location! Call them to coordinate.`,
             rideId,
             bookingId
           );
+
+          // Send "you have arrived" notification to driver
+          if (ride.driverId) {
+            await sendNotification(
+              ride.driverId,
+              'driver_arrived',
+              '📍 Arrived at Pickup Location!',
+              `You are at the pickup point for ${booking.passengerName || 'your passenger'}. Call to coordinate boarding.`,
+              rideId,
+              bookingId
+            );
+          }
 
         // ── 200m: Driver is NEARBY pickup ─────────────────────────────────────
         } else if (distanceToPickup <= nearbyThresholdKM && !booking.notifiedNearby) {
@@ -251,6 +263,18 @@ export class GeofenceEngine {
             rideId,
             bookingId
           );
+
+          // Send notification to driver
+          if (ride.driverId) {
+            await sendNotification(
+              ride.driverId,
+              'booking_accepted',
+              '📍 Approaching Pickup Location',
+              `Approaching pickup location for ${booking.passengerName || 'passenger'} (within 200m).`,
+              rideId,
+              bookingId
+            );
+          }
         }
       }
     } catch (error) {
