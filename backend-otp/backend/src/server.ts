@@ -4,6 +4,7 @@ import { config, validateConfig } from './config.js';
 import { verifyMailerConfig } from './emailService.js';
 import { initializeFirebase } from './firebase.js';
 import routes from './routes.js';
+import { deleteAccountPage, privacyPage } from './publicPages.js';
 
 const app = express();
 
@@ -97,7 +98,6 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 const logRouteRegistrations = () => {
   const routeList = [
     { method: 'GET',  path: '/health' },
-    { method: 'GET',  path: '/checkout-page' },
     { method: 'POST', path: '/send-otp' },
     { method: 'POST', path: '/verify-otp' },
     { method: 'POST', path: '/create-subscription' },
@@ -116,6 +116,8 @@ const logRouteRegistrations = () => {
 };
 
 logRouteRegistrations();
+app.get('/privacy', (_req, res) => res.type('html').send(privacyPage()));
+app.get('/delete-account', (_req, res) => res.type('html').send(deleteAccountPage()));
 app.use('/api/otp', routes);
 
 

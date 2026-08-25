@@ -279,7 +279,7 @@ export const verifyOTPAndLogin = async (email: string, otp: string): Promise<Use
  * This prevents navigation guard mismatches when fields are undefined.
  */
 const ensureUserDefaults = (firestoreData: Record<string, any>): User => {
-  const isStatusVerified = firestoreData?.licenseVerificationStatus === 'verified';
+  const isStatusVerified = firestoreData?.licenseVerificationStatus === 'approved' || firestoreData?.licenseVerificationStatus === 'verified';
   return {
     ...firestoreData,
     profileComplete: firestoreData?.profileComplete ?? true,

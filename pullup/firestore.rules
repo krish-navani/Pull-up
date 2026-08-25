@@ -138,27 +138,26 @@ service cloud.firestore {
 
     // ─── Ride Group Chats ──────────────────────────────────────────────────
     match /rideChats/{rideId} {
-      allow read:   if isSignedIn();
-      allow create: if isSignedIn();
+      // Collection listeners constrain participants with array-contains.
+      allow read: if isSignedIn() &&
+                     getPersistentUserId() in resource.data.participants;
+      allow create: if isSignedIn() && (isCarpoolDriver(rideId) || isTaxiCreator(rideId));
       allow update: if isSignedIn() && (
-        getPersistentUserId() in resource.data.participants || 
-        request.auth.uid in resource.data.participants ||
         isCarpoolDriver(rideId) || 
-        isTaxiCreator(rideId) ||
+        isTaxiCreator(rideId) || 
         (
-          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['participants', 'updatedAt']) &&
-          request.resource.data.participants.hasAll(resource.data.participants) &&
-          getPersistentUserId() in request.resource.data.participants
-        ) ||
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['typing', 'updatedAt'])
+          canAccessChat(rideId) &&
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastMessage', 'lastMessageTime', 'lastMessageSenderId', 'lastMessageSenderName', 'updatedAt'])
+        )
       );
       allow delete: if false;
 
       match /messages/{messageId} {
-        allow read: if isSignedIn();
-        allow create: if isSignedIn();
-        allow update: if isSignedIn();
-        allow delete: if false;
+        allow read: if isSignedIn() &&
+                       getPersistentUserId() in
+                         get(/databases/$(database)/documents/rideChats/$(rideId)).data.participants;
+        allow create: if canAccessChat(rideId) && isChatWritable(rideId);
+        allow update, delete: if false;
       }
     }
 
@@ -212,7 +211,6 @@ service cloud.firestore {
       allow read:   if isSignedIn() && (
         resource == null || 
         resource.data.passengerId == getPersistentUserId() || 
-        resource.data.creatorId == getPersistentUserId() ||
         (
           exists(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)) && 
           getPersistentUserId() == get(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)).data.creatorId
@@ -221,16 +219,12 @@ service cloud.firestore {
       allow create: if isSignedIn() && request.resource.data.passengerId == getPersistentUserId();
       allow update: if isSignedIn() && (
         resource.data.passengerId == getPersistentUserId() ||
-        resource.data.creatorId == getPersistentUserId() ||
         (
           exists(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)) && 
           getPersistentUserId() == get(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)).data.creatorId
         )
       );
-      allow delete: if isSignedIn() && (
-        resource.data.passengerId == getPersistentUserId() ||
-        resource.data.creatorId == getPersistentUserId()
-      );
+      allow delete: if isSignedIn() && resource.data.passengerId == getPersistentUserId();
     }
 
     // ─── Wallets ────────────────────────────────────────────────────────────

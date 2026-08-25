@@ -3,10 +3,12 @@
  */
 
 export const ATLAS_LOCATION = {
-  latitude: 19.0707255,
-  longitude: 72.8752988,
-  address: 'Atlas SkillTech University, Mumbai',
-};
+  latitude: 19.0709103,
+  longitude: 72.8759417,
+  placeId: 'ChIJ45sEySvJ5zsR7VTed_4-MG4',
+  address: 'Atlas SkillTech University, Equinox Business Park, Kurla West, Mumbai',
+  city: 'Mumbai',
+} as const;
 
 export const ATLAS_RADIUS_KM = 2;
 
@@ -52,6 +54,10 @@ export function isWithinAtlasRadius(latitude: number, longitude: number): boolea
  * - 'atlas-to-home': From Atlas to home or anywhere
  * - 'other': Neither (not allowed in production)
  */
+export function canonicalizeAtlasEndpoint<T extends { latitude: number; longitude: number }>(location: T): T | typeof ATLAS_LOCATION {
+  return isWithinAtlasRadius(location.latitude, location.longitude) ? ATLAS_LOCATION : location;
+}
+
 export function getRideDirectionType(
   pickupLat: number,
   pickupLon: number,

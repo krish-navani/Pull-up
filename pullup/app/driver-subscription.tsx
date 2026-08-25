@@ -12,17 +12,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import * as Linking from 'expo-linking';
-import * as WebBrowser from 'expo-web-browser';
+import RazorpayCheckout from 'react-native-razorpay';
 import { doc, getDoc } from 'firebase/firestore';
 
 import { useAppContext } from '@/context/AppContext';
 import { WARM_CORE } from '@/constants/theme';
 import { db } from '@/utils/firebase';
 import apiClient from '@/utils/backendApiClient';
-import { OTP_BACKEND_URL } from '@/config/environment';
-
-const REMOTE_BACKEND_URL = OTP_BACKEND_URL;
 
 interface Plan {
   id: 'monthly' | 'quarterly' | 'yearly';
@@ -94,41 +90,6 @@ export default function DriverSubscriptionScreen() {
 
   useEffect(() => {
     fetchSubscriptionStatus();
-
-    const handleDeepLink = (event: { url: string }) => {
-      console.log('[SUBSCRIPTION DEEP LINK] URL received:', event.url);
-      
-      if (event.url.includes('subscription-success')) {
-        WebBrowser.dismissBrowser();
-        setLoading(true);
-        Alert.alert(
-          'Subscription Active 🎉',
-          'Thank you! Your TaxiPool creation benefits have been successfully activated.',
-          [
-            {
-              text: 'Create TaxiPool',
-              onPress: () => router.replace('/create-taxi-pool'),
-            },
-            {
-              text: 'Go Home',
-              onPress: () => router.replace('/(tabs)/home'),
-            },
-          ]
-        );
-        fetchSubscriptionStatus();
-      } else if (event.url.includes('payment-cancelled')) {
-        WebBrowser.dismissBrowser();
-        Alert.alert('Payment Cancelled', 'You cancelled the payment. No charges were made.');
-      } else if (event.url.includes('payment-failed')) {
-        WebBrowser.dismissBrowser();
-        Alert.alert('Payment Failed', 'Transaction failed or signature verification did not pass. Please try again.');
-      }
-    };
-
-    const sub = Linking.addEventListener('url', handleDeepLink);
-    return () => {
-      sub.remove();
-    };
   }, [auth.user]);
 
   const handleSubscribe = async () => {
@@ -144,22 +105,54 @@ export default function DriverSubscriptionScreen() {
         planId: selectedPlan,
       });
 
-      if (res.data?.success) {
-        const { orderId, amount } = res.data;
-        const checkoutUrl =
-          `${REMOTE_BACKEND_URL}/api/otp/checkout-page?type=subscription` +
-          `&orderId=${encodeURIComponent(orderId)}` +
-          `&amount=${encodeURIComponent(String(amount))}` +
-          `&userId=${encodeURIComponent(auth.user.id)}` +
-          `&planId=${encodeURIComponent(selectedPlan)}`;
-
-        await WebBrowser.openBrowserAsync(checkoutUrl);
-      } else {
+      if (!res.data?.success || !res.data.orderId || !res.data.keyId || !res.data.amount) {
         throw new Error(res.data?.message || 'Failed to initialize subscription checkout');
       }
+
+      const payment = await RazorpayCheckout.open({
+        key: res.data.keyId,
+        order_id: res.data.orderId,
+        amount: res.data.amount,
+        currency: 'INR',
+        name: 'PullUp',
+        description: `${selectedPlan} driver subscription`,
+        prefill: {
+          name: auth.user.fullName,
+          email: auth.user.email,
+          contact: auth.user.phone,
+        },
+        notes: { userId: auth.user.id, planId: selectedPlan },
+        theme: { color: WARM_CORE.primary },
+      });
+
+      if (!payment.razorpay_payment_id || !payment.razorpay_order_id || !payment.razorpay_signature) {
+        throw new Error('Razorpay did not return complete payment verification details.');
+      }
+
+      const verification = await apiClient.post('/verify-subscription', {
+        userId: auth.user.id,
+        planId: selectedPlan,
+        razorpay_payment_id: payment.razorpay_payment_id,
+        razorpay_order_id: payment.razorpay_order_id,
+        razorpay_signature: payment.razorpay_signature,
+      });
+
+      if (!verification.data?.success) {
+        throw new Error(verification.data?.message || 'Payment verification failed');
+      }
+
+      await fetchSubscriptionStatus();
+      Alert.alert(
+        'Subscription active',
+        'Your driver subscription payment was verified successfully.',
+        [
+          { text: 'Create TaxiPool', onPress: () => router.replace('/create-taxi-pool') },
+          { text: 'Go Home', onPress: () => router.replace('/(tabs)/home') },
+        ]
+      );
     } catch (err: any) {
       console.error('[SUBSCRIPTION ERROR]', err);
-      Alert.alert('Subscription Failed', err.message || 'Could not initiate Razorpay subscription payment.');
+      Alert.alert('Payment not completed', err?.description || err?.message || 'The payment was cancelled or failed.');
     } finally {
       setSubmitting(false);
     }

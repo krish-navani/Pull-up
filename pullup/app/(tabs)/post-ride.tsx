@@ -11,6 +11,7 @@ import { fetchRoute } from '@/utils/routeUtils';
 import { simplifyDouglasPeucker } from '@/utils/routeMatching';
 import { doc, getDoc, updateDoc } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
+import apiClient from '@/utils/backendApiClient';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import {
     ActivityIndicator,
@@ -227,7 +228,7 @@ function PostRideButton({ onPress, disabled, isLoading }: { onPress: () => void;
           {isLoading ? (
             <ActivityIndicator color={WARM_CORE.white} size="small" />
           ) : (
-            <Text style={styles.postButtonText}>Post Ride</Text>
+            <Text style={styles.postButtonText}>Confirm & Post Ride</Text>
           )}
         </View>
       </TouchableOpacity>
@@ -470,7 +471,6 @@ function PostRideScreenInner() {
     dropLocation: null as Location | null,
     departureDate: '',
     departureTime: '',
-    price: '',
     availableSeats: 2,
     carModel: '',
     fuelType: 'Petrol' as 'Petrol' | 'Diesel' | 'EV',
@@ -592,7 +592,7 @@ function PostRideScreenInner() {
     durationSeconds: number;
   } | null>(null);
   const [loadingRoute, setLoadingRoute] = useState(false);
-  const [priceSuggestion, setPriceSuggestion] = useState('₹80-₹120');
+  const [rideQuote, setRideQuote] = useState<{ roadDistanceKm: number; estimatedTripCost: number; passengerContribution: number } | null>(null);
 
   const handleSwapRoute = () => {
     setFormData(prev => {
@@ -631,12 +631,19 @@ function PostRideScreenInner() {
             distanceMeters: result.distanceMeters || 0,
             durationSeconds: result.durationSeconds || 0,
           });
-
-          const distanceKm = (result.distanceMeters || 0) / 1000;
-          if (distanceKm > 0) {
-            const minSugg = Math.round(distanceKm * 8);
-            const maxSugg = Math.round(distanceKm * 12);
-            setPriceSuggestion(`₹${minSugg}-₹${maxSugg}`);
+          const quote = await apiClient.post('/fare/ride-quote', {
+            pickupLocation: formData.pickupLocation,
+            dropLocation: formData.dropLocation,
+            totalSeats: formData.availableSeats,
+            fuelType: formData.fuelType,
+          });
+          const display = quote.data?.display;
+          if (display) {
+            setRideQuote({
+              roadDistanceKm: Number(display.roadDistanceKm),
+              estimatedTripCost: Number(display.estimatedTripCost),
+              passengerContribution: Number(display.passengerContribution),
+            });
           }
         }
       } catch (err) {
@@ -647,7 +654,7 @@ function PostRideScreenInner() {
     };
 
     loadRoutePreview();
-  }, [formData.pickupLocation, formData.dropLocation]);
+  }, [formData.pickupLocation, formData.dropLocation, formData.availableSeats, formData.fuelType]);
 
   const darkMapStyle = [
     { elementType: "geometry", stylers: [{ color: "#0B1220" }] },
@@ -673,8 +680,7 @@ function PostRideScreenInner() {
       dropLocation: atlasAs === 'dropoff' ? atlasLoc : null,
       departureDate: '',
       departureTime: '',
-      price: '',
-      availableSeats: 2,
+        availableSeats: 2,
       carModel: '',
       fuelType: 'Petrol' as 'Petrol' | 'Diesel' | 'EV',
       notes: '',
@@ -903,10 +909,11 @@ function PostRideScreenInner() {
       setError('Please select departure time');
       return;
     }
-    if (!formData.price || isNaN(parseFloat(formData.price))) {
-      setError('Please enter a valid price');
+    if (!rideQuote) {
+      setError("We couldn't calculate the road distance. Please try again.");
       return;
     }
+
     if (!formData.carModel.trim()) {
       setError('Please enter your car model');
       return;
@@ -949,7 +956,6 @@ function PostRideScreenInner() {
           pickupLocation: formData.pickupLocation,
           dropLocation: formData.dropLocation,
           departureTime: date.toISOString(),
-          price: parseFloat(formData.price),
           availableSeats: formData.availableSeats,
           totalSeats: formData.availableSeats,
           carModel: formData.carModel,
@@ -961,7 +967,7 @@ function PostRideScreenInner() {
           baselineDurationSeconds: routeInfo?.durationSeconds || 0,
         };
         await createRide(rideData);
-        lastRideData = rideData;
+        lastRideData = { ...rideData, price: rideQuote?.passengerContribution };
       }
 
       setPostedRideData(lastRideData);
@@ -1299,26 +1305,20 @@ function PostRideScreenInner() {
 
           <View style={styles.priceCard}>
             <View style={styles.priceIcon}>
-              <MaterialCommunityIcons name="currency-inr" size={20} color={WARM_CORE.success} />
+              <MaterialCommunityIcons name="calculator-variant" size={20} color={WARM_CORE.success} />
             </View>
             <View style={styles.priceContent}>
-              <Text style={styles.priceLabel}>Price per seat</Text>
-              <TextInput
-                style={styles.priceInput}
-                placeholder="100"
-                placeholderTextColor={WARM_CORE.textSecondary}
-                value={formData.price}
-                onChangeText={value => handleInputChange('price', value)}
-                keyboardType="decimal-pad"
-                editable={!isLoading}
-              />
-            </View>
-            <View style={styles.priceSuggestion}>
-              <Text style={styles.priceSuggestionText}>₹80-₹120</Text>
-              <Text style={styles.priceSuggestionHint}>suggested</Text>
+              <Text style={styles.priceLabel}>Estimated passenger contribution</Text>
+              <Text style={styles.priceInput}>
+                {loadingRoute ? 'Calculating...' : rideQuote ? `₹${rideQuote.passengerContribution} / seat` : 'Select a valid route'}
+              </Text>
+              {rideQuote && (
+                <Text style={styles.priceSuggestionHint}>
+                  Road distance: {rideQuote.roadDistanceKm.toFixed(2)} km · Operating cost: ₹{rideQuote.estimatedTripCost}
+                </Text>
+              )}
             </View>
           </View>
-
           <View style={styles.seatsDropdownContainer}>
             <View style={styles.seatsDropdownHeader}>
               <Text style={styles.seatsLabel}>Available seats</Text>

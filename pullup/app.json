@@ -25,7 +25,7 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#F7E7C6",
+        "backgroundColor": "#D6C4A1",
         "foregroundImage": "./assets/images/android-icon-foreground.png"
       },
       "edgeToEdgeEnabled": false,
@@ -88,6 +88,7 @@
       ],
       "@react-native-firebase/app",
       "./plugins/withReanimatedWorkletsBuildFix",
+      "./plugins/withRazorpayAndroidFix",
       "./plugins/withNotificationFix"
     ],
     "experiments": {
@@ -96,9 +97,9 @@
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "6dfffcf9-d30c-49f7-b295-b1b765c2a139"
+        "projectId": "58d3a18c-0e66-4eff-81d3-a71eb775b788"
       }
     },
-    "owner": "rhythm_029"
+    "owner": "xnshikaa"
   }
 }

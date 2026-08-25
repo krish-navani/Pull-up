@@ -266,30 +266,15 @@
 
 <!-- PIN Overlay -->
 <div id="pinOverlay">
-    <div class="pin-card">
-        <div class="pin-logo">🔐</div>
-        <div class="pin-title">PullUp Admin</div>
-        <div class="pin-subtitle">Enter your 6-digit PIN to continue</div>
-        <div class="pin-dots">
-            <div class="pin-dot"></div><div class="pin-dot"></div><div class="pin-dot"></div>
-            <div class="pin-dot"></div><div class="pin-dot"></div><div class="pin-dot"></div>
-        </div>
-        <div class="pin-keypad">
-            <button class="pin-key" onclick="pressKey('1')">1</button>
-            <button class="pin-key" onclick="pressKey('2')">2</button>
-            <button class="pin-key" onclick="pressKey('3')">3</button>
-            <button class="pin-key" onclick="pressKey('4')">4</button>
-            <button class="pin-key" onclick="pressKey('5')">5</button>
-            <button class="pin-key" onclick="pressKey('6')">6</button>
-            <button class="pin-key" onclick="pressKey('7')">7</button>
-            <button class="pin-key" onclick="pressKey('8')">8</button>
-            <button class="pin-key" onclick="pressKey('9')">9</button>
-            <button class="pin-key empty"></button>
-            <button class="pin-key" onclick="pressKey('0')">0</button>
-            <button class="pin-key del" onclick="pressKey('del')">⌫</button>
-        </div>
-        <div class="pin-error" id="pinError"></div>
-    </div>
+  <form class="pin-card" onsubmit="loginAdmin(event)">
+    <div class="pin-logo">PU</div>
+    <div class="pin-title">PullUp Admin</div>
+    <div class="pin-subtitle">Sign in with your authorized admin account</div>
+    <div class="form-group"><label>Email</label><input class="form-control" id="adminEmail" type="email" autocomplete="username" required></div>
+    <div class="form-group"><label>Password</label><input class="form-control" id="adminPassword" type="password" autocomplete="current-password" required></div>
+    <button class="btn btn-primary" id="adminLoginButton" type="submit" style="width:100%">Sign in</button><button class="btn btn-ghost" type="button" onclick="sendAdminPasswordReset()" style="width:100%;margin-top:8px">Send password setup link</button>
+    <div class="pin-error" id="pinError" role="alert"></div>
+  </form>
 </div>
 
 <!-- Main App -->
@@ -321,7 +306,7 @@
             ⚙️ Database
         </button>
         <div class="sidebar-bottom">
-            <button class="nav-item" onclick="loadAllData()" style="color:var(--primary)">🔄 Refresh All</button>
+            <button class="nav-item" onclick="loadAllData()" style="color:var(--primary)">Refresh All</button><button class="nav-item" onclick="logoutAdmin()">Sign out</button>
         </div>
     </nav>
 
@@ -346,7 +331,7 @@
                 <select id="licFilter" onchange="renderLicenses()">
                     <option value="">All Statuses</option>
                     <option value="pending">Pending</option>
-                    <option value="verified">Verified</option>
+                    <option value="approved">Approved</option>
                     <option value="rejected">Rejected</option>
                     <option value="resubmission_requested">Resubmit Requested</option>
                 </select>
@@ -533,7 +518,6 @@
 const BACKEND_URL = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
     ? 'http://localhost:3000' : 'https://backend-eight-gamma-77.vercel.app';
 
-const ADMIN_SECRET = prompt('Enter Admin Secret (PULLUP_ADMIN_SECRET):') || '';
 
 const firebaseConfig = {
     apiKey: "AIzaSyDAH_IkC3mEa0I3K58YZ6NnnCNWH7u7v98",
@@ -554,26 +538,77 @@ let currentLicUser = null;
 // ── Access Gate ──────────────────────────────────────────────────────────────
 // Admin authorization is enforced by the backend on every request. The frontend
 // does not contain hardcoded PINs or persist the admin secret.
-document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('pinOverlay').classList.add('hidden');
-    initialize();
-});
-// ── Initialize ────────────────────────────────────────────────────────────────
-async function initialize() {
-    document.getElementById('mainContent').style.display = 'block';
-    await auth.signInAnonymously().catch(()=>{});
-    if (typeof initializeDBManager === 'function') initializeDBManager();
+let refreshTimer = null;
+
+async function loginAdmin(event) {
+    event.preventDefault();
+    const button = document.getElementById('adminLoginButton');
+    const error = document.getElementById('pinError');
+    button.disabled = true;
+    error.textContent = '';
+    try {
+        await auth.signInWithEmailAndPassword(
+            document.getElementById('adminEmail').value.trim(),
+            document.getElementById('adminPassword').value
+        );
+    } catch (e) {
+        error.textContent = e.message || 'Sign in failed';
+    } finally {
+        button.disabled = false;
+    }
+}
+
+async function sendAdminPasswordReset() {
+    const email = document.getElementById('adminEmail').value.trim();
+    const error = document.getElementById('pinError');
+    if (!email) { error.textContent = 'Enter your authorized admin email first.'; return; }
+    try {
+        await auth.sendPasswordResetEmail(email);
+        error.textContent = 'Password setup email sent. Check your inbox.';
+    } catch (e) {
+        error.textContent = e.message || 'Could not send the setup email.';
+    }
+}
+async function logoutAdmin() {
+    if (refreshTimer) clearInterval(refreshTimer);
+    await auth.signOut();
+}
+
+auth.onAuthStateChanged(async (user) => {
+    const overlay = document.getElementById('pinOverlay');
+    const content = document.getElementById('mainContent');
+    if (!user || user.isAnonymous) {
+        overlay.classList.remove('hidden');
+        content.style.display = 'none';
+        return;
+    }
+    overlay.classList.add('hidden');
+    content.style.display = 'block';
     await loadAllData();
+    if (refreshTimer) clearInterval(refreshTimer);
+    refreshTimer = setInterval(() => loadAllData(true), 15000);
+});
+
+async function authenticatedFetch(path, options = {}) {
+    const user = auth.currentUser;
+    if (!user || user.isAnonymous) throw new Error('Your admin session has expired. Please sign in again.');
+    const token = await user.getIdToken();
+    const headers = { ...(options.headers || {}), Authorization: 'Bearer ' + token };
+    const response = await fetch(BACKEND_URL + path, { ...options, headers });
+    if (response.status === 401 || response.status === 403) {
+        const body = await response.json().catch(() => ({}));
+        if (response.status === 401) await auth.signOut();
+        throw new Error(body.message || (response.status === 403 ? 'This account is not authorized as an admin.' : 'Admin session expired.'));
+    }
+    return response;
 }
 
 // ── Load All Data via Backend API ─────────────────────────────────────────────
-async function loadAllData() {
+async function loadAllData(silent = false) {
     try {
-        showAlert('⏳ Loading data…', 'info');
-        const resp = await fetch(`${BACKEND_URL}/api/otp/admin/data`, {
-            headers: { 'x-admin-secret': ADMIN_SECRET }
-        });
-        if (!resp.ok) throw new Error(`HTTP ${resp.status} — check PULLUP_ADMIN_SECRET`);
+        if (!silent) showAlert('Loading production data...', 'info');
+        const resp = await authenticatedFetch('/api/otp/admin/data');
+        if (!resp.ok) { const body = await resp.json().catch(() => ({})); throw new Error(body.message || 'Request failed (' + resp.status + ')'); }
         const json = await resp.json();
         allUsers = json.users || [];
         allRides = json.rides || [];
@@ -582,7 +617,7 @@ async function loadAllData() {
         globalStats = json.stats || {};
         clearAlerts();
         updateAllViews();
-        showAlert('✅ Data loaded', 'success', 2000);
+        if (!silent) showAlert('Data loaded', 'success', 2000);
     } catch(e) {
         showAlert(`❌ ${e.message}`, 'error');
     }
@@ -626,7 +661,7 @@ function updateLicenseStats() {
     const licensed = allUsers.filter(u => u.licenseImageUri);
     document.getElementById('licTotal').textContent = licensed.length;
     document.getElementById('licPending').textContent = licensed.filter(u => u.licenseVerificationStatus === 'pending').length;
-    document.getElementById('licVerified').textContent = licensed.filter(u => u.licenseVerificationStatus === 'verified').length;
+    document.getElementById('licVerified').textContent = licensed.filter(u => u.licenseVerificationStatus === 'approved' || u.licenseVerificationStatus === 'verified').length;
     document.getElementById('licRejected').textContent = licensed.filter(u => u.licenseVerificationStatus === 'rejected').length;
     document.getElementById('licResubmit').textContent = licensed.filter(u => u.licenseVerificationStatus === 'resubmission_requested').length;
 }
@@ -645,7 +680,7 @@ function renderLicenses() {
 
     grid.innerHTML = list.map(u => {
         const st = u.licenseVerificationStatus || 'pending';
-        const badgeCls = st === 'verified' ? 'badge-verified' : st === 'rejected' ? 'badge-rejected' : st === 'resubmission_requested' ? 'badge-resubmit' : 'badge-pending';
+        const badgeCls = (st === 'approved' || st === 'verified') ? 'badge-verified' : st === 'rejected' ? 'badge-rejected' : st === 'resubmission_requested' ? 'badge-resubmit' : 'badge-pending';
         const badgeText = st === 'resubmission_requested' ? 'Resubmit' : st.charAt(0).toUpperCase()+st.slice(1);
         const rejectionReason = u.licenseRejectionReason ? `<div class="rejection-reason">❌ Reason: ${u.licenseRejectionReason}</div>` : '';
         let actions = '';
@@ -696,7 +731,7 @@ function openLicModal(userId) {
 
     const footer = document.getElementById('mLicFooter');
     let btns = `<button class="btn btn-ghost" onclick="closeLicModal()">Close</button>`;
-    if (st !== 'verified') btns += `<button class="btn btn-success" onclick="adminAction('APPROVE_LICENSE','${u.id}',null,true)">✅ Approve</button>`;
+    if (st !== 'approved' && st !== 'verified') btns += `<button class="btn btn-success" onclick="adminAction('APPROVE_LICENSE','${u.id}',null,true)">✅ Approve</button>`;
     btns += `<button class="btn btn-danger" onclick="openRejectModal('${u.id}','reject',true)">❌ Reject</button>`;
     btns += `<button class="btn btn-warning" onclick="openRejectModal('${u.id}','resubmit',true)">📋 Resubmit</button>`;
     footer.innerHTML = btns;
@@ -732,6 +767,7 @@ function openRejectModal(userId, type, fromModal=false) {
 
 async function confirmRejectOrResubmit(userId, type) {
     const reason = document.getElementById('mReason').value.trim();
+    if (!reason) { showAlert('A reason is required', 'error'); return; }
     const action = type === 'reject' ? 'REJECT_LICENSE' : 'REQUEST_RESUBMISSION';
     closeLicModal();
     await adminAction(action, userId, reason);
@@ -842,9 +878,9 @@ async function adminAction(action, targetId, reason=null, closeModal=false, extr
         const body = { action, targetId };
         if (reason) body.reason = reason;
         if (extraData) body.data = extraData;
-        const resp = await fetch(`${BACKEND_URL}/api/otp/admin-action`, {
+        const resp = await authenticatedFetch('/api/otp/admin-action', {
             method: 'POST',
-            headers: { 'Content-Type':'application/json', 'x-admin-secret': ADMIN_SECRET },
+            headers: { 'Content-Type':'application/json' },
             body: JSON.stringify(body)
         });
         const json = await resp.json();

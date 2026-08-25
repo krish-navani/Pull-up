@@ -30,7 +30,6 @@ export const createBookingInFirestore = async (
   passengerEmail: string,
   driverId: string,
   seatsBooked: number,
-  pricePerSeat: number,
   passengerPickupLocation?: any,
   passengerDropLocation?: any,
   detourMeta?: {
@@ -42,141 +41,19 @@ export const createBookingInFirestore = async (
   }
 ): Promise<string> => {
   try {
-    console.log('[BOOKING SERVICE] Creating booking for ride in transaction:', rideId);
-
-    const bookingId = `${rideId}_${passengerId}`;
-    const bookingRef = doc(db, 'bookings', bookingId);
-    const rideRef = doc(db, 'rides', rideId);
-
-    await runTransaction(db, async (transaction) => {
-      const rideSnap = await transaction.get(rideRef);
-      if (!rideSnap.exists()) {
-        throw new Error('Ride not found');
-      }
-      
-      const rideData = rideSnap.data()!;
-
-      // VALIDATION 1: Check if ride is active
-      if (rideData.status === 'completed' || rideData.status === 'cancelled' || rideData.status === 'expired') {
-        throw {
-          code: 'RIDE_INACTIVE',
-          message: `This ride has been ${rideData.status} and cannot be booked`,
-        };
-      }
-
-      // VALIDATION 2: Check if departure time has passed
-      if (rideData.departureTime && new Date(rideData.departureTime).getTime() < Date.now()) {
-        throw {
-          code: 'RIDE_EXPIRED',
-          message: 'This ride has already departed',
-        };
-      }
-
-      // VALIDATION 3: Check if passenger is the ride creator
-      if (passengerId === rideData.driverId) {
-        throw {
-          code: 'OWN_RIDE_BOOKING',
-          message: 'You cannot book your own ride',
-        };
-      }
-
-      // VALIDATION 4: Check capacity
-      if (rideData.availableSeats < seatsBooked) {
-        throw {
-          code: 'INSUFFICIENT_SEATS',
-          message: 'Requested seat count is no longer available',
-        };
-      }
-
-      // VALIDATION 5: Check duplicate booking
-      const bookingSnap = await transaction.get(bookingRef);
-      if (bookingSnap.exists()) {
-        const bStatus = bookingSnap.data()!.status;
-        if (bStatus === 'pending' || bStatus === 'accepted' || bStatus === 'confirmed') {
-          throw {
-            code: 'DUPLICATE_BOOKING',
-            message: 'You have already booked this ride',
-          };
-        }
-      }
-
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes from now
-
-      const normalizeLocationForFirestore = (loc: any) => {
-        if (!loc) return null;
-        const cleaned: any = {
-          latitude: typeof loc.latitude === 'number' ? loc.latitude : Number(loc.latitude),
-          longitude: typeof loc.longitude === 'number' ? loc.longitude : Number(loc.longitude),
-          address: loc.address || '',
-          city: loc.city || '',
-        };
-        if (loc.placeId !== undefined && loc.placeId !== null) cleaned.placeId = loc.placeId;
-        if (loc.locality !== undefined && loc.locality !== null) cleaned.locality = loc.locality;
-        if (loc.state !== undefined && loc.state !== null) cleaned.state = loc.state;
-        return cleaned;
-      };
-
-      const bookingData = {
-        rideId,
-        passengerId,
-        passengerName,
-        passengerEmail,
-        driverId: rideData.driverId,
-        seatsBooked,
-        pricePerSeat,
-        totalPrice: seatsBooked * pricePerSeat,
-        status: 'pending' as const,
-        paymentStatus: 'pending' as const,
-        bookedAt: Timestamp.now(),
-        createdAt: Timestamp.now(),
-        updatedAt: Timestamp.now(),
-        passengerPickupLocation: normalizeLocationForFirestore(passengerPickupLocation),
-        passengerDropLocation: normalizeLocationForFirestore(passengerDropLocation),
-        passengerOriginalLocation: normalizeLocationForFirestore(detourMeta?.passengerOriginalLocation),
-        passengerSelectedPickup: normalizeLocationForFirestore(detourMeta?.passengerSelectedPickup),
-        extraDistanceMeters: detourMeta?.extraDistanceMeters || 0,
-        extraDurationSeconds: detourMeta?.extraDurationSeconds || 0,
-        walkingDistanceMeters: detourMeta?.walkingDistanceMeters || 0,
-        expiresAt: Timestamp.fromDate(expiresAt),
-      };
-
-      transaction.set(bookingRef, bookingData);
-
-      // Also add to ride's bookedSeats array for driver view
-      const cleanBookedSeats = (rideData.bookedSeats || []).filter(
-        (b: any) => b.passengerId !== passengerId
-      );
-
-      const newBookingInfo = {
-        passengerId,
-        passengerName,
-        seatsBooked,
-        status: 'pending' as const,
-        bookedAt: new Date().toISOString(),
-      };
-
-      transaction.update(rideRef, {
-        bookedSeats: [...cleanBookedSeats, newBookingInfo],
-        updatedAt: Timestamp.now(),
-      });
-    });
-
-    // Notify the driver about the new booking request
-    sendNotification(
-      driverId,
-      'booking_request',
-      'New Booking Request 🚗',
-      `${passengerName} requested ${seatsBooked} seat(s) on your ride.`,
+    const response = await apiClient.post('/fare/create-booking', {
       rideId,
-      bookingId,
-      passengerId,
-      passengerName
-    ).catch(err => console.error('[BOOKING SERVICE] Failed to send booking_request notification to driver:', err));
-
-    console.log('[BOOKING SERVICE] ✅ Booking created transactionally successfully with ID:', bookingId);
-    return bookingId;
+      seatsBooked,
+      pickupLocation: passengerPickupLocation,
+      dropLocation: passengerDropLocation,
+      detourMeta,
+    });
+    if (!response.data?.success || !response.data?.bookingId) {
+      throw new Error(response.data?.message || 'Failed to create booking');
+    }
+    return response.data.bookingId;
   } catch (error: any) {
-    console.error('[BOOKING SERVICE] ❌ Failed to create booking:', error);
+    console.error('[BOOKING SERVICE] Authoritative booking creation failed:', error);
     throw {
       code: error.code || 'CREATE_BOOKING_ERROR',
       message: error.message || 'Failed to create booking',
@@ -218,6 +95,9 @@ export const getPassengerBookings = async (passengerId: string): Promise<Booking
         paymentStatus: data.paymentStatus,
         totalPrice: data.totalPrice,
         orderId: data.orderId,
+        fare: data.fare,
+        fareStatus: data.fareStatus,
+        orderAmountPaise: data.orderAmountPaise,
       });
     });
 
@@ -269,6 +149,9 @@ export const getDriverBookings = async (driverId: string): Promise<Booking[]> =>
         paymentStatus: data.paymentStatus,
         totalPrice: data.totalPrice,
         orderId: data.orderId,
+        fare: data.fare,
+        fareStatus: data.fareStatus,
+        orderAmountPaise: data.orderAmountPaise,
       });
     });
 
@@ -319,6 +202,9 @@ export const getBookingById = async (bookingId: string): Promise<Booking | null>
       paymentStatus: data.paymentStatus,
       totalPrice: data.totalPrice,
       orderId: data.orderId,
+        fare: data.fare,
+        fareStatus: data.fareStatus,
+        orderAmountPaise: data.orderAmountPaise,
     };
 
     console.log('[BOOKING SERVICE] ✅ Booking fetched');
@@ -370,6 +256,9 @@ export const getBookingByRideAndPassenger = async (
       paymentStatus: data.paymentStatus,
       totalPrice: data.totalPrice,
       orderId: data.orderId,
+        fare: data.fare,
+        fareStatus: data.fareStatus,
+        orderAmountPaise: data.orderAmountPaise,
     };
 
     console.log('[BOOKING SERVICE] ✅ Booking fetched:', selectedBooking.id, 'with status:', selectedBooking.status);
@@ -530,61 +419,10 @@ export const acceptBookingAsDriver = async (
   driverName: string
 ): Promise<void> => {
   try {
-    console.log('[BOOKING SERVICE] Atomic acceptBookingAsDriver:', bookingId);
-
-    let passengerName = 'Passenger';
-
-    await runTransaction(db, async (transaction) => {
-      const bookingRef = doc(db, 'bookings', bookingId);
-      const rideRef = doc(db, 'rides', rideId);
-
-      const bookingSnap = await transaction.get(bookingRef);
-      const rideSnap = await transaction.get(rideRef);
-
-      if (!bookingSnap.exists()) throw new Error('Booking not found');
-      if (!rideSnap.exists()) throw new Error('Ride not found');
-
-      const bookingData = bookingSnap.data()!;
-      passengerName = bookingData.passengerName || 'Passenger';
-
-      const rideData = rideSnap.data()!;
-      const bookedSeats = rideData.bookedSeats || [];
-      const updatedBookedSeats = bookedSeats.map((b: any) => {
-        if (b.passengerId === passengerId) {
-          return { ...b, status: 'accepted' };
-        }
-        return b;
-      });
-
-      transaction.update(bookingRef, {
-        status: 'accepted',
-        expiresAt: Timestamp.fromDate(new Date(Date.now() + 10 * 60 * 1000)),
-        updatedAt: Timestamp.now(),
-      });
-
-      // Do NOT reduce availableSeats here! Only update bookedSeats status to 'accepted'.
-      transaction.update(rideRef, {
-        bookedSeats: updatedBookedSeats,
-        updatedAt: Timestamp.now(),
-      });
-    });
-
-    console.log('[BOOKING SERVICE] ✅ Transaction committed. Sending notification to passenger...');
-
-    // Send real Firestore notification to passenger (notifying them to complete payment)
-    await sendNotification(
-      passengerId,
-      'booking_accepted',
-      'Booking Approved 🎉',
-      `${driverName} accepted your booking. Please complete payment to confirm your seat.`,
-      rideId,
-      bookingId,
-      driverId,
-      driverName
-    ).catch(err => console.error('[BOOKING SERVICE] Failed to send notification:', err));
-
+    const response = await apiClient.post('/fare/accept-booking', { bookingId });
+    if (!response.data?.success) throw new Error(response.data?.message || 'Failed to accept booking');
   } catch (error: any) {
-    console.error('[BOOKING SERVICE] ❌ Failed to accept booking:', error);
+    console.error('[BOOKING SERVICE] Authoritative booking acceptance failed:', error);
     throw {
       code: error.code || 'ACCEPT_BOOKING_ERROR',
       message: error.message || 'Failed to accept booking',

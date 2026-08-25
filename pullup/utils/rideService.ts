@@ -134,7 +134,7 @@ export const createRideInFirestore = async (
     pickupLocation: Location;
     dropLocation: Location;
     departureTime: string;
-    price: number;
+    price?: number;
     availableSeats: number;
     totalSeats: number;
     carModel: string;
@@ -171,7 +171,7 @@ export const createRideInFirestore = async (
       dropLocation: rideData.dropLocation,
       searchIndex: generateSearchIndex(rideData.pickupLocation, rideData.dropLocation, driverName),
       departureTime: rideData.departureTime,
-      price: rideData.price,
+      price: rideData.price || 0,
       availableSeats: rideData.availableSeats,
       totalSeats: rideData.totalSeats,
       carModel: rideData.carModel,
@@ -246,7 +246,7 @@ export const createRideInFirestore = async (
   try {
     console.log('[RIDE SERVICE] Creating ride via backend for driver:', driverId);
 
-    const response = await apiClient.post('/create-ride', rideData);
+    const response = await apiClient.post('/fare/create-ride', rideData);
     if (!response.data?.success || !response.data?.rideId) {
       throw new Error(response.data?.message || 'Failed to create ride');
     }
@@ -255,19 +255,6 @@ export const createRideInFirestore = async (
     return response.data.rideId;
   } catch (error: any) {
     console.error('[RIDE SERVICE] ❌ Failed to create ride:', error);
-    if (error?.status === 404 && error?.code === 'NOT_FOUND') {
-      try {
-        const rideId = await createRideDirectlyInFirestore();
-        console.log('[RIDE SERVICE] ✅ Ride created via Firestore fallback with ID:', rideId);
-        return rideId;
-      } catch (fallbackError: any) {
-        console.error('[RIDE SERVICE] ❌ Firestore fallback ride creation failed:', fallbackError);
-        throw {
-          code: fallbackError.code || 'CREATE_RIDE_ERROR',
-          message: fallbackError.message || 'Failed to create ride',
-        };
-      }
-    }
     throw {
       code: error.code || 'CREATE_RIDE_ERROR',
       message: error.message || 'Failed to create ride',
@@ -315,15 +302,22 @@ export const getAllRides = async (): Promise<Ride[]> => {
         status: data.status,
         bookedSeats: data.bookedSeats || [],
         detourRadiusMeters: data.detourRadiusMeters || 0,
+        route: data.route,
+        pricing: data.pricing,
         searchIndex: data.searchIndex || [],
       });
     });
 
-    // Sort client-side by departureTime ascending
-    rides.sort((a, b) => new Date(a.departureTime).getTime() - new Date(b.departureTime).getTime());
+    const now = Date.now();
+    const bookableRides = rides.filter((ride) =>
+      ride.status === 'in_progress' || new Date(ride.departureTime).getTime() > now
+    );
 
-    console.log('[RIDE SERVICE] ✅ Fetched', rides.length, 'active and in-progress rides');
-    return rides;
+    // Sort client-side by departureTime ascending
+    bookableRides.sort((a, b) => new Date(a.departureTime).getTime() - new Date(b.departureTime).getTime());
+
+    console.log('[RIDE SERVICE] Fetched', bookableRides.length, 'bookable active and in-progress rides');
+    return bookableRides;
   } catch (error: any) {
     console.error('[RIDE SERVICE] ❌ Failed to fetch rides:', error);
     throw {
@@ -370,6 +364,8 @@ export const getAllRidesIncludingHistory = async (): Promise<Ride[]> => {
         status: data.status,
         bookedSeats: data.bookedSeats || [],
         detourRadiusMeters: data.detourRadiusMeters || 0,
+        route: data.route,
+        pricing: data.pricing,
         searchIndex: data.searchIndex || [],
       });
     });
@@ -424,6 +420,8 @@ export const getDriverRides = async (driverId: string): Promise<Ride[]> => {
         status: data.status,
         bookedSeats: data.bookedSeats || [],
         detourRadiusMeters: data.detourRadiusMeters || 0,
+        route: data.route,
+        pricing: data.pricing,
       });
     });
 
@@ -474,6 +472,8 @@ export const getRideById = async (rideId: string): Promise<Ride | null> => {
       status: data.status,
       bookedSeats: data.bookedSeats || [],
       detourRadiusMeters: data.detourRadiusMeters || 0,
+        route: data.route,
+        pricing: data.pricing,
     };
 
     console.log('[RIDE SERVICE] ✅ Ride fetched:', ride);

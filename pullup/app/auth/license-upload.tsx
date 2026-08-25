@@ -132,7 +132,7 @@ export default function LicenseUploadScreen() {
         const checkCurrentStatus = async () => {
             try {
                 const freshUser = await refreshUserFromFirestore();
-                if (freshUser?.licenseVerified || freshUser?.licenseVerificationStatus === 'verified') {
+                if (freshUser?.licenseVerified || (freshUser?.licenseVerificationStatus === 'approved' || freshUser?.licenseVerificationStatus === 'verified')) {
                     // License already verified! Update context and navigate away
                     console.log('[LICENSE] License already verified on mount - navigating to home');
                     setIsVerified(true);
@@ -140,7 +140,7 @@ export default function LicenseUploadScreen() {
                         try {
                             await updateProfileData(auth.user.id, {
                                 licenseVerified: true,
-                                licenseVerificationStatus: 'verified',
+                                licenseVerificationStatus: 'approved',
                             });
                         } catch (e) {
                             console.warn('[LICENSE] Context update on mount failed:', e);
@@ -223,7 +223,7 @@ export default function LicenseUploadScreen() {
                 try {
                     // refreshUserFromFirestore fetches fresh data AND updates AsyncStorage
                     const updatedUser = await refreshUserFromFirestore();
-                    if (updatedUser?.licenseVerified || updatedUser?.licenseVerificationStatus === 'verified') {
+                    if (updatedUser?.licenseVerified || (updatedUser?.licenseVerificationStatus === 'approved' || updatedUser?.licenseVerificationStatus === 'verified')) {
                         console.log('[LICENSE] ✅ License verified by admin! Updating context...');
                         setIsVerified(true);
                         setIsVerificationPending(false);
@@ -236,7 +236,7 @@ export default function LicenseUploadScreen() {
                             try {
                                 await updateProfileData(auth.user.id, {
                                     licenseVerified: true,
-                                    licenseVerificationStatus: 'verified',
+                                    licenseVerificationStatus: 'approved',
                                 });
                                 console.log('[LICENSE] ✅ Context updated - navigation guard will redirect to home');
                                 // Navigation guard will handle redirect — no manual router.replace needed!

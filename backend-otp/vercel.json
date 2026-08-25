@@ -12,6 +12,14 @@
   },
   "rewrites": [
     {
+      "source": "/privacy",
+      "destination": "/api/[...route].js"
+    },
+    {
+      "source": "/delete-account",
+      "destination": "/api/[...route].js"
+    },
+    {
       "source": "/api/(.*)",
       "destination": "/api/[...route].js"
     }

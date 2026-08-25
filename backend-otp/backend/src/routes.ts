@@ -8,11 +8,12 @@ import Razorpay from 'razorpay';
 import crypto from 'crypto';
 import admin from 'firebase-admin';
 import { getHaversineDistance, getDistanceToPolyline, decodePolyline, simplifyDouglasPeucker } from './routeMatching.js';
+import { registerFareRoutes } from './fareRoutes.js';
+import { getStoredBookingAmountPaise } from './fareService.js';
+import { ATLAS_GEOFENCE_METERS, ATLAS_LOCATION } from './atlasConfig.js';
+import { consumeDeletionAuthorization, createDeletionAuthorization, deletePullUpAccount } from './accountDeletionService.js';
 
 const router = Router();
-
-// Set to true to bypass and mock all Razorpay payments/subscriptions. Set to false to reconnect Razorpay.
-const BYPASS_RAZORPAY = true;
 
 // Health check endpoint
 router.get('/health', (req: Request, res: Response) => {
@@ -45,219 +46,6 @@ router.post('/test-notification', async (req: Request, res: Response) => {
   }
 });
 
-// GET HTML CHECKOUT PAGE (Razorpay Web Checkout integration)
-router.get('/checkout-page', (req: Request, res: Response) => {
-  const { type, orderId, amount, userId, planId, bookingId } = req.query;
-
-  if (!orderId || !amount) {
-    return res.status(400).send('<h1>Error</h1><p>Missing required payment parameters (orderId, amount).</p>');
-  }
-
-  const keyId = config.razorpay.keyId;
-
-  const html = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Securing Payment - PullUp</title>
-  <style>
-    body {
-      background-color: #1e120d;
-      color: #fffbf7;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100vh;
-      margin: 0;
-      padding: 24px;
-      box-sizing: border-box;
-      text-align: center;
-    }
-    .container {
-      max-width: 400px;
-      padding: 32px;
-      background: rgba(255, 255, 255, 0.03);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      border-radius: 24px;
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.24);
-    }
-    .spinner {
-      width: 56px;
-      height: 56px;
-      border: 4px solid rgba(212, 80, 10, 0.15);
-      border-top-color: #D4500A;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      margin: 0 auto 24px;
-    }
-    h1 {
-      font-size: 20px;
-      margin: 0 0 12px;
-      font-weight: 700;
-      letter-spacing: -0.5px;
-    }
-    p {
-      color: #a89f9b;
-      font-size: 14px;
-      margin: 0 0 24px;
-      line-height: 1.5;
-    }
-    .btn {
-      background-color: #D4500A;
-      color: white;
-      border: none;
-      padding: 12px 24px;
-      border-radius: 12px;
-      font-weight: 600;
-      font-size: 14px;
-      cursor: pointer;
-      display: none;
-      transition: background-color 0.2s;
-    }
-    .btn:hover {
-      background-color: #bb4307;
-    }
-    @keyframes spin {
-      to { transform: rotate(360deg); }
-    }
-  </style>
-</head>
-<body>
-  <div class="container">
-    <div class="spinner" id="loader"></div>
-    <h1 id="status-title">Preparing Checkout</h1>
-    <p id="status-desc">Redirecting you to the secure payment gateway...</p>
-    <button class="btn" id="retry-btn" onclick="openPayment()">Pay Now</button>
-  </div>
-
-  <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
-  <script>
-    const type = "${type || ''}";
-    const orderId = "${orderId}";
-    const amount = parseInt("${amount}", 10);
-    const userId = "${userId || ''}";
-    const planId = "${planId || ''}";
-    const bookingId = "${bookingId || ''}";
-    const keyId = "${keyId}";
-
-    const bypass = ${BYPASS_RAZORPAY};
-    if (bypass) {
-      setTimeout(() => {
-        verifyPayment({
-          razorpay_payment_id: "pay_mock_" + Math.random().toString(36).substring(7),
-          razorpay_order_id: orderId,
-          razorpay_signature: "sig_mock"
-        });
-      }, 500);
-    } else if (!orderId || !amount) {
-      showError("Invalid payment configuration. Missing order parameters.");
-    } else {
-      setTimeout(openPayment, 800);
-    }
-
-    function showError(msg) {
-      document.getElementById('loader').style.animation = 'none';
-      document.getElementById('loader').style.borderTopColor = '#e53e3e';
-      document.getElementById('status-title').innerText = "Payment Error";
-      document.getElementById('status-title').style.color = '#e53e3e';
-      document.getElementById('status-desc').innerText = msg;
-      setTimeout(() => {
-        window.location.href = "pullup://payment-failed";
-      }, 3000);
-    }
-
-    let rzp;
-    function openPayment() {
-      const options = {
-        key: keyId,
-        amount: amount,
-        currency: "INR",
-        name: "PullUp",
-        description: type === 'subscription' ? "Driver Subscription (" + planId + ")" : "Ride Booking",
-        order_id: orderId,
-        theme: { color: "#D4500A" },
-        modal: {
-          ondismiss: function() {
-            window.location.href = "pullup://payment-cancelled";
-          }
-        },
-        handler: function(response) {
-          verifyPayment(response);
-        }
-      };
-      
-      try {
-        rzp = new Razorpay(options);
-        rzp.on('payment.failed', function (resp) {
-          showError("Transaction failed: " + (resp.error.description || "Unknown error"));
-        });
-        rzp.open();
-        
-        document.getElementById('status-title').innerText = "Waiting for Payment";
-        document.getElementById('status-desc').innerText = "Please complete the payment in the secure overlay.";
-        document.getElementById('retry-btn').style.display = 'inline-block';
-      } catch(err) {
-        showError("Could not initialize payment: " + err.message);
-      }
-    }
-
-    function verifyPayment(rzpResponse) {
-      document.getElementById('retry-btn').style.display = 'none';
-      document.getElementById('loader').style.animation = 'spin 1s linear infinite';
-      document.getElementById('loader').style.borderTopColor = '#D4500A';
-      document.getElementById('status-title').innerText = "Verifying Payment";
-      document.getElementById('status-desc').innerText = "Almost done! Confirming transaction with our servers...";
-
-      const verifyUrl = type === 'subscription' ? '/api/otp/verify-subscription' : '/api/otp/verify-payment';
-      const payload = type === 'subscription' 
-        ? {
-            razorpay_payment_id: rzpResponse.razorpay_payment_id,
-            razorpay_order_id: rzpResponse.razorpay_order_id,
-            razorpay_signature: rzpResponse.razorpay_signature,
-            userId: userId,
-            planId: planId
-          }
-        : {
-            razorpay_payment_id: rzpResponse.razorpay_payment_id,
-            razorpay_order_id: rzpResponse.razorpay_order_id,
-            razorpay_signature: rzpResponse.razorpay_signature,
-            bookingId: bookingId
-          };
-
-      fetch(verifyUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-      .then(res => res.json())
-      .then(data => {
-        if (data.success) {
-          document.getElementById('loader').style.borderTopColor = '#38a169';
-          document.getElementById('status-title').innerText = "Payment Successful!";
-          document.getElementById('status-title').style.color = '#38a169';
-          document.getElementById('status-desc').innerText = "Redirecting you back to the app...";
-          
-          setTimeout(() => {
-            window.location.href = type === 'subscription' ? "pullup://subscription-success" : "pullup://booking-success";
-          }, 1500);
-        } else {
-          showError(data.message || "Verification failed");
-        }
-      })
-      .catch(err => {
-        showError("Server validation failed: " + err.message);
-      });
-    }
-  </script>
-</body>
-</html>`;
-
-  res.send(html);
-});
-
 // NOTIFY ADMIN — new license submission
 router.post('/notify-license-submission', async (req: Request, res: Response) => {
   try {
@@ -265,6 +53,25 @@ router.post('/notify-license-submission', async (req: Request, res: Response) =>
 
     if (!userId || !licenseImageUrl) {
       return res.status(400).json({ success: false, message: 'userId and licenseImageUrl are required' });
+    }
+
+    const bearerToken = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+    if (!bearerToken) return res.status(401).json({ success: false, message: 'Authentication required' });
+    const submitter = await admin.auth().verifyIdToken(bearerToken);
+    if (submitter.uid !== userId) {
+      return res.status(403).json({ success: false, message: 'Cannot submit an alert for another user' });
+    }
+
+    const adminAlertEmail = (process.env.ADMIN_ALERT_EMAIL || '').trim();
+    if (!adminAlertEmail) {
+      return res.status(503).json({ success: false, message: 'ADMIN_ALERT_EMAIL is not configured' });
+    }
+    const db = getDb();
+    const submissionId = crypto.createHash('sha256').update(userId + ':' + licenseImageUrl).digest('hex');
+    const alertRef = db.collection('adminNotifications').doc(submissionId);
+    const existingAlert = await alertRef.get();
+    if (existingAlert.exists && existingAlert.data()?.status === 'sent') {
+      return res.json({ success: true, message: 'Admin already notified', duplicate: true });
     }
 
     const { getMailer } = await import('./emailService.js');
@@ -337,7 +144,7 @@ router.post('/notify-license-submission', async (req: Request, res: Response) =>
             <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px;">
               <tr>
                 <td width="48%" style="padding-right:8px;">
-                  <a href="http://localhost:8000" target="_blank"
+                  <a href="https://krish.pullupapp.in" target="_blank"
                      style="display:block;background:#D4500A;color:#ffffff;text-align:center;padding:14px 20px;border-radius:10px;text-decoration:none;font-weight:700;font-size:14px;">
                     ✅ Open Admin Panel
                   </a>
@@ -373,7 +180,7 @@ router.post('/notify-license-submission', async (req: Request, res: Response) =>
 
     await mailer.sendMail({
       from: `"PullUp Admin" <${fromAddress}>`,
-      to: 'krish@pullupapp.in',
+      to: adminAlertEmail,
       subject: `🚗 License Review Required — ${userName || 'New Driver'} (${submittedAt})`,
       html,
       text: `New license submission from ${userName || 'Unknown'} (${userEmail}). User ID: ${userId}. Submitted at: ${submittedAt} IST. License image: ${licenseImageUrl}. Open admin panel to approve/reject.`,
@@ -381,15 +188,15 @@ router.post('/notify-license-submission', async (req: Request, res: Response) =>
 
     // Log to Firestore audit trail
     try {
-      const db = getDb();
-      await db.collection('adminNotifications').add({
+      await alertRef.set({
+        status: 'sent',
         type: 'license_submission',
         userId,
         userName: userName || null,
         userEmail: userEmail || null,
         licenseImageUrl,
         notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
-        notifiedTo: 'krish@pullupapp.in',
+        notifiedTo: adminAlertEmail,
       });
     } catch (auditErr) {
       console.warn('[NOTIFY] Audit log failed (non-fatal):', auditErr);
@@ -635,6 +442,70 @@ const getRazorpay = () => {
   return razorpay;
 };
 
+const getAuthenticatedUserId = async (req: Request): Promise<string> => {
+  const authorization = req.headers.authorization || '';
+  if (!authorization.startsWith('Bearer ')) {
+    throw new Error('UNAUTHENTICATED');
+  }
+
+  const decoded = await admin.auth().verifyIdToken(authorization.slice(7));
+  return decoded.uid;
+};
+
+const normalizeDeletionEmail = (value: unknown): string => typeof value === 'string' ? value.trim().toLowerCase() : '';
+
+router.post('/account-deletion/send-otp', rateLimiter, async (req: Request, res: Response) => {
+  const email = normalizeDeletionEmail(req.body?.email);
+  if (!validateEmail(email)) {
+    return res.status(400).json({ success: false, code: 'INVALID_EMAIL', message: 'Enter a valid account email.' });
+  }
+  try {
+    const otpResult = await sendOTP(email);
+    await sendOTPEmail(email, otpResult.otp, config.otp.expiryMinutes, otpResult.expiresAt);
+    return res.json({ success: true, message: 'If the account exists, a verification code has been sent.' });
+  } catch (error: any) {
+    await deleteOTP(email);
+    console.error('[ACCOUNT-DELETION] OTP delivery failed:', error);
+    return res.status(502).json({ success: false, code: 'OTP_DELIVERY_FAILED', message: 'We could not send a verification code. Please try again.' });
+  }
+});
+
+router.post('/account-deletion/verify-otp', verifyRateLimiter, async (req: Request, res: Response) => {
+  const email = normalizeDeletionEmail(req.body?.email);
+  const otp = typeof req.body?.otp === 'string' ? req.body.otp.trim() : '';
+  if (!validateEmail(email) || !validateOTP(otp, config.otp.length)) {
+    return res.status(400).json({ success: false, code: 'INVALID_VERIFICATION', message: 'The verification details are invalid.' });
+  }
+  try {
+    await verifyOTP(email, otp);
+    const deletionToken = await createDeletionAuthorization(email);
+    return res.json({ success: true, deletionToken });
+  } catch (error: any) {
+    console.warn('[ACCOUNT-DELETION] Verification rejected:', error?.message || error);
+    return res.status(400).json({ success: false, code: 'INVALID_VERIFICATION', message: 'The verification code is invalid or expired.' });
+  }
+});
+
+router.post('/account-deletion/confirm', async (req: Request, res: Response) => {
+  try {
+    let uid: string;
+    const authorization = req.headers.authorization || '';
+    if (authorization.startsWith('Bearer ')) {
+      uid = await getAuthenticatedUserId(req);
+    } else {
+      const deletionToken = typeof req.body?.deletionToken === 'string' ? req.body.deletionToken : '';
+      if (!deletionToken) return res.status(401).json({ success: false, code: 'UNAUTHENTICATED', message: 'Verification is required.' });
+      uid = await consumeDeletionAuthorization(deletionToken);
+    }
+    const result = await deletePullUpAccount(uid);
+    return res.json({ success: true, alreadyDeleted: result.alreadyDeleted });
+  } catch (error: any) {
+    const status = Number(error?.status) || (error?.message === 'UNAUTHENTICATED' ? 401 : 500);
+    console.error('[ACCOUNT-DELETION] Deletion failed:', error);
+    return res.status(status).json({ success: false, code: 'ACCOUNT_DELETION_FAILED', message: status === 401 ? 'Verification is invalid or expired.' : 'Account deletion could not be completed. Please try again.' });
+  }
+});
+
 const logAuditEvent = async (userId: string, action: string, amount: number, details: any) => {
   try {
     const db = getDb();
@@ -655,17 +526,18 @@ const logAuditEvent = async (userId: string, action: string, amount: number, det
 router.post('/create-subscription', async (req: Request, res: Response) => {
   try {
     const { userId, planId } = req.body;
+    const authenticatedUserId = await getAuthenticatedUserId(req);
     if (!userId) {
       return res.status(400).json({ success: false, message: 'User ID is required' });
+    }
+    if (authenticatedUserId !== userId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized subscription order request' });
     }
 
     const plan = planId === 'yearly' ? { price: 2500, days: 365 } : planId === 'quarterly' ? { price: 700, days: 90 } : { price: 250, days: 30 }; // Defaults to monthly
 
     const rzp = getRazorpay();
-    const order = BYPASS_RAZORPAY ? {
-      id: `order_mock_${Math.random().toString(36).substring(7)}`,
-      amount: plan.price * 100
-    } : await rzp.orders.create({
+    const order = await rzp.orders.create({
       amount: plan.price * 100, // paise
       currency: 'INR',
       receipt: `sub_rcpt_${userId.substring(0, 8)}_${Date.now()}`,
@@ -674,6 +546,18 @@ router.post('/create-subscription', async (req: Request, res: Response) => {
         planId: planId || 'monthly',
         planDays: plan.days.toString(),
       }
+    });
+
+    const db = getDb();
+    await db.collection('paymentOrders').doc(order.id).set({
+      type: 'subscription',
+      userId,
+      planId: planId || 'monthly',
+      amount: order.amount,
+      currency: order.currency || 'INR',
+      status: 'created',
+      createdAt: admin.firestore.Timestamp.now(),
+      updatedAt: admin.firestore.Timestamp.now(),
     });
 
     res.json({
@@ -693,9 +577,13 @@ router.post('/create-subscription', async (req: Request, res: Response) => {
 router.post('/verify-subscription', async (req: Request, res: Response) => {
   try {
     const { razorpay_payment_id, razorpay_order_id, razorpay_signature, userId, planId } = req.body;
+    const authenticatedUserId = await getAuthenticatedUserId(req);
 
     if (!razorpay_payment_id || !razorpay_order_id || !razorpay_signature || !userId) {
       return res.status(400).json({ success: false, message: 'Missing verification details' });
+    }
+    if (authenticatedUserId !== userId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized subscription verification request' });
     }
 
     const generated_signature = crypto
@@ -703,7 +591,7 @@ router.post('/verify-subscription', async (req: Request, res: Response) => {
       .update(razorpay_order_id + '|' + razorpay_payment_id)
       .digest('hex');
 
-    if (!BYPASS_RAZORPAY && generated_signature !== razorpay_signature) {
+    if (generated_signature !== razorpay_signature) {
       return res.status(400).json({ success: false, message: 'Payment verification failed: invalid signature' });
     }
 
@@ -711,6 +599,17 @@ router.post('/verify-subscription', async (req: Request, res: Response) => {
     const plan = planId === 'yearly' ? { price: 2500, days: 365 } : planId === 'quarterly' ? { price: 700, days: 90 } : { price: 250, days: 30 };
 
     const result = await db.runTransaction(async (transaction) => {
+      const paymentOrderRef = db.collection('paymentOrders').doc(razorpay_order_id);
+      const paymentOrderDoc = await transaction.get(paymentOrderRef);
+      if (!paymentOrderDoc.exists) {
+        throw new Error('ORDER_NOT_FOUND');
+      }
+
+      const paymentOrder = paymentOrderDoc.data()!;
+      if (paymentOrder.type !== 'subscription' || paymentOrder.userId !== userId || paymentOrder.planId !== (planId || 'monthly')) {
+        throw new Error('ORDER_MISMATCH');
+      }
+
       const subQuery = await transaction.get(db.collection('subscriptions').where('paymentId', '==', razorpay_payment_id));
       if (!subQuery.empty) {
         return { alreadyProcessed: true };
@@ -748,6 +647,13 @@ router.post('/verify-subscription', async (req: Request, res: Response) => {
         subscriptionStart: startTimestamp,
         subscriptionExpiry: expiryTimestamp,
         createdAt: admin.firestore.Timestamp.now(),
+        updatedAt: admin.firestore.Timestamp.now(),
+      });
+
+      transaction.update(paymentOrderRef, {
+        status: 'paid',
+        paymentId: razorpay_payment_id,
+        paidAt: admin.firestore.Timestamp.now(),
         updatedAt: admin.firestore.Timestamp.now(),
       });
 
@@ -920,9 +826,13 @@ router.post('/create-order', async (req: Request, res: Response) => {
     releaseExpiredBookings().catch(err => console.error('[CLEANUP] Async cleanup failed:', err));
 
     const { bookingId, passengerId } = req.body;
+    const authenticatedUserId = await getAuthenticatedUserId(req);
 
     if (!bookingId || !passengerId) {
       return res.status(400).json({ success: false, message: 'Missing booking parameters' });
+    }
+    if (authenticatedUserId !== passengerId) {
+      return res.status(403).json({ success: false, message: 'Unauthorized booking payment request' });
     }
 
     const db = getDb();
@@ -966,13 +876,11 @@ router.post('/create-order', async (req: Request, res: Response) => {
         throw new Error('INSUFFICIENT_SEATS');
       }
 
-      const totalAmount = bookingData.totalPrice || (rideData.price * bookingData.seatsBooked);
+      const lockedAmountPaise = getStoredBookingAmountPaise(bookingData, true);
+      const totalAmount = lockedAmountPaise / 100;
 
       const rzp = getRazorpay();
-      const order = BYPASS_RAZORPAY ? {
-        id: `order_mock_${Math.random().toString(36).substring(7)}`,
-        amount: Math.round(totalAmount * 100)
-      } : await rzp.orders.create({
+      const order = await rzp.orders.create({
         amount: Math.round(totalAmount * 100),
         currency: 'INR',
         receipt: `rcpt_car_${rideId.substring(0, 8)}_${Date.now()}`,
@@ -986,6 +894,9 @@ router.post('/create-order', async (req: Request, res: Response) => {
 
       transaction.update(bookingRef, {
         orderId: order.id,
+        orderAmountPaise: Number(order.amount),
+        paymentStatus: 'pending',
+        paymentInitiatedAt: admin.firestore.Timestamp.now(),
         updatedAt: admin.firestore.Timestamp.now(),
       });
 
@@ -1066,6 +977,7 @@ router.post('/create-order', async (req: Request, res: Response) => {
 router.post('/verify-payment', async (req: Request, res: Response) => {
   try {
     const { razorpay_payment_id, razorpay_order_id, razorpay_signature, bookingId } = req.body;
+    const authenticatedUserId = await getAuthenticatedUserId(req);
 
     if (!razorpay_payment_id || !razorpay_order_id || !razorpay_signature || !bookingId) {
       return res.status(400).json({ success: false, message: 'Missing payment signature verification details' });
@@ -1076,11 +988,22 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
       .update(razorpay_order_id + '|' + razorpay_payment_id)
       .digest('hex');
 
-    if (!BYPASS_RAZORPAY && generated_signature !== razorpay_signature) {
+    if (generated_signature !== razorpay_signature) {
       return res.status(400).json({ success: false, message: 'Payment verification failed: signature invalid' });
     }
 
     const db = getDb();
+    const paymentBookingDoc = await db.collection('bookings').doc(bookingId).get();
+    if (!paymentBookingDoc.exists) throw new Error('BOOKING_NOT_FOUND');
+    const paymentBooking = paymentBookingDoc.data()!;
+    if (paymentBooking.passengerId !== authenticatedUserId) throw new Error('UNAUTHORIZED_BOOKING_ACCESS');
+    if (paymentBooking.orderId !== razorpay_order_id) throw new Error('ORDER_MISMATCH');
+    const expectedAmountPaise = getStoredBookingAmountPaise(paymentBooking, true);
+    const paymentDetails = await getRazorpay().payments.fetch(razorpay_payment_id);
+    if (paymentDetails.order_id !== razorpay_order_id || Number(paymentDetails.amount) !== expectedAmountPaise) {
+      throw new Error('PAYMENT_AMOUNT_MISMATCH');
+    }
+    if (!['authorized', 'captured'].includes(String(paymentDetails.status))) throw new Error('PAYMENT_NOT_AUTHORIZED');
 
     const result = await db.runTransaction(async (transaction) => {
       const bookingRef = db.collection('bookings').doc(bookingId);
@@ -1091,6 +1014,9 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
       }
 
       const bookingData = bookingDoc.data()!;
+      if (bookingData.passengerId !== authenticatedUserId) {
+        throw new Error('UNAUTHORIZED_BOOKING_ACCESS');
+      }
 
       if (bookingData.status === 'confirmed' && bookingData.paymentStatus === 'paid') {
         return { bookingId, rideId: bookingData.rideId, alreadyProcessed: true };
@@ -1100,7 +1026,7 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
         throw new Error('INVALID_BOOKING_STATUS');
       }
 
-      if (bookingData.orderId && bookingData.orderId !== razorpay_order_id) {
+      if (!bookingData.orderId || bookingData.orderId !== razorpay_order_id) {
         throw new Error('ORDER_MISMATCH');
       }
 
@@ -1722,107 +1648,41 @@ function calculateDistance(lat1: number, lon1: number, lat2: number, lon2: numbe
 // Helper to promote the next passenger in the waitlist
 export async function promoteWaitlist(db: admin.firestore.Firestore, rideId: string) {
   try {
-    console.log(`[WAITLIST] Checking waitlist promotion for ride: ${rideId}`);
-    
-    // Get the ride document
-    const rideRef = db.collection('rides').doc(rideId);
-    const rideSnap = await rideRef.get();
-    if (!rideSnap.exists) return;
-    const rideData = rideSnap.data()!;
-    
-    if (rideData.availableSeats <= 0) {
-      console.log('[WAITLIST] No available seats for waitlist promotion.');
-      return;
-    }
-    
-    // Query the next waitlisted user
+    const rideSnap = await db.collection('rides').doc(rideId).get();
+    if (!rideSnap.exists || Number(rideSnap.data()!.availableSeats || 0) <= 0) return;
+
     const waitlistSnap = await db.collection('rideWaitlist')
       .where('rideId', '==', rideId)
       .where('status', '==', 'joined')
       .orderBy('position', 'asc')
       .limit(1)
       .get();
-      
-    if (waitlistSnap.empty) {
-      console.log('[WAITLIST] Waitlist is empty.');
-      return;
-    }
-    
+    if (waitlistSnap.empty) return;
+
     const waitlistDoc = waitlistSnap.docs[0];
-    const waitlistData = waitlistDoc.data();
-    const userId = waitlistData.userId;
-    
-    // Get User info
-    const userSnap = await db.collection('users').doc(userId).get();
-    if (!userSnap.exists) return;
-    const userData = userSnap.data()!;
-    
-    const bookingId = `${rideId}_${userId}`;
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes offer hold
-    
-    await db.runTransaction(async (transaction) => {
-      const bRef = db.collection('bookings').doc(bookingId);
-      const wRef = db.collection('rideWaitlist').doc(waitlistDoc.id);
-      
-      // Perform writes
-      transaction.set(bRef, {
-        id: bookingId,
-        rideId,
-        driverId: rideData.driverId,
-        passengerId: userId,
-        passengerName: userData.fullName || 'Passenger',
-        passengerEmail: userData.email || '',
-        seatsBooked: 1,
-        pricePerSeat: rideData.price || 0,
-        totalPrice: rideData.price || 0,
-        status: 'accepted',
-        paymentStatus: 'pending',
-        bookedAt: new Date().toISOString(),
-        createdAt: admin.firestore.Timestamp.now(),
-        expiresAt: admin.firestore.Timestamp.fromDate(expiresAt),
-        isWaitlistOffer: true
-      });
-      
-      transaction.update(wRef, {
-        status: 'offered',
-        offeredAt: admin.firestore.Timestamp.now(),
-        updatedAt: admin.firestore.Timestamp.now()
-      });
-      
-      const cleanBookedSeats = (rideData.bookedSeats || []).filter(
-        (b: any) => b.passengerId !== userId
-      );
-      const newBookingInfo = {
-        passengerId: userId,
-        passengerName: userData.fullName || 'Passenger',
-        seatsBooked: 1,
-        status: 'accepted',
-        bookedAt: new Date().toISOString(),
-      };
-      
-      transaction.update(rideRef, {
-        bookedSeats: [...cleanBookedSeats, newBookingInfo],
-        updatedAt: admin.firestore.Timestamp.now()
-      });
-    });
-    
+    const userId = waitlistDoc.data().userId;
+    await waitlistDoc.ref.set({
+      status: 'notified',
+      notifiedAt: admin.firestore.Timestamp.now(),
+      updatedAt: admin.firestore.Timestamp.now(),
+    }, { merge: true });
+
+    // A waitlist notification never creates a payable booking. The rider must
+    // select pickup/drop and receive a fresh server-authoritative fare quote.
     await triggerNotification(
       userId,
       'waitlist_available',
-      'Waitlist Seat Available! 🚗',
-      `A seat has opened up. You have 5 minutes to complete payment and claim it.`,
+      'A seat is available',
+      'Open the ride to select your pickup and review the current fare.',
       rideId,
-      bookingId,
+      null,
       'ride-details',
-      rideId
+      rideId,
     );
-    
-    console.log(`[WAITLIST] Promoted user ${userId} to offered state on ride ${rideId}`);
   } catch (error) {
-    console.error('[WAITLIST] Error promoting waitlist:', error);
+    console.error('[WAITLIST] Error notifying next passenger:', error);
   }
 }
-
 // POST /waitlist/join
 router.post('/waitlist/join', async (req: Request, res: Response) => {
   try {
@@ -1894,6 +1754,7 @@ router.post('/accept-booking', async (req: Request, res: Response) => {
     }
 
     const db = getDb();
+
     const result = await db.runTransaction(async (transaction) => {
       const bookingRef = db.collection('bookings').doc(bookingId);
       const bookingSnap = await transaction.get(bookingRef);
@@ -2075,6 +1936,7 @@ router.post('/reject-booking', async (req: Request, res: Response) => {
     }
 
     const db = getDb();
+
     const result = await db.runTransaction(async (transaction) => {
       const bookingRef = db.collection('bookings').doc(bookingId);
       const bookingSnap = await transaction.get(bookingRef);
@@ -2243,6 +2105,7 @@ router.post('/passenger-no-show', async (req: Request, res: Response) => {
     }
 
     const db = getDb();
+
     const result = await db.runTransaction(async (transaction) => {
       const bookingRef = db.collection('bookings').doc(bookingId);
       const bookingSnap = await transaction.get(bookingRef);
@@ -2448,6 +2311,7 @@ router.post('/driver-no-show', async (req: Request, res: Response) => {
     }
 
     const db = getDb();
+
     const result = await db.runTransaction(async (transaction) => {
       const bookingRef = db.collection('bookings').doc(bookingId);
       const bookingSnap = await transaction.get(bookingRef);
@@ -3616,9 +3480,9 @@ router.post('/update-location', async (req: Request, res: Response) => {
         const currentCoords = { latitude, longitude };
         
         // 1. Completion check (2km to destination)
-        const ATLAS_LAT = 19.0707255;
-        const ATLAS_LNG = 72.8752988;
-        const ATLAS_RADIUS_METERS = 2000;
+        const ATLAS_LAT = ATLAS_LOCATION.latitude;
+        const ATLAS_LNG = ATLAS_LOCATION.longitude;
+        const ATLAS_RADIUS_METERS = ATLAS_GEOFENCE_METERS;
         
         const isWithinAtlas = (lat: number, lng: number) => {
           return calculateDistance(lat, lng, ATLAS_LAT, ATLAS_LNG) <= ATLAS_RADIUS_METERS;
@@ -4622,19 +4486,27 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
   }
 });
 
-// ─── Admin Secret Middleware helper ───────────────────────────────────────────
-function isAdminAuthorized(req: Request): boolean {
-  const secret = req.headers['x-admin-secret'];
-  const expected = process.env.PULLUP_ADMIN_SECRET;
-  return !!expected && secret === expected;
+// ─── Firebase admin authorization helper ───
+async function authenticateAdmin(req: Request): Promise<admin.auth.DecodedIdToken> {
+  const bearerToken = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (!bearerToken) throw Object.assign(new Error('Authentication required'), { status: 401 });
+  const decoded = await admin.auth().verifyIdToken(bearerToken, true);
+  const allowedEmails = (process.env.PULLUP_ADMIN_EMAILS || '').split(',').map((email) => email.trim().toLowerCase()).filter(Boolean);
+  const email = decoded.email?.toLowerCase();
+  if (decoded.admin !== true && (!email || !allowedEmails.includes(email))) {
+    throw Object.assign(new Error('Admin access required'), { status: 403 });
+  }
+  return decoded;
 }
 
-async function writeAuditLog(db: any, action: string, description: string, adminNote?: string) {
+async function writeAuditLog(db: any, action: string, description: string, reviewer: admin.auth.DecodedIdToken, adminNote?: string) {
   try {
     await db.collection('auditLogs').add({
       action,
       description,
       adminNote: adminNote || null,
+      reviewerUid: reviewer.uid,
+      reviewerEmail: reviewer.email || null,
       timestamp: admin.firestore.Timestamp.now(),
       createdAt: new Date().toISOString(),
     });
@@ -4645,11 +4517,8 @@ async function writeAuditLog(db: any, action: string, description: string, admin
 
 // ─── GET /admin/data — Returns all users, rides, bookings, audit logs ─────────
 router.get('/admin/data', async (req: Request, res: Response) => {
-  if (!isAdminAuthorized(req)) {
-    return res.status(401).json({ success: false, message: 'Unauthorized' });
-  }
-
   try {
+    await authenticateAdmin(req);
     const db = getDb();
 
     const [usersSnap, ridesSnap, bookingsSnap, auditLogsSnap] = await Promise.all([
@@ -4685,15 +4554,12 @@ router.get('/admin/data', async (req: Request, res: Response) => {
     return res.json({ success: true, users, rides, bookings, auditLogs, stats });
   } catch (error: any) {
     console.error('[ADMIN DATA] Error:', error);
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(error.status || 500).json({ success: false, message: error.message });
   }
 });
 
 // ─── POST /admin-action — Handle all admin mutations ─────────────────────────
 router.post('/admin-action', async (req: Request, res: Response) => {
-  if (!isAdminAuthorized(req)) {
-    return res.status(401).json({ success: false, message: 'Unauthorized' });
-  }
 
   const { action, targetId, reason, data } = req.body;
 
@@ -4704,15 +4570,19 @@ router.post('/admin-action', async (req: Request, res: Response) => {
   const db = getDb();
 
   try {
+    const reviewer = await authenticateAdmin(req);
     switch (action) {
 
       case 'APPROVE_LICENSE': {
         if (!targetId) return res.status(400).json({ success: false, message: 'Missing targetId (userId)' });
         await db.collection('users').doc(targetId).update({
           licenseVerified: true,
-          licenseVerificationStatus: 'verified',
+          licenseVerificationStatus: 'approved',
           licenseRejectionReason: admin.firestore.FieldValue.delete(),
           licenseVerifiedAt: new Date().toISOString(),
+          reviewedAt: new Date().toISOString(),
+          reviewedBy: reviewer.uid,
+          reviewerEmail: reviewer.email || null,
         });
         // Notify user
         try {
@@ -4737,16 +4607,20 @@ router.post('/admin-action', async (req: Request, res: Response) => {
           'profile',
           null
         ).catch(e => console.error('[ADMIN ACTION] License approval notification failed:', e));
-        await writeAuditLog(db, 'APPROVE_LICENSE', `Approved license for user ${targetId}`);
+        await writeAuditLog(db, 'APPROVE_LICENSE', `Approved license for user ${targetId}`, reviewer);
         return res.json({ success: true, message: 'License approved' });
       }
 
       case 'REJECT_LICENSE': {
         if (!targetId) return res.status(400).json({ success: false, message: 'Missing targetId (userId)' });
+        if (!reason?.trim()) return res.status(400).json({ success: false, message: 'Rejection reason is required' });
         await db.collection('users').doc(targetId).update({
           licenseVerified: false,
           licenseVerificationStatus: 'rejected',
-          licenseRejectionReason: reason || 'License image is unclear or invalid.',
+          licenseRejectionReason: reason.trim(),
+          reviewedAt: new Date().toISOString(),
+          reviewedBy: reviewer.uid,
+          reviewerEmail: reviewer.email || null,
         });
         // Notify user
         try {
@@ -4767,7 +4641,7 @@ router.post('/admin-action', async (req: Request, res: Response) => {
           'profile',
           null
         ).catch(e => console.error('[ADMIN ACTION] License rejection notification failed:', e));
-        await writeAuditLog(db, 'REJECT_LICENSE', `Rejected license for user ${targetId}`, reason);
+        await writeAuditLog(db, 'REJECT_LICENSE', `Rejected license for user ${targetId}`, reviewer, reason);
         return res.json({ success: true, message: 'License rejected' });
       }
 
@@ -4796,7 +4670,7 @@ router.post('/admin-action', async (req: Request, res: Response) => {
           'profile',
           null
         ).catch(e => console.error('[ADMIN ACTION] License resubmission notification failed:', e));
-        await writeAuditLog(db, 'REQUEST_RESUBMISSION', `Requested resubmission from user ${targetId}`, reason);
+        await writeAuditLog(db, 'REQUEST_RESUBMISSION', `Requested resubmission from user ${targetId}`, reviewer, reason);
         return res.json({ success: true, message: 'Resubmission requested' });
       }
 
@@ -4807,14 +4681,14 @@ router.post('/admin-action', async (req: Request, res: Response) => {
           cancelledAt: new Date().toISOString(),
           cancelReason: reason || 'Cancelled by admin',
         });
-        await writeAuditLog(db, 'CANCEL_RIDE', `Cancelled ride ${targetId}`, reason);
+        await writeAuditLog(db, 'CANCEL_RIDE', `Cancelled ride ${targetId}`, reviewer, reason);
         return res.json({ success: true, message: 'Ride cancelled by admin' });
       }
 
       case 'CHANGE_USER_ROLE': {
         if (!targetId || !data?.role) return res.status(400).json({ success: false, message: 'Missing targetId or data.role' });
         await db.collection('users').doc(targetId).update({ role: data.role });
-        await writeAuditLog(db, 'CHANGE_USER_ROLE', `Changed user ${targetId} role to ${data.role}`);
+        await writeAuditLog(db, 'CHANGE_USER_ROLE', `Changed user ${targetId} role to ${data.role}`, reviewer);
         return res.json({ success: true, message: `User role changed to ${data.role}` });
       }
 
@@ -4830,7 +4704,7 @@ router.post('/admin-action', async (req: Request, res: Response) => {
             totalDeleted += snap.docs.length;
           }
         }
-        await writeAuditLog(db, 'FLUSH_DB', `Flushed database — ${totalDeleted} documents deleted`);
+        await writeAuditLog(db, 'FLUSH_DB', `Flushed database — ${totalDeleted} documents deleted`, reviewer);
         return res.json({ success: true, message: `Database flushed: ${totalDeleted} documents deleted` });
       }
 
@@ -4839,7 +4713,7 @@ router.post('/admin-action', async (req: Request, res: Response) => {
     }
   } catch (error: any) {
     console.error(`[ADMIN ACTION] Error executing ${action}:`, error);
-    return res.status(500).json({ success: false, message: error.message });
+    return res.status(error.status || 500).json({ success: false, message: error.message });
   }
 });
 
@@ -5045,7 +4919,7 @@ async function getDirections(
   }
 
   // Cache Miss - Call Google Directions API
-  const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs';
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
   
   // Simulated Quota Exceeded Trigger
   if (apiKey === 'MOCK_429_LIMIT') {
@@ -5116,7 +4990,7 @@ async function getDirections(
 
 // Helper: Reverse geocode coordinate to clean name
 async function reverseGeocode(lat: number, lng: number): Promise<string> {
-  const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs';
+  const apiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
   const url = `https://maps.googleapis.com/maps/api/geocode/json?latlng=${lat},${lng}&key=${apiKey}`;
   try {
     const response = await fetch(url);
@@ -5373,5 +5247,7 @@ router.post('/evaluate-detour', async (req: Request, res: Response) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 });
+
+registerFareRoutes(router, triggerNotification);
 
 export default router;

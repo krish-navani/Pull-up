@@ -5,7 +5,7 @@ import { WARM_CORE } from '@/constants/theme';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import LocationSearchInput from '@/components/LocationSearchInput';
-import { getRideDirectionType } from '@/utils/atlasLocationUtils';
+import { ATLAS_LOCATION, getRideDirectionType } from '@/utils/atlasLocationUtils';
 import { calculateDistance } from '@/utils/locationUtils';
 import apiClient from '@/utils/backendApiClient';
 import { doc, updateDoc } from 'firebase/firestore';
@@ -317,6 +317,9 @@ export default function BookingConfirmationScreen() {
     recommendations: null,
   });
   const [isLoadingDetour, setIsLoadingDetour] = useState(false);
+  const [fareQuote, setFareQuote] = useState<any>(null);
+  const [isLoadingFare, setIsLoadingFare] = useState(false);
+  const [fareRetryNonce, setFareRetryNonce] = useState(0);
 
   const evaluateDetourOnBackend = async (location: any) => {
     if (!ride || !location) return;
@@ -355,8 +358,8 @@ export default function BookingConfirmationScreen() {
     setErrorMessage(null);
     if (ride) {
       if (choice === 'ride_pickup') {
-        setSelectedPickup(ride.pickupLocation);
-        setSelectedDrop(ride.dropLocation);
+        setSelectedPickup(direction === 'atlas-to-home' ? ATLAS_LOCATION : ride.pickupLocation);
+        setSelectedDrop(direction === 'home-to-atlas' ? ATLAS_LOCATION : ride.dropLocation);
       } else if (choice === 'home') {
         const homeLoc = auth.user?.homeAddress;
         if (homeLoc) {
@@ -383,10 +386,10 @@ export default function BookingConfirmationScreen() {
 
   useEffect(() => {
     if (ride) {
-      setSelectedPickup(ride.pickupLocation);
-      setSelectedDrop(ride.dropLocation);
+      setSelectedPickup(direction === 'atlas-to-home' ? ATLAS_LOCATION : ride.pickupLocation);
+      setSelectedDrop(direction === 'home-to-atlas' ? ATLAS_LOCATION : ride.dropLocation);
     }
-  }, [ride?.id]);
+  }, [ride?.id, direction]);
 
   useEffect(() => {
     const targetLoc = direction === 'home-to-atlas' ? selectedPickup : selectedDrop;
@@ -394,6 +397,43 @@ export default function BookingConfirmationScreen() {
       evaluateDetourOnBackend(targetLoc);
     }
   }, [selectedPickup, selectedDrop, direction]);
+
+  useEffect(() => {
+    if (!ride || !selectedPickup || !selectedDrop || detourData.status !== 'approved') {
+      setFareQuote(null);
+      return;
+    }
+    let active = true;
+    setIsLoadingFare(true);
+    apiClient.post('/fare/booking-quote', {
+      rideId: ride.id,
+      seatsBooked: seatsSelected,
+      pickupLocation: direction === 'atlas-to-home' ? ATLAS_LOCATION : selectedPickup,
+      dropLocation: direction === 'home-to-atlas' ? ATLAS_LOCATION : selectedDrop,
+    }).then(response => {
+      if (active) {
+        setFareQuote(response.data);
+        setErrorMessage(null);
+      }
+    }).catch(error => {
+      if (active) {
+        setFareQuote(null);
+        console.error('[FARE QUOTE] Road-distance quote failed', {
+          code: error?.code,
+          message: error?.message,
+          rideId: ride.id,
+          pickup: selectedPickup,
+          drop: selectedDrop,
+        });
+        setErrorMessage(error?.code === 'NO_ROUTE_FOUND'
+          ? "We couldn't find a drivable route between these locations."
+          : "We couldn't calculate the road distance. Please try again.");
+      }
+    }).finally(() => {
+      if (active) setIsLoadingFare(false);
+    });
+    return () => { active = false; };
+  }, [ride?.id, selectedPickup, selectedDrop, detourData.status, seatsSelected, direction, fareRetryNonce]);
 
   // Staggered entrance
   const headerAnim = useFadeSlideIn(0,   14);
@@ -460,7 +500,7 @@ export default function BookingConfirmationScreen() {
     );
   }
 
-  const totalPrice = ride.price * seatsSelected;
+  const totalPrice = fareQuote?.totalAmount ?? (ride.price * seatsSelected);
 
   const handleConfirm = async () => {
     if (!auth.user) {
@@ -484,6 +524,11 @@ export default function BookingConfirmationScreen() {
 
     if (!acknowledged) {
       setErrorMessage('Please confirm your pickup and drop-off points.');
+      return;
+    }
+
+    if ((ride as any).pricing && !fareQuote) {
+      setErrorMessage('Your exact fare is still being calculated. Please wait and retry.');
       return;
     }
 
@@ -572,6 +617,11 @@ export default function BookingConfirmationScreen() {
           }]}>
             <MaterialCommunityIcons name="alert-circle" size={17} color={WARM_CORE.error} />
             <Text style={st.errorBannerText}>{errorMessage}</Text>
+            {!fareQuote && detourData.status === 'approved' && (
+              <Pressable onPress={() => setFareRetryNonce(value => value + 1)} hitSlop={8}>
+                <Text style={{ color: WARM_CORE.error, fontSize: 12, fontWeight: '700' }}>Retry</Text>
+              </Pressable>
+            )}
             <Pressable onPress={() => setErrorMessage(null)} hitSlop={10}>
               <MaterialCommunityIcons name="close" size={15} color={WARM_CORE.error} />
             </Pressable>
@@ -671,7 +721,7 @@ export default function BookingConfirmationScreen() {
             label="Pickup Location"
             value={selectedPickup?.address || ''}
             onChange={(location) => {
-              setSelectedPickup(location);
+              setSelectedPickup(direction === 'atlas-to-home' ? ATLAS_LOCATION : location);
               setErrorMessage(null);
             }}
             placeholder="Search pickup address..."
@@ -684,7 +734,7 @@ export default function BookingConfirmationScreen() {
             label="Drop-off Location"
             value={selectedDrop?.address || ''}
             onChange={(location) => {
-              setSelectedDrop(location);
+              setSelectedDrop(direction === 'home-to-atlas' ? ATLAS_LOCATION : location);
               setErrorMessage(null);
             }}
             placeholder="Search drop-off address..."
@@ -806,22 +856,37 @@ export default function BookingConfirmationScreen() {
           opacity: card2Anim.opacity,
           transform: [{ translateY: card2Anim.translateY }],
         }]}>
-          <Text style={st.sectionLabel}>Price Breakdown</Text>
+          <Text style={st.sectionLabel}>Your Fare</Text>
 
           <View style={st.priceRow}>
-            <Text style={st.priceLabel}>Per Seat</Text>
-            <Text style={st.priceValue}>₹{ride.price}</Text>
+            <Text style={st.priceLabel}>Road distance</Text>
+            <Text style={st.priceValue}>{fareQuote ? `${fareQuote.fare.passengerSegmentDistanceKm} km` : 'Calculating...'}</Text>
           </View>
           <View style={st.priceRow}>
-            <Text style={st.priceLabel}>Number of Seats</Text>
-            <Text style={st.priceValue}>× {seatsSelected}</Text>
+            <Text style={st.priceLabel}>Operating cost</Text>
+            <Text style={st.priceValue}>₹{fareQuote ? (fareQuote.fare.operatingCostPaise / 100).toFixed(0) : '—'}</Text>
           </View>
-
+          <View style={st.priceRow}>
+            <Text style={st.priceLabel}>Passenger contribution</Text>
+            <Text style={st.priceValue}>₹{fareQuote ? (fareQuote.fare.baseFarePaise / 100).toFixed(0) : '—'}</Text>
+          </View>
+          {fareQuote?.fare.detourCostPaise > 0 && (
+            <View style={st.priceRow}>
+              <Text style={st.priceLabel}>Detour ({fareQuote.fare.detourDistanceKm} km)</Text>
+              <Text style={st.priceValue}>₹{(fareQuote.fare.detourCostPaise / 100).toFixed(0)}</Text>
+            </View>
+          )}
+          {fareQuote?.fare.platformFeePaise > 0 && (
+            <View style={st.priceRow}>
+              <Text style={st.priceLabel}>Platform fee</Text>
+              <Text style={st.priceValue}>₹{(fareQuote.fare.platformFeePaise / 100).toFixed(0)}</Text>
+            </View>
+          )}
           <View style={st.priceDivider} />
 
           <View style={st.totalRow}>
             <Text style={st.totalLabel}>Total Amount</Text>
-            <Text style={st.totalValue}>₹{totalPrice}</Text>
+            <Text style={st.totalValue}>{isLoadingFare ? 'Calculating...' : `₹${totalPrice}`}</Text>
           </View>
         </Animated.View>
 

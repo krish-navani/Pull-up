@@ -4,9 +4,8 @@ import { WARM_CORE } from '@/constants/theme';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import * as WebBrowser from 'expo-web-browser';
+import RazorpayCheckout from 'react-native-razorpay';
 import apiClient from '@/utils/backendApiClient';
-import { OTP_BACKEND_URL } from '@/config/environment';
 import {
     ActivityIndicator,
     Alert,
@@ -332,54 +331,63 @@ export default function MyBookingsScreen() {
     }
   }, [cancelBookingId]);
 
-  useEffect(() => {
-    const handleDeepLink = async (event: { url: string }) => {
-      console.log('[MY-BOOKINGS DEEP LINK] URL received:', event.url);
-      
-      if (event.url.includes('booking-success')) {
-        WebBrowser.dismissBrowser();
-        setIsProcessingPayment(false);
-        if (auth.user?.id) {
-          await loadPassengerBookings(auth.user.id);
-          await loadAllAvailableRides();
-        }
-        Alert.alert('Success 🎉', 'Payment verified and booking confirmed!');
-      } else if (event.url.includes('payment-cancelled') || event.url.includes('payment-failed')) {
-        WebBrowser.dismissBrowser();
-        setIsProcessingPayment(false);
-        Alert.alert('Payment Failed', 'Payment was not completed successfully.');
-      }
-    };
-
-    const sub = Linking.addEventListener('url', handleDeepLink);
-    return () => {
-      sub.remove();
-    };
-  }, [auth.user?.id]);
 
   const handlePayNow = async (bookingId: string) => {
     if (isProcessingPayment) return;
+    if (!auth.user?.id) {
+      Alert.alert('Sign in required', 'Please sign in again before making a payment.');
+      return;
+    }
+
     setIsProcessingPayment(true);
     try {
       const res = await apiClient.post('/create-order', {
         bookingId,
-        passengerId: auth.user?.id,
+        passengerId: auth.user.id,
       });
 
-      if (res.data?.success) {
-        const { orderId, amount } = res.data;
-        const checkoutUrl =
-          `${OTP_BACKEND_URL}/api/otp/checkout-page?type=booking` +
-          `&orderId=${encodeURIComponent(orderId)}` +
-          `&amount=${encodeURIComponent(String(amount))}` +
-          `&bookingId=${encodeURIComponent(bookingId)}`;
-
-        await WebBrowser.openBrowserAsync(checkoutUrl);
-      } else {
+      if (!res.data?.success || !res.data.orderId || !res.data.keyId || !res.data.amount) {
         throw new Error(res.data?.message || 'Failed to create payment order');
       }
+
+      const payment = await RazorpayCheckout.open({
+        key: res.data.keyId,
+        order_id: res.data.orderId,
+        amount: res.data.amount,
+        currency: 'INR',
+        name: 'PullUp',
+        description: 'Ride booking payment',
+        prefill: {
+          name: auth.user.fullName,
+          email: auth.user.email,
+          contact: auth.user.phone,
+        },
+        notes: { bookingId },
+        theme: { color: WARM_CORE.primary },
+      });
+
+      if (!payment.razorpay_payment_id || !payment.razorpay_order_id || !payment.razorpay_signature) {
+        throw new Error('Razorpay did not return complete payment verification details.');
+      }
+
+      const verification = await apiClient.post('/verify-payment', {
+        bookingId,
+        razorpay_payment_id: payment.razorpay_payment_id,
+        razorpay_order_id: payment.razorpay_order_id,
+        razorpay_signature: payment.razorpay_signature,
+      });
+
+      if (!verification.data?.success) {
+        throw new Error(verification.data?.message || 'Payment verification failed');
+      }
+
+      await loadPassengerBookings(auth.user.id);
+      await loadAllAvailableRides();
+      Alert.alert('Payment successful', 'Payment verified and booking confirmed.');
     } catch (err: any) {
-      Alert.alert('Error', err?.message || 'Failed to initiate payment.');
+      const message = err?.description || err?.message || 'Payment was cancelled or could not be completed.';
+      Alert.alert('Payment not completed', message);
+    } finally {
       setIsProcessingPayment(false);
     }
   };
@@ -513,6 +521,7 @@ export default function MyBookingsScreen() {
             if (bookingData.driverId === currentUserId) {
               setActiveTab('hosting');
               setSubTab('car');
+              setParticipationFilter(bookingData.status === 'pending' ? 'pending' : 'approved');
               setSelectedRideForDetails(bookingData.rideId);
               setSelectedRideBookings((prev) => {
                 const routedBooking = { id: bookingSnap.id, ...bookingData };
@@ -552,6 +561,7 @@ export default function MyBookingsScreen() {
     };
   }, [routeParams.bookingId, routeParams.rideId, routeParams.targetId, canStartRealtimeListeners, auth.user?.id]);
   const [selectedStatus, setSelectedStatus] = useState<'active' | 'in_progress' | 'completed' | 'cancelled'>('active');
+  const [participationFilter, setParticipationFilter] = useState<'all' | 'pending' | 'approved'>('all');
   const [joinedTaxiPools, setJoinedTaxiPools] = useState<TaxiPool[]>([]);
   const [createdTaxiPools, setCreatedTaxiPools] = useState<TaxiPool[]>([]);
   const [hostedPoolRequests, setHostedPoolRequests] = useState<any[]>([]);
@@ -697,6 +707,15 @@ export default function MyBookingsScreen() {
     return 'active';
   }, []);
 
+  const matchesParticipationFilter = useCallback((status?: string) => {
+    if (participationFilter === 'all') return true;
+    const normalized = (status || '').toLowerCase();
+    if (participationFilter === 'pending') {
+      return normalized === 'pending' || normalized === 'requested';
+    }
+    return normalized === 'accepted' || normalized === 'confirmed' || normalized === 'approved' || normalized === 'arrived' || normalized === 'in_progress' || normalized === 'completed';
+  }, [participationFilter]);
+
   // 1. Passenger Car Pool Bookings (Filtered by selectedStatus)
   const rawPassengerBookings = (bookings ?? []).filter((b, idx, self) => {
     if (b.passengerId !== auth.user?.id) return false;
@@ -734,14 +753,14 @@ export default function MyBookingsScreen() {
     return deduplicated.filter((b) => {
       const ride = (rides ?? []).find(r => r.id === b.rideId);
       const cat = getItemCategory(b.status, ride?.departureTime, ride?.status);
-      return cat === selectedStatus;
+      return cat === selectedStatus && matchesParticipationFilter(b.status);
     });
   })();
 
   // 2. Passenger Joined Taxi Pools (Filtered by selectedStatus)
   const filteredJoinedTaxiPools = joinedTaxiPools.filter((pool) => {
     const cat = getItemCategory(pool.status, pool.departureTime);
-    return cat === selectedStatus;
+    return cat === selectedStatus && matchesParticipationFilter(pool.status);
   });
 
   // 3. Hosted Car Pools (Filtered by selectedStatus)
@@ -750,15 +769,31 @@ export default function MyBookingsScreen() {
   const filteredHostedCarPools = hostedCarPools
     .filter((ride) => {
       const cat = getItemCategory(ride.status, ride.departureTime);
-      return cat === selectedStatus;
+      if (cat !== selectedStatus) return false;
+      if (participationFilter === 'all') return true;
+      const seatStatuses = (ride.bookedSeats ?? []).map((seat: any) => String(seat.status || '').toLowerCase());
+      return participationFilter === 'pending'
+        ? seatStatuses.some((status: string) => status === 'pending' || status === 'requested')
+        : seatStatuses.some((status: string) => ['accepted', 'confirmed', 'approved', 'arrived'].includes(status));
     })
     .sort((a, b) => new Date(a.departureTime).getTime() - new Date(b.departureTime).getTime());
 
   // 4. Created Taxi Pools (Filtered by selectedStatus)
   const filteredCreatedTaxiPools = createdTaxiPools.filter((pool) => {
     const cat = getItemCategory(pool.status, pool.departureTime);
-    return cat === selectedStatus;
+    if (cat !== selectedStatus) return false;
+    if (participationFilter === 'all') return true;
+    const requestStatuses = hostedPoolRequests.filter((request) => request.poolId === pool.id).map((request) => request.status);
+    return participationFilter === 'pending'
+      ? requestStatuses.some((status) => status === 'requested' || status === 'pending')
+      : requestStatuses.some((status) => status === 'accepted' || status === 'approved');
   });
+
+  const pendingCount = rawPassengerBookings.filter((booking) => ['pending', 'requested'].includes(String(booking.status).toLowerCase())).length
+    + hostedCarPools.reduce((count, ride) => count + (ride.bookedSeats ?? []).filter((seat: any) => ['pending', 'requested'].includes(String(seat.status).toLowerCase())).length, 0)
+    + hostedPoolRequests.filter((request) => ['pending', 'requested'].includes(String(request.status).toLowerCase())).length;
+  const approvedCount = rawPassengerBookings.filter((booking) => ['accepted', 'confirmed', 'approved', 'arrived', 'in_progress'].includes(String(booking.status).toLowerCase())).length
+    + hostedCarPools.reduce((count, ride) => count + (ride.bookedSeats ?? []).filter((seat: any) => ['accepted', 'confirmed', 'approved', 'arrived'].includes(String(seat.status).toLowerCase())).length, 0);
 
   // Empty state animations
   useEffect(() => {
@@ -1549,6 +1584,31 @@ export default function MyBookingsScreen() {
                     {statusLabel}
                   </Text>
                   {isSelected && <View style={styles.driverTabUnderline} />}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <View style={styles.participationFilterContainer}>
+            {(['all', 'pending', 'approved'] as const).map((filter) => {
+              const isSelected = participationFilter === filter;
+              const count = filter === 'pending' ? pendingCount : filter === 'approved' ? approvedCount : null;
+              return (
+                <TouchableOpacity
+                  key={filter}
+                  accessibilityRole="tab"
+                  accessibilityState={{ selected: isSelected }}
+                  style={[styles.participationFilterButton, isSelected && styles.participationFilterButtonActive]}
+                  onPress={() => setParticipationFilter(filter)}
+                >
+                  <Text style={[styles.participationFilterLabel, isSelected && styles.participationFilterLabelActive]}>
+                    {filter === 'all' ? 'All' : filter === 'pending' ? 'Pending' : 'Approved'}
+                  </Text>
+                  {count !== null && count > 0 && (
+                    <View style={[styles.participationCount, isSelected && styles.participationCountActive]}>
+                      <Text style={[styles.participationCountText, isSelected && styles.participationCountTextActive]}>{count}</Text>
+                    </View>
+                  )}
                 </TouchableOpacity>
               );
             })}
@@ -2498,8 +2558,8 @@ const styles = StyleSheet.create({
   /* ── Header ─────────────────────────────────────────────────────────────── */
   headerSection: {
     paddingHorizontal: 24,
-    paddingTop: 12,
-    paddingBottom: 16,
+    paddingTop: 20,
+    paddingBottom: 18,
     backgroundColor: WARM_CORE.background,
     borderBottomWidth: 1,
     borderBottomColor: WARM_CORE.border,
@@ -2509,7 +2569,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: WARM_CORE.text,
     marginBottom: 4,
-    letterSpacing: -0.5,
+    letterSpacing: 0,
   } as TextStyle,
   headerSubtitle: {
     fontSize: 13,
@@ -3247,6 +3307,58 @@ const styles = StyleSheet.create({
   } as TextStyle,
 
   // ===== DRIVER & MODAL STYLES =====
+  participationFilterContainer: {
+    flexDirection: 'row',
+    marginHorizontal: 24,
+    marginTop: 10,
+    marginBottom: 2,
+    padding: 3,
+    borderRadius: 10,
+    backgroundColor: WARM_CORE.card,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  } as ViewStyle,
+  participationFilterButton: {
+    flex: 1,
+    minHeight: 36,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    borderRadius: 7,
+  } as ViewStyle,
+  participationFilterButtonActive: {
+    backgroundColor: 'rgba(212, 80, 10, 0.1)',
+  } as ViewStyle,
+  participationFilterLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: WARM_CORE.textSecondary,
+  } as TextStyle,
+  participationFilterLabelActive: {
+    color: WARM_CORE.primary,
+  } as TextStyle,
+  participationCount: {
+    minWidth: 18,
+    height: 18,
+    paddingHorizontal: 5,
+    borderRadius: 9,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: WARM_CORE.border,
+  } as ViewStyle,
+  participationCountActive: {
+    backgroundColor: WARM_CORE.primary,
+  } as ViewStyle,
+  participationCountText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: WARM_CORE.textSecondary,
+  } as TextStyle,
+  participationCountTextActive: {
+    color: WARM_CORE.white,
+  } as TextStyle,
+
   driverTabContainer: {
     flexDirection: 'row',
     gap: 0,

@@ -1306,7 +1306,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [state.auth.user?.id]);
 
   const createRide = useCallback(
-    async (rideData: Omit<Ride, 'id' | 'createdAt' | 'driverId' | 'driverName' | 'bookedSeats' | 'status'>) => {
+    async (rideData: Omit<Ride, 'id' | 'createdAt' | 'driverId' | 'driverName' | 'bookedSeats' | 'status' | 'price'>) => {
       if (!state.auth.user) {
         console.error('[CONTEXT] createRide: No authenticated user');
         throw new Error('No authenticated user');
@@ -1331,6 +1331,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           createdAt: new Date().toISOString(),
           bookedSeats: [],
           status: 'active',
+          price: 0,
         };
         
         console.log('[CONTEXT] ✅ Ride created locally and in Firestore');
@@ -1572,7 +1573,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           state.auth.user.email,
           ride.driverId,
           seatsBooked,
-          ride.price,
           pickupLocation,
           dropLocation,
           detourMeta

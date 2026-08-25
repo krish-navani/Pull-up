@@ -234,7 +234,7 @@ export const getUpcomingRide = async (userId: string, role: 'driver' | 'passenge
  * This prevents navigation guard mismatches when fields are undefined.
  */
 const ensureUserDefaults = (firestoreData: Record<string, any>): User => {
-  const isStatusVerified = firestoreData?.licenseVerificationStatus === 'verified';
+  const isStatusVerified = firestoreData?.licenseVerificationStatus === 'approved' || firestoreData?.licenseVerificationStatus === 'verified';
   return {
     ...firestoreData,
     profileComplete: firestoreData?.profileComplete ?? true,
@@ -485,7 +485,7 @@ export const switchUserRole = async (userId: string, newRole: 'driver' | 'passen
     if (existingDoc.exists()) {
       const existingData = existingDoc.data();
       if (newRole === 'driver') {
-        const isVerified = existingData.licenseVerified === true || existingData.licenseVerificationStatus === 'verified';
+        const isVerified = existingData.licenseVerified === true || existingData.licenseVerificationStatus === 'approved' || existingData.licenseVerificationStatus === 'verified';
         if (!isVerified) {
           // Not yet verified — explicitly reset so the nav guard has definitive values
           console.log('[PROFILE] 📍 Switching to driver (unverified) - resetting license fields');

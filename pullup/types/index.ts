@@ -33,7 +33,7 @@ export interface User {
   };
   // Driver-specific fields
   licenseImageUri?: string;
-  licenseVerificationStatus?: 'pending' | 'verified' | 'rejected' | 'resubmission_requested';
+  licenseVerificationStatus?: 'pending' | 'approved' | 'verified' | 'rejected' | 'resubmission_requested';
   licenseRejectionReason?: string;
   licenseUploadedAt?: string;
   licenseConfirmed?: boolean;
@@ -77,6 +77,62 @@ export interface Location {
   state?: string;
 }
 
+export interface RidePricing {
+  version: string;
+  currency: 'INR';
+  fuelType: 'Petrol' | 'Diesel' | 'EV';
+  fuelPricePerLiterPaise: number;
+  mileageKmPerLiter: number;
+  fuelCostPerKmPaise: number;
+  maintenanceCostPerKmPaise: number;
+  operatingCostPerKmPaise: number;
+  estimatedFuelCostPaise: number;
+  estimatedMaintenanceCostPaise: number;
+  estimatedTripCostPaise: number;
+  automaticPassengerContributionPaise: number;
+  suggestedFarePaise: number;
+  totalPassengerSeats: number;
+  driverCostSharePercent: number;
+  passengerCostSharePercent: number;
+  minimumPassengerFarePaise: number;
+  maximumPassengerFarePaise: number;
+  maximumRideFarePaise: number;
+  platformFeePaise: number;
+  tollHandlingPolicy: 'excluded' | 'included';
+  roundingPolicy: 'nearest_rupee' | 'ceil_rupee';
+  effectiveFrom: string;
+}
+
+export interface FareSnapshot {
+  currency: 'INR';
+  baseFarePaise: number;
+  distanceMeters: number;
+  distanceKm: number;
+  roadDistanceKm: number;
+  driverRouteDistanceMeters: number;
+  passengerRouteDistanceMeters: number;
+  passengerSegmentDistanceKm: number;
+  incrementalDetourDistanceMeters: number;
+  detourDistanceKm: number;
+  fuelPricePerLiterPaise: number;
+  mileageKmPerLiter: number;
+  fuelCostPerKmPaise: number;
+  maintenanceCostPerKmPaise: number;
+  operatingCostPerKmPaise: number;
+  operatingCostPaise: number;
+  passengerContributionPaise: number;
+  tollAmountPaise: number;
+  detourAmountPaise: number;
+  detourCostPaise: number;
+  platformFeePaise: number;
+  totalAmountPaise: number;
+  driverSharePaise: number;
+  seatsBooked: number;
+  pricingVersion: string;
+  routeProvider: 'google';
+  routeCalculatedAt: string;
+  lockedAt?: string;
+}
 export interface Ride {
   id: string;
   driverId: string;
@@ -115,6 +171,8 @@ export interface Ride {
   optimizationStatus?: 'idle' | 'optimizing' | 'completed';
   lastOptimizedAt?: string;
   optimizationSource?: 'google' | 'cache' | 'fallback';
+  route?: { origin: Location; destination: Location; originPlaceId?: string; destinationPlaceId?: string; distanceMeters: number; durationSeconds: number; provider: 'google'; calculatedAt: string };
+  pricing?: RidePricing;
 }
 
 /**
@@ -157,6 +215,9 @@ export interface Booking {
   paymentStatus?: 'pending' | 'paid' | 'failed' | 'expired' | 'refunded';
   totalPrice?: number;
   orderId?: string;
+  fare?: FareSnapshot;
+  fareStatus?: 'quoted' | 'locked' | 'invalidated';
+  orderAmountPaise?: number;
 }
 
 /**
@@ -256,7 +317,7 @@ export interface AppContextType {
   // Rides
   rides: Ride[];
   userRides: Ride[];
-  createRide: (rideData: Omit<Ride, 'id' | 'createdAt' | 'driverId' | 'driverName' | 'bookedSeats' | 'status'>) => Promise<void>;
+  createRide: (rideData: Omit<Ride, 'id' | 'createdAt' | 'driverId' | 'driverName' | 'bookedSeats' | 'status' | 'price'>) => Promise<void>;
   cancelRide: (rideId: string) => void;
   startRide: (rideId: string) => Promise<void>;
   startRideLocal: (rideId: string) => void;

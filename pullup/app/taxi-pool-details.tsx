@@ -88,7 +88,7 @@ function TaxiPoolCreatorRow({ creatorId, defaultName, defaultCourse, defaultDivi
 
   return (
     <View style={styles.personRow}>
-      <UserAvatar userId={creatorId} imageUrl={displayImage} name={displayName} size={44} />
+      <UserAvatar userId={creatorId} imageUrl={displayImage} name={displayName} size={44} style={{ marginRight: 12 }} />
       <View style={styles.personDetails}>
         <Text style={styles.personName}>{displayName}</Text>
         <Text style={styles.personSub}>{displayCourse} • Division {displayDivision}</Text>
@@ -125,7 +125,7 @@ function TaxiPoolMemberRow({ member, creatorId }: { member: PoolMember; creatorI
 
   return (
     <View style={styles.memberRow}>
-      <UserAvatar userId={member.passengerId} imageUrl={displayImage} name={displayName} size={32} />
+      <UserAvatar userId={member.passengerId} imageUrl={displayImage} name={displayName} size={32} style={{ marginRight: 10 }} />
       <View style={styles.memberDetails}>
         <Text style={styles.memberName}>
           {displayName} {member.passengerId === creatorId ? '(Admin)' : ''}
@@ -175,7 +175,7 @@ function TaxiPoolRequestRow({
   return (
     <View style={styles.requestCard}>
       <View style={styles.requestProfile}>
-        <UserAvatar userId={req.passengerId} imageUrl={displayImage} name={displayName} size={32} />
+        <UserAvatar userId={req.passengerId} imageUrl={displayImage} name={displayName} size={32} style={{ marginRight: 10 }} />
         <View style={styles.requestMeta}>
           <Text style={styles.reqName}>{displayName}</Text>
           <Text style={styles.reqSub}>{displayCourse} • Div {displayDivision}</Text>

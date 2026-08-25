@@ -794,7 +794,7 @@ export default function ProfileScreen() {
                     </View>
                   </View>
                 )}
-                {auth.user?.licenseVerificationStatus === 'verified' && (
+                {(auth.user?.licenseVerificationStatus === 'approved' || auth.user?.licenseVerificationStatus === 'verified') && (
                   <View style={[styles.licenseStatusBadge, styles.licenseVerified]}>
                     <MaterialCommunityIcons name="check-circle" size={16} color={WARM_CORE.success} />
                     <View style={styles.licenseStatusContent}>
@@ -1093,6 +1093,19 @@ export default function ProfileScreen() {
                   </View>
                 </PressableCard>
 
+                <PressableCard
+                  onPress={() => router.push('/privacy-account' as any)}
+                  style={styles.menuItemCard}
+                  index={5.25}
+                >
+                  <View style={styles.menuItemContent}>
+                    <View style={[styles.menuItemIconBox, { backgroundColor: 'rgba(16, 185, 129, 0.08)' }]}>
+                      <MaterialCommunityIcons name="shield-account-outline" size={20} color={WARM_CORE.success} />
+                    </View>
+                    <Text style={styles.menuItemText}>Privacy & Account</Text>
+                    <MaterialCommunityIcons name="chevron-right" size={20} color={WARM_CORE.textSecondary} />
+                  </View>
+                </PressableCard>
                 <PressableCard
                   onPress={() => router.push('/notification-settings' as any)}
                   style={styles.menuItemCard}
