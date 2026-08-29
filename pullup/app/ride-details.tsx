@@ -415,7 +415,6 @@ export default function RideDetailsScreen() {
         const result = await fetchRoute(
           ride.pickupLocation,
           ride.dropLocation,
-          process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs',
           waypoints.map(wp => ({ latitude: wp.latitude, longitude: wp.longitude }))
         );
 

@@ -1,4 +1,5 @@
 import type { Location } from '@/types';
+import apiClient from './backendApiClient';
 
 // Decode polyline from Google Directions API
 export const decodePolyline = (encoded: string) => {
@@ -42,101 +43,63 @@ export const decodePolyline = (encoded: string) => {
   return points;
 };
 
-// Fetch route from Google Directions API
+// Fetch an authoritative road route through the authenticated backend Routes API.
 export const fetchRoute = async (
   pickup: { latitude: number; longitude: number; address?: string; city?: string },
   dropoff: { latitude: number; longitude: number; address?: string; city?: string },
-  apiKey: string,
   waypoints?: Array<{ latitude: number; longitude: number }>
 ) => {
+  console.log('🗺️ Fetching route:', {
+    origin: `${pickup.latitude},${pickup.longitude}`,
+    destination: `${dropoff.latitude},${dropoff.longitude}`,
+    waypointsCount: waypoints?.length || 0,
+  });
+
   try {
-    const origin = `${pickup.latitude},${pickup.longitude}`;
-    const destination = `${dropoff.latitude},${dropoff.longitude}`;
-    
-    // Use Directions API
-    let directionsURL = `https://maps.googleapis.com/maps/api/directions/json?origin=${encodeURIComponent(
-      origin
-    )}&destination=${encodeURIComponent(
-      destination
-    )}&mode=driving&alternatives=false&key=${apiKey}`;
-
-    if (waypoints && waypoints.length > 0) {
-      const waypointsStr = 'optimize:true|' + waypoints.map(wp => `${wp.latitude},${wp.longitude}`).join('|');
-      directionsURL += `&waypoints=${encodeURIComponent(waypointsStr)}`;
+    const response = await apiClient.post('/fare/route-preview', {
+      origin: pickup,
+      destination: dropoff,
+      waypoints: waypoints || [],
+    });
+    const route = response.data?.route;
+    if (!response.data?.success || !route?.encodedPolyline) {
+      throw new Error('Route provider returned no polyline.');
     }
 
-    console.log('🗺️ Fetching route:', { origin, destination, waypointsCount: waypoints?.length || 0 });
+    const points = decodePolyline(route.encodedPolyline);
+    if (points.length < 2) throw new Error('Route provider returned an invalid polyline.');
 
-    const response = await fetch(directionsURL);
-    const data = await response.json();
-
-    console.log('📱 API Response Status:', data.status);
-
-    if (data.status === 'OK' && data.routes?.length > 0) {
-      const route = data.routes[0];
-      const points = decodePolyline(route.overview_polyline.points);
-      
-      let totalDistanceMeters = 0;
-      let totalDurationSeconds = 0;
-      if (route.legs && route.legs.length > 0) {
-        route.legs.forEach((leg: any) => {
-          totalDistanceMeters += leg.distance?.value || 0;
-          totalDurationSeconds += leg.duration?.value || 0;
-        });
-      }
-
-      const distanceText = totalDistanceMeters > 0 
-        ? `${(totalDistanceMeters / 1000).toFixed(1)} km` 
-        : route.legs?.[0]?.distance?.text;
-      
-      const durationText = totalDurationSeconds > 0 
-        ? `${Math.round(totalDurationSeconds / 60)} mins` 
-        : route.legs?.[0]?.duration?.text;
-
-      console.log('✅ Route decoded successfully:', {
-        points: points.length,
-        distance: distanceText,
-        duration: durationText,
-        waypointOrder: route.waypoint_order || [],
-      });
-
-      return {
-        success: true,
-        points,
-        polyline: route.overview_polyline.points,
-        distance: distanceText,
-        duration: durationText,
-        distanceMeters: totalDistanceMeters,
-        durationSeconds: totalDurationSeconds,
-        waypointOrder: route.waypoint_order || [],
-      };
-    } else {
-      console.warn('⚠️ Directions API Warning:', {
-        status: data.status,
-        error: data.error_message,
-      });
-
-      // Fallback to straight line
-      return {
-        success: false,
-        points: [
-          { latitude: pickup.latitude, longitude: pickup.longitude },
-          { latitude: dropoff.latitude, longitude: dropoff.longitude },
-        ],
-        error: data.error_message || data.status,
-      };
+    const distanceMeters = Number(route.distanceMeters || 0);
+    const durationSeconds = Number(route.durationSeconds || 0);
+    if (distanceMeters <= 0 || durationSeconds <= 0) {
+      throw new Error('Route provider returned invalid distance or duration.');
     }
-  } catch (error) {
-    console.error('❌ Error fetching route:', error);
-    
-    // Fallback to straight line
+
+    const distance = response.data?.display?.distance || `${(distanceMeters / 1000).toFixed(1)} km`;
+    const duration = response.data?.display?.duration || `${Math.max(1, Math.round(durationSeconds / 60))} mins`;
+    console.log('✅ Route decoded successfully:', {
+      points: points.length,
+      distance,
+      duration,
+      waypointOrder: route.waypointOrder || [],
+    });
+
+    return {
+      success: true,
+      points,
+      polyline: route.encodedPolyline,
+      distance,
+      duration,
+      distanceMeters,
+      durationSeconds,
+      waypointOrder: route.waypointOrder || [],
+    };
+  } catch (error: any) {
+    console.error('❌ Error fetching route:', error?.message || error);
     return {
       success: false,
-      points: [
-        { latitude: pickup.latitude, longitude: pickup.longitude },
-        { latitude: dropoff.latitude, longitude: dropoff.longitude },
-      ],
-      error: 'Network error',
+      points: [],
+      error: error?.message || 'Road route request failed',
     };
   }
 };

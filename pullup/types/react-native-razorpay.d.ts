@@ -7,6 +7,7 @@ declare module 'react-native-razorpay' {
     description?: string;
     image?: string;
     order_id?: string;
+    subscription_id?: string;
     prefill?: {
       name?: string;
       email?: string;
@@ -28,6 +29,7 @@ declare module 'react-native-razorpay' {
   export interface RazorpayPaymentSuccess {
     razorpay_payment_id: string;
     razorpay_order_id?: string;
+    razorpay_subscription_id?: string;
     razorpay_signature?: string;
   }
 
@@ -39,6 +41,7 @@ declare module 'react-native-razorpay' {
     reason?: string;
     metadata?: {
       order_id?: string;
+    subscription_id?: string;
       payment_id?: string;
     };
   }

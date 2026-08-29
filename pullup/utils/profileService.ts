@@ -12,6 +12,7 @@ import {
 import { Booking, Ride, User } from '../types';
 import { auth, db } from './firebase';
 import { forensicTrace } from './forensicLogger';
+import { syncPublicProfile } from './publicProfileService';
 
 /**
  * Get profile statistics for a driver
@@ -279,8 +280,9 @@ export const updateUserProfile = async (
     await ensureAuthSession();
 
     const userRef = doc(db, 'users', userId);
+    const { id: _id, email: _email, fullName: _fullName, ...mutableUpdates } = updates;
     const updateData = {
-      ...updates,
+      ...mutableUpdates,
       updatedAt: new Date().toISOString(),
     };
 
@@ -297,6 +299,8 @@ export const updateUserProfile = async (
         contextUserId: userId,
       }
     );
+    const refreshedProfile = (await getDoc(userRef)).data() || updateData;
+    await syncPublicProfile(userId, refreshedProfile);
     console.log('[PROFILE] ✅ Profile updated/created successfully');
 
     // Return updated user with safe defaults
@@ -420,7 +424,7 @@ export const getVehicleInfo = async (driverId: string) => {
   try {
     console.log('[PROFILE] Fetching vehicle info for driver:', driverId);
 
-    const userDoc = await getDoc(doc(db, 'users', driverId));
+    const userDoc = await getDoc(doc(db, 'publicProfiles', driverId));
     if (!userDoc.exists()) {
       throw new Error('User not found');
     }
@@ -430,7 +434,7 @@ export const getVehicleInfo = async (driverId: string) => {
     return {
       seats: 4,
       carModel: 'Vehicle',
-      licensePlate: userData.phone || 'N/A',
+      licensePlate: 'N/A',
       verified: userData.licenseVerified || false,
     };
   } catch (error) {
@@ -536,6 +540,8 @@ export const switchUserRole = async (userId: string, newRole: 'driver' | 'passen
       }
     );
 
+    const refreshedProfile = (await getDoc(userRef)).data() || updateData;
+    await syncPublicProfile(userId, refreshedProfile);
     console.log('[PROFILE] ✅ Role switched successfully');
 
     // Return updated user with safe defaults

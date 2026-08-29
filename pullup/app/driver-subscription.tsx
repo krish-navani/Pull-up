@@ -32,24 +32,9 @@ interface Plan {
 const PLANS: Plan[] = [
   {
     id: 'monthly',
-    name: 'Monthly Pass',
+    name: 'Monthly Driver Pass',
     price: 250,
-    duration: '30 Days',
-  },
-  {
-    id: 'quarterly',
-    name: 'Quarterly Saver',
-    price: 700,
-    duration: '90 Days',
-    savings: 'Save ₹50',
-    popular: true,
-  },
-  {
-    id: 'yearly',
-    name: 'Annual Pass',
-    price: 2500,
-    duration: '365 Days',
-    savings: 'Save ₹500',
+    duration: 'Renews monthly',
   },
 ];
 
@@ -57,105 +42,99 @@ export default function DriverSubscriptionScreen() {
   const router = useRouter();
   const { auth } = useAppContext();
 
-  const [selectedPlan, setSelectedPlan] = useState<'monthly' | 'quarterly' | 'yearly'>('quarterly');
+  const [selectedPlan] = useState<'monthly'>('monthly');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [subscriptionExpiry, setSubscriptionExpiry] = useState<string | null>(null);
-  const [status, setStatus] = useState<'active' | 'inactive'>('inactive');
+  const [subscription, setSubscription] = useState<any>(null);
+  const status = String(subscription?.status || 'inactive');
+  const isActive = status === 'active';
+  const isPausable = ['active', 'authenticated'].includes(status);
 
   const fetchSubscriptionStatus = async () => {
-    if (!auth.user) return;
     try {
-      const userRef = doc(db, 'users', auth.user.id);
-      const userSnap = await getDoc(userRef);
-      if (userSnap.exists()) {
-        const userData = userSnap.data();
-        if (userData?.subscriptionStatus === 'active') {
-          setStatus('active');
-          if (userData.subscriptionExpiry) {
-            const expDate = new Date(userData.subscriptionExpiry);
-            setSubscriptionExpiry(expDate.toLocaleDateString([], { month: 'long', day: 'numeric', year: 'numeric' }));
-          }
-        } else {
-          setStatus('inactive');
-          setSubscriptionExpiry(null);
-        }
-      }
+      const response = await apiClient.get('/subscriptions/autopay/status');
+      setSubscription(response.data?.subscription || null);
     } catch (error) {
-      console.error('[SUBSCRIPTION] Error fetching user data:', error);
+      console.error('[AUTOPAY] Error fetching status:', error);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchSubscriptionStatus();
-  }, [auth.user]);
+    if (auth.user) fetchSubscriptionStatus();
+  }, [auth.user?.id]);
 
   const handleSubscribe = async () => {
     if (!auth.user) {
       Alert.alert('Error', 'Please log in first.');
       return;
     }
-
     setSubmitting(true);
     try {
-      const res = await apiClient.post('/create-subscription', {
-        userId: auth.user.id,
-        planId: selectedPlan,
-      });
-
-      if (!res.data?.success || !res.data.orderId || !res.data.keyId || !res.data.amount) {
-        throw new Error(res.data?.message || 'Failed to initialize subscription checkout');
+      const response = await apiClient.post('/subscriptions/autopay/create');
+      const data = response.data;
+      if (!data?.subscriptionId || !data?.keyId || !data?.amount) {
+        throw new Error(data?.message || 'AutoPay authorization could not be initialized.');
       }
-
       const payment = await RazorpayCheckout.open({
-        key: res.data.keyId,
-        order_id: res.data.orderId,
-        amount: res.data.amount,
-        currency: 'INR',
+        key: data.keyId,
+        subscription_id: data.subscriptionId,
+        amount: data.amount,
+        currency: data.currency || 'INR',
         name: 'PullUp',
-        description: `${selectedPlan} driver subscription`,
+        description: 'Monthly Driver Pass AutoPay mandate',
         prefill: {
           name: auth.user.fullName,
           email: auth.user.email,
           contact: auth.user.phone,
         },
-        notes: { userId: auth.user.id, planId: selectedPlan },
+        notes: { userId: auth.user.id, product: 'driver_monthly_autopay' },
         theme: { color: WARM_CORE.primary },
+        readonly: { name: true, email: true },
       });
-
-      if (!payment.razorpay_payment_id || !payment.razorpay_order_id || !payment.razorpay_signature) {
-        throw new Error('Razorpay did not return complete payment verification details.');
+      if (!payment.razorpay_payment_id || !payment.razorpay_subscription_id || !payment.razorpay_signature) {
+        throw new Error('Razorpay did not return complete mandate authorization details.');
       }
-
-      const verification = await apiClient.post('/verify-subscription', {
-        userId: auth.user.id,
-        planId: selectedPlan,
+      await apiClient.post('/subscriptions/autopay/verify', {
         razorpay_payment_id: payment.razorpay_payment_id,
-        razorpay_order_id: payment.razorpay_order_id,
+        razorpay_subscription_id: payment.razorpay_subscription_id,
         razorpay_signature: payment.razorpay_signature,
       });
-
-      if (!verification.data?.success) {
-        throw new Error(verification.data?.message || 'Payment verification failed');
-      }
-
       await fetchSubscriptionStatus();
-      Alert.alert(
-        'Subscription active',
-        'Your driver subscription payment was verified successfully.',
-        [
-          { text: 'Create TaxiPool', onPress: () => router.replace('/create-taxi-pool') },
-          { text: 'Go Home', onPress: () => router.replace('/(tabs)/home') },
-        ]
-      );
+      Alert.alert('AutoPay authorized', 'Your monthly mandate was authorized. Subscription state will update from Razorpay webhooks.');
     } catch (err: any) {
-      console.error('[SUBSCRIPTION ERROR]', err);
-      Alert.alert('Payment not completed', err?.description || err?.message || 'The payment was cancelled or failed.');
+      console.error('[AUTOPAY ERROR]', err);
+      Alert.alert('AutoPay not enabled', err?.description || err?.message || 'Authorization was cancelled or failed.');
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const mutateAutopay = async (action: 'pause' | 'cancel') => {
+    if (!subscription?.id) return;
+    const title = action === 'pause' ? 'Pause AutoPay?' : 'Cancel AutoPay?';
+    const message = action === 'pause'
+      ? 'Future debits will pause according to Razorpay mandate rules.'
+      : 'The mandate will be cancelled at the end of the current billing cycle where supported.';
+    Alert.alert(title, message, [
+      { text: 'Keep Active', style: 'cancel' },
+      {
+        text: action === 'pause' ? 'Pause' : 'Cancel',
+        style: action === 'cancel' ? 'destructive' : 'default',
+        onPress: async () => {
+          setSubmitting(true);
+          try {
+            await apiClient.post('/subscriptions/autopay/' + action, { subscriptionId: subscription.id });
+            await fetchSubscriptionStatus();
+          } catch (error: any) {
+            Alert.alert('Could not update AutoPay', error?.message || 'Please try again.');
+          } finally {
+            setSubmitting(false);
+          }
+        },
+      },
+    ]);
   };
   if (loading) {
     return (
@@ -177,100 +156,79 @@ export default function DriverSubscriptionScreen() {
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
-        {/* Current status banner */}
-        <View style={[styles.statusCard, status === 'active' ? styles.statusActive : styles.statusInactive]}>
+        <View style={[styles.statusCard, isActive ? styles.statusActive : styles.statusInactive]}>
           <View style={styles.statusHeader}>
             <MaterialCommunityIcons
-              name={status === 'active' ? 'check-decagram' : 'alert-decagram'}
+              name={isActive ? 'check-decagram' : 'shield-key-outline'}
               size={24}
-              color={status === 'active' ? WARM_CORE.success : WARM_CORE.accent}
+              color={isActive ? WARM_CORE.success : WARM_CORE.accent}
             />
-            <Text style={[styles.statusText, { color: status === 'active' ? WARM_CORE.success : WARM_CORE.primary }]}>
-              {status === 'active' ? 'ACTIVE SUBSCRIPTION' : 'SUBSCRIPTION REQUIRED'}
+            <Text style={[styles.statusText, { color: isActive ? WARM_CORE.success : WARM_CORE.primary }]}>
+              {status.toUpperCase().replace('_', ' ')}
             </Text>
           </View>
           <Text style={styles.statusDescription}>
-            {status === 'active'
-              ? `Your plan is active and will expire on ${subscriptionExpiry}.`
-              : 'You must maintain a monthly plan of ₹250 to host and post TaxiPool rides.'}
+            {isActive
+              ? '₹' + ((subscription?.amountPaise || 25000) / 100).toFixed(0) + ' monthly · next debit ' +
+                (subscription?.nextChargeAt ? new Date(subscription.nextChargeAt * 1000).toLocaleDateString() : 'awaiting Razorpay schedule')
+              : 'Enable AutoPay only after reviewing the ₹250 monthly amount. Razorpay will ask you to explicitly authorize the mandate.'}
           </Text>
         </View>
 
-        {/* Benefits lists */}
         <View style={styles.benefitsCard}>
-          <Text style={styles.benefitsTitle}>TaxiPool Privileges</Text>
+          <Text style={styles.benefitsTitle}>Monthly Driver Pass</Text>
           <View style={styles.benefitRow}>
-            <MaterialCommunityIcons name="check-circle" size={20} color={WARM_CORE.primary} />
-            <Text style={styles.benefitText}>Create unlimited TaxiPool coordinates</Text>
+            <MaterialCommunityIcons name="cash-sync" size={20} color={WARM_CORE.primary} />
+            <Text style={styles.benefitText}>₹250 billed monthly after explicit UPI AutoPay, card, or eMandate authorization</Text>
           </View>
           <View style={styles.benefitRow}>
-            <MaterialCommunityIcons name="check-circle" size={20} color={WARM_CORE.primary} />
-            <Text style={styles.benefitText}>100% Commission-free Taxi rides (keep all seat contributions)</Text>
+            <MaterialCommunityIcons name="calendar-clock" size={20} color={WARM_CORE.primary} />
+            <Text style={styles.benefitText}>Status and next debit are synchronized from signed Razorpay webhooks</Text>
           </View>
           <View style={styles.benefitRow}>
-            <MaterialCommunityIcons name="check-circle" size={20} color={WARM_CORE.primary} />
-            <Text style={styles.benefitText}>Priority visibility on university route boards</Text>
+            <MaterialCommunityIcons name="car-multiple" size={20} color={WARM_CORE.primary} />
+            <Text style={styles.benefitText}>Required only for the recurring Taxi Pool hosting product, never individual ride payments</Text>
           </View>
         </View>
 
-        <Text style={styles.plansSectionTitle}>Choose a Plan</Text>
-
-        {/* Plan list selector */}
-        {PLANS.map((plan) => {
-          const isSelected = selectedPlan === plan.id;
-          return (
-            <TouchableOpacity
-              key={plan.id}
-              activeOpacity={0.8}
-              style={[
-                styles.planCard,
-                isSelected && styles.planCardSelected,
-                plan.popular && { borderLeftWidth: 5, borderLeftColor: WARM_CORE.primary },
-              ]}
-              onPress={() => setSelectedPlan(plan.id)}
-            >
-              <View style={styles.planInfo}>
-                <View style={styles.planRow}>
-                  <Text style={styles.planName}>{plan.name}</Text>
-                  {plan.popular && (
-                    <View style={styles.popularBadge}>
-                      <Text style={styles.popularText}>POPULAR</Text>
-                    </View>
-                  )}
-                  {plan.savings && (
-                    <View style={styles.savingsBadge}>
-                      <Text style={styles.savingsText}>{plan.savings}</Text>
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.planDuration}>Duration: {plan.duration}</Text>
-              </View>
-              <View style={styles.planPriceContainer}>
-                <Text style={styles.planPrice}>₹{plan.price}</Text>
-                <MaterialCommunityIcons
-                  name={isSelected ? 'radiobox-marked' : 'radiobox-blank'}
-                  size={22}
-                  color={isSelected ? WARM_CORE.primary : WARM_CORE.textSecondary}
-                />
-              </View>
-            </TouchableOpacity>
-          );
-        })}
+        <View style={[styles.planCard, styles.planCardSelected]}>
+          <View style={styles.planInfo}>
+            <Text style={styles.planName}>Monthly Driver Pass</Text>
+            <Text style={styles.planDuration}>Renews monthly until paused or cancelled</Text>
+          </View>
+          <Text style={styles.planPrice}>₹250</Text>
+        </View>
 
         <TouchableOpacity
-          style={[styles.subscribeBtn, submitting && styles.disabledBtn]}
-          disabled={submitting}
+          style={[styles.subscribeBtn, (submitting || isActive) && styles.disabledBtn]}
+          disabled={submitting || isActive}
           onPress={handleSubscribe}
         >
-          {submitting ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Text style={styles.subscribeBtnText}>
-              {status === 'active' ? 'Extend Subscription' : 'Subscribe & Unlock'}
-            </Text>
+          {submitting ? <ActivityIndicator size="small" color="#fff" /> : (
+            <Text style={styles.subscribeBtnText}>{isActive ? 'AutoPay Active' : 'Enable AutoPay'}</Text>
           )}
         </TouchableOpacity>
-      </ScrollView>
+
+        {subscription?.id ? (
+          <View style={{ flexDirection: 'row', gap: 12, marginTop: 12 }}>
+            {isPausable ? (
+              <TouchableOpacity style={[styles.subscribeBtn, { flex: 1, marginTop: 0, backgroundColor: WARM_CORE.accent }]} onPress={() => mutateAutopay('pause')} disabled={submitting}>
+                <Text style={styles.subscribeBtnText}>Pause</Text>
+              </TouchableOpacity>
+            ) : null}
+            {!['cancelled', 'completed'].includes(status) ? (
+              <TouchableOpacity style={[styles.subscribeBtn, { flex: 1, marginTop: 0, backgroundColor: '#B91C1C' }]} onPress={() => mutateAutopay('cancel')} disabled={submitting}>
+                <Text style={styles.subscribeBtnText}>Cancel</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : null}
+
+        {status === 'payment_failed' || status === 'halted' ? (
+          <Text style={[styles.statusDescription, { color: '#B91C1C', marginTop: 12 }]}>
+            The last debit failed. Re-authorize AutoPay or update the mandate in Razorpay Checkout.
+          </Text>
+        ) : null}      </ScrollView>
     </SafeAreaView>
   );
 }

@@ -500,7 +500,7 @@ export default function BookingConfirmationScreen() {
     );
   }
 
-  const totalPrice = fareQuote?.totalAmount ?? (ride.price * seatsSelected);
+  const totalPrice = fareQuote?.totalAmount ?? 0;
 
   const handleConfirm = async () => {
     if (!auth.user) {
@@ -527,7 +527,7 @@ export default function BookingConfirmationScreen() {
       return;
     }
 
-    if ((ride as any).pricing && !fareQuote) {
+    if (!fareQuote) {
       setErrorMessage('Your exact fare is still being calculated. Please wait and retry.');
       return;
     }

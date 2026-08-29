@@ -18,7 +18,7 @@ export default function RootIndex() {
   const isSignedIn = auth.isSignedIn;
   const isProfileComplete = auth.user?.profileComplete ?? false;
   const isDriver = auth.user?.role === 'driver';
-  const isLicenseVerified = auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'verified';
+  const isLicenseVerified = auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'approved' || auth.user?.licenseVerificationStatus === 'verified';
   const isLicensePendingOrVerified = isLicenseVerified || auth.user?.licenseVerificationStatus === 'pending';
   const needsLicenseVerification = isDriver && !isLicensePendingOrVerified;
   const canAccessMainApp = isSignedIn && isProfileComplete && !needsLicenseVerification;

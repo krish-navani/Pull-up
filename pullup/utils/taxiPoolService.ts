@@ -16,6 +16,7 @@ import {
   Unsubscribe
 } from 'firebase/firestore';
 import { db } from './firebase';
+import apiClient from './backendApiClient';
 import { sendNotification } from './notificationService';
 import {
   initializeGroupChat,
@@ -78,61 +79,21 @@ export interface PoolMember {
 export const createTaxiPool = async (
   poolData: Omit<TaxiPool, 'id' | 'memberCount' | 'status' | 'createdAt'>
 ): Promise<string> => {
+  const response = await apiClient.post('/fare/create-taxi-pool', {
+    pickupLocation: (poolData as any).pickupLocation,
+    destination: poolData.destination,
+    departureTime: poolData.departureTime,
+    maxMembers: poolData.maxMembers,
+    notes: poolData.notes || null,
+  });
+  const poolId = String(response.data?.poolId || '');
+  if (!poolId) throw new Error('Backend did not return a Taxi Pool ID.');
   try {
-    const poolsRef = collection(db, 'taxiPools');
-
-    // Strip undefined values — Firestore rejects them (e.g. creatorImage: undefined)
-    const sanitize = (obj: Record<string, any>): Record<string, any> => {
-      return Object.fromEntries(
-        Object.entries(obj).filter(([, v]) => v !== undefined)
-      );
-    };
-
-    // Sanitize destination sub-object too
-    const sanitizedData = {
-      ...sanitize(poolData as Record<string, any>),
-      destination: sanitize(poolData.destination as Record<string, any>),
-      // Ensure optional fields use null instead of undefined
-      creatorImage: poolData.creatorImage ?? null,
-      notes: (poolData as any).notes ?? null,
-      price: (poolData as any).price ?? 40,
-    };
-
-    // 1. Add Taxi Pool document
-    const docRef = await addDoc(poolsRef, {
-      ...sanitizedData,
-      memberCount: 1, // Creator starts as the first member
-      status: 'OPEN',
-      createdAt: serverTimestamp()
-    });
-
-    const poolId = docRef.id;
-
-    // 2. Add creator to poolMembers
-    const memberRef = doc(db, 'poolMembers', `${poolId}_${poolData.creatorId}`);
-    await setDoc(memberRef, {
-      poolId,
-      passengerId: poolData.creatorId,
-      passengerName: poolData.creatorName,
-      passengerImage: poolData.creatorImage ?? null,
-      passengerCourse: poolData.creatorCourse,
-      passengerDivision: poolData.creatorDivision,
-      joinedAt: new Date().toISOString()
-    });
-
-    // 3. Initialize group chat for the pool
-    try {
-      await initializeGroupChat(poolId, 'taxipool', poolData.creatorId, poolData.creatorName, poolData.creatorImage ?? undefined);
-    } catch (chatErr) {
-      console.warn('[TAXI POOL SERVICE] Failed to initialize group chat:', chatErr);
-    }
-
-    console.log('[TAXI POOL SERVICE] ✅ Created Taxi Pool with ID:', poolId);
-    return poolId;
-  } catch (error) {
-    console.error('[TAXI POOL SERVICE] Error creating taxi pool:', error);
-    throw error;
+    await initializeGroupChat(poolId, 'taxipool', poolData.creatorId, poolData.creatorName, poolData.creatorImage);
+  } catch (chatErr) {
+    console.warn('[TAXI POOL SERVICE] Failed to initialize group chat:', chatErr);
   }
+  return poolId;
 };
 
 /**
@@ -154,8 +115,11 @@ export const subscribeToActivePools = (
     q,
     (snapshot) => {
       const pools: TaxiPool[] = [];
+      const nowMs = Date.now();
       snapshot.forEach((doc) => {
         const data = doc.data();
+        const departureMs = new Date(data.departureTime).getTime();
+        if (!Number.isFinite(departureMs) || departureMs <= nowMs) return;
         pools.push({
           id: doc.id,
           ...data,
@@ -353,72 +317,19 @@ export const subscribeToCreatorPools = (
  */
 export const createJoinRequest = async (
   poolId: string,
-  passenger: {
+  _passenger: {
     id: string;
     fullName: string;
     profileImage?: string;
     course: string;
     division: string;
   },
-  creatorId: string
+  _creatorId: string
 ): Promise<string> => {
-  try {
-    const requestsRef = collection(db, 'poolRequests');
-    
-    // Check if request already exists
-    const q = query(
-      requestsRef,
-      where('poolId', '==', poolId),
-      where('passengerId', '==', passenger.id)
-    );
-    const snap = await getDocs(q);
-    if (!snap.empty) {
-      const existingReq = snap.docs[0];
-      const status = existingReq.data().status;
-      if (status === 'requested') {
-        throw new Error('Join request is already pending approval.');
-      } else if (status === 'accepted') {
-        throw new Error('You are already a member of this pool.');
-      }
-    }
-
-    // Add new request
-    const docRef = await addDoc(requestsRef, {
-      poolId,
-      creatorId,
-      passengerId: passenger.id,
-      passengerName: passenger.fullName,
-      passengerImage: passenger.profileImage || null,
-      passengerCourse: passenger.course,
-      passengerDivision: passenger.division,
-      status: 'requested',
-      createdAt: serverTimestamp()
-    });
-
-    console.log('[TAXI POOL SERVICE] ✅ Created Join Request:', docRef.id);
-
-    // Send notification to the pool creator with the taxi-pool route type.
-    try {
-      await sendNotification(
-        creatorId,
-        'pool_request',
-        'New Pool Request',
-        `${passenger.fullName} requested to join your Taxi Pool`,
-        poolId,
-        docRef.id,
-        passenger.id,
-        passenger.fullName,
-        '/taxi-pool-details'
-      );
-    } catch (notifErr) {
-      console.warn('[TAXI POOL SERVICE] Notification dispatch failed:', notifErr);
-    }
-
-    return docRef.id;
-  } catch (error) {
-    console.error('[TAXI POOL SERVICE] Error requesting to join pool:', error);
-    throw error;
-  }
+  const response = await apiClient.post('/fare/create-taxi-pool-request', { poolId });
+  const requestId = String(response.data?.requestId || '');
+  if (!requestId) throw new Error('Backend did not return a Taxi Pool request ID.');
+  return requestId;
 };
 
 /**
@@ -448,9 +359,13 @@ export const acceptJoinRequest = async (
       }
 
       const poolData = poolSnap.data() as TaxiPool;
+      const departureMs = new Date(poolData.departureTime).getTime();
 
       if (poolData.status !== 'OPEN') {
         throw new Error(`This pool is currently ${poolData.status} and cannot accept members.`);
+      }
+      if (!Number.isFinite(departureMs) || departureMs <= Date.now()) {
+        throw new Error('This pool has already departed and cannot accept members.');
       }
       if (poolData.memberCount >= poolData.maxMembers) {
         throw new Error('This pool has reached its maximum member capacity.');

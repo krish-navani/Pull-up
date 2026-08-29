@@ -616,12 +616,7 @@ function PostRideScreenInner() {
     const loadRoutePreview = async () => {
       setLoadingRoute(true);
       try {
-        const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs';
-        const result = await fetchRoute(
-          formData.pickupLocation!,
-          formData.dropLocation!,
-          apiKey
-        );
+        const result = await fetchRoute(formData.pickupLocation!, formData.dropLocation!);
 
         if (result.success) {
           setRouteInfo({
@@ -859,7 +854,7 @@ function PostRideScreenInner() {
 
   const handleCreateRide = async () => {
     // Check if driver license is verified
-    const isLicenseVerified = auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'verified';
+    const isLicenseVerified = auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'approved' || auth.user?.licenseVerificationStatus === 'verified';
     if (!isLicenseVerified) {
       if (auth.user?.licenseVerificationStatus === 'pending') {
         setError('Your driving license is still under verification. You will be able to post rides once approved.');

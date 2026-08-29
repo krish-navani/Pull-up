@@ -9,6 +9,7 @@ import crypto from 'crypto';
 import admin from 'firebase-admin';
 import { getHaversineDistance, getDistanceToPolyline, decodePolyline, simplifyDouglasPeucker } from './routeMatching.js';
 import { registerFareRoutes } from './fareRoutes.js';
+import { getAuthoritativeRoute } from './fareRouteService.js';
 import { getStoredBookingAmountPaise } from './fareService.js';
 import { ATLAS_GEOFENCE_METERS, ATLAS_LOCATION } from './atlasConfig.js';
 import { consumeDeletionAuthorization, createDeletionAuthorization, deletePullUpAccount } from './accountDeletionService.js';
@@ -381,7 +382,7 @@ router.post('/verify-otp', verifyRateLimiter, async (req: Request, res: Response
       }
 
       // Mint a custom Firebase token for this userId
-      firebaseToken = await admin.auth().createCustomToken(userId);
+      firebaseToken = await admin.auth().createCustomToken(userId, { universityEmail: fullEmail });
       console.log(`[API] Generated custom token successfully for user: ${userId}`);
     } catch (authErr: any) {
       console.error('[API] Error generating custom Firebase token:', authErr);
@@ -418,7 +419,11 @@ router.post('/refresh-custom-token', async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: 'User document not found' });
     }
 
-    const firebaseToken = await admin.auth().createCustomToken(userId);
+    const email = String(userDoc.data()?.email || '').trim().toLowerCase();
+    if (!email.endsWith(config.universityDomain)) {
+      return res.status(400).json({ success: false, message: 'User identity email is invalid' });
+    }
+    const firebaseToken = await admin.auth().createCustomToken(userId, { universityEmail: email });
     console.log(`[API] Refreshed custom token for user: ${userId}`);
     return res.json({ success: true, firebaseToken, userId });
   } catch (err: any) {
@@ -452,6 +457,53 @@ const getAuthenticatedUserId = async (req: Request): Promise<string> => {
   return decoded.uid;
 };
 
+const canonicalNameFromUniversityEmail = (email: string): string => {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized.endsWith(config.universityDomain)) throw new Error('INVALID_UNIVERSITY_IDENTITY');
+  const localPart = normalized.slice(0, -config.universityDomain.length);
+  const courseTokens = new Set(['bba', 'bdes', 'btech', 'mba', 'bsc', 'bcom', 'ba', 'ma', 'mtech', 'msc', 'phd', 'honors']);
+  const parts = localPart.split('.')
+    .map(part => part.replace(/\d+/g, '').trim())
+    .filter(part => part && !courseTokens.has(part));
+  if (parts.length === 0) throw new Error('INVALID_UNIVERSITY_IDENTITY');
+  return parts.map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
+};
+
+router.post('/profile/initialize', async (req: Request, res: Response) => {
+  try {
+    const authorization = req.headers.authorization || '';
+    if (!authorization.startsWith('Bearer ')) throw new Error('UNAUTHENTICATED');
+    const decoded = await admin.auth().verifyIdToken(authorization.slice(7));
+    const email = String((decoded as any).universityEmail || '').trim().toLowerCase();
+    const fullName = canonicalNameFromUniversityEmail(email);
+    const profile = req.body?.profile || {};
+    const allowed = {
+      id: decoded.uid, email, fullName,
+      phone: String(profile.phone || '').trim(),
+      year: String(profile.year || ''), course: String(profile.course || ''),
+      division: String(profile.division || ''),
+      role: profile.role === 'driver' ? 'driver' : 'passenger',
+      profileImage: profile.profileImage || null,
+      homeAddress: profile.homeAddress || null,
+      licenseVerified: false, profileComplete: true,
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    const db = getDb();
+    const ref = db.collection('users').doc(decoded.uid);
+    if ((await ref.get()).exists) return res.status(409).json({ success: false, code: 'PROFILE_EXISTS', message: 'Profile already exists.' });
+    await ref.create(allowed);
+    await db.collection('publicProfiles').doc(decoded.uid).set({
+      id: decoded.uid, fullName, profileImage: allowed.profileImage, role: allowed.role,
+      course: allowed.course, year: allowed.year, division: allowed.division,
+      licenseVerified: false, rating: 0, completedRides: 0, status: 'offline',
+      createdAt: allowed.createdAt, updatedAt: allowed.updatedAt,
+    });
+    return res.status(201).json({ success: true, user: allowed });
+  } catch (error: any) {
+    const code = String(error?.message || 'PROFILE_INITIALIZATION_FAILED');
+    return res.status(code === 'UNAUTHENTICATED' ? 401 : 400).json({ success: false, code, message: 'Profile identity could not be initialized.' });
+  }
+});
 const normalizeDeletionEmail = (value: unknown): string => typeof value === 'string' ? value.trim().toLowerCase() : '';
 
 router.post('/account-deletion/send-otp', rateLimiter, async (req: Request, res: Response) => {
@@ -698,6 +750,174 @@ router.post('/verify-subscription', async (req: Request, res: Response) => {
   }
 });
 
+const getMonthlyAutopayPlan = () => {
+  const planId = String(process.env.RAZORPAY_MONTHLY_PLAN_ID || '').trim();
+  const amountPaise = Number(process.env.RAZORPAY_MONTHLY_PLAN_AMOUNT_PAISE);
+  if (!planId || !Number.isInteger(amountPaise) || amountPaise <= 0) throw new Error('AUTOPAY_PLAN_NOT_CONFIGURED');
+  return { planId, amountPaise, currency: 'INR', interval: 'monthly' as const };
+};
+
+router.post('/subscriptions/autopay/create', async (req: Request, res: Response) => {
+  try {
+    const userId = await getAuthenticatedUserId(req);
+    const plan = getMonthlyAutopayPlan();
+    const db = getDb();
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) return res.status(404).json({ success: false, message: 'User not found.' });
+    const active = await db.collection('subscriptions').where('userId', '==', userId)
+      .where('provider', '==', 'razorpay').where('kind', '==', 'autopay').get();
+    const reusable = active.docs.map(doc => ({ id: doc.id, ...doc.data() } as any))
+      .find(sub => ['created', 'authenticated', 'active', 'pending'].includes(sub.status));
+    if (reusable) {
+      return res.json({ success: true, subscriptionId: reusable.id, keyId: config.razorpay.keyId,
+        amount: plan.amountPaise, currency: plan.currency, status: reusable.status });
+    }
+    const providerSubscription = await (getRazorpay() as any).subscriptions.create({
+      plan_id: plan.planId,
+      total_count: 120,
+      quantity: 1,
+      customer_notify: 1,
+      notes: { userId, product: 'driver_monthly_autopay' },
+    });
+    await db.collection('subscriptions').doc(providerSubscription.id).set({
+      userId, provider: 'razorpay', kind: 'autopay', planId: plan.planId,
+      product: 'driver_monthly', amountPaise: plan.amountPaise, currency: plan.currency,
+      status: providerSubscription.status || 'created',
+      currentStart: providerSubscription.current_start || null,
+      currentEnd: providerSubscription.current_end || null,
+      nextChargeAt: providerSubscription.charge_at || null,
+      createdAt: admin.firestore.Timestamp.now(), updatedAt: admin.firestore.Timestamp.now(),
+    });
+    return res.status(201).json({ success: true, subscriptionId: providerSubscription.id,
+      keyId: config.razorpay.keyId, amount: plan.amountPaise, currency: plan.currency,
+      status: providerSubscription.status || 'created' });
+  } catch (error: any) {
+    const code = String(error?.message || 'AUTOPAY_CREATE_FAILED');
+    console.error('[AUTOPAY] create failed:', error);
+    return res.status(code === 'AUTOPAY_PLAN_NOT_CONFIGURED' ? 503 : 500)
+      .json({ success: false, code, message: code === 'AUTOPAY_PLAN_NOT_CONFIGURED'
+        ? 'AutoPay is not configured for this environment.' : 'AutoPay authorization could not be started.' });
+  }
+});
+
+router.post('/subscriptions/autopay/verify', async (req: Request, res: Response) => {
+  try {
+    const userId = await getAuthenticatedUserId(req);
+    const subscriptionId = String(req.body?.razorpay_subscription_id || '');
+    const paymentId = String(req.body?.razorpay_payment_id || '');
+    const signature = String(req.body?.razorpay_signature || '');
+    if (!subscriptionId || !paymentId || !signature) return res.status(400).json({ success: false, message: 'Missing mandate authorization details.' });
+    const expected = crypto.createHmac('sha256', config.razorpay.keySecret)
+      .update(paymentId + '|' + subscriptionId).digest('hex');
+    if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) {
+      return res.status(400).json({ success: false, message: 'Mandate signature verification failed.' });
+    }
+    const db = getDb();
+    const ref = db.collection('subscriptions').doc(subscriptionId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data()!.userId !== userId) return res.status(403).json({ success: false, message: 'Subscription ownership mismatch.' });
+    const provider = await (getRazorpay() as any).subscriptions.fetch(subscriptionId);
+    await ref.update({ status: provider.status, authorizationPaymentId: paymentId,
+      currentStart: provider.current_start || null, currentEnd: provider.current_end || null,
+      nextChargeAt: provider.charge_at || null, updatedAt: admin.firestore.Timestamp.now() });
+    return res.json({ success: true, status: provider.status });
+  } catch (error: any) {
+    console.error('[AUTOPAY] verify failed:', error);
+    return res.status(500).json({ success: false, message: 'AutoPay authorization could not be verified.' });
+  }
+});
+
+router.get('/subscriptions/autopay/status', async (req: Request, res: Response) => {
+  try {
+    const userId = await getAuthenticatedUserId(req);
+    const db = getDb();
+    const snapshot = await db.collection('subscriptions').where('userId', '==', userId)
+      .where('provider', '==', 'razorpay').where('kind', '==', 'autopay').get();
+    const subscriptions = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any))
+      .sort((a, b) => Number(b.createdAt?.toMillis?.() || 0) - Number(a.createdAt?.toMillis?.() || 0));
+    return res.json({ success: true, subscription: subscriptions[0] || null });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, message: 'Subscription status could not be loaded.' });
+  }
+});
+
+router.post('/subscriptions/autopay/pause', async (req: Request, res: Response) => {
+  try {
+    const userId = await getAuthenticatedUserId(req);
+    const subscriptionId = String(req.body?.subscriptionId || '');
+    const db = getDb();
+    const ref = db.collection('subscriptions').doc(subscriptionId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data()!.userId !== userId) return res.status(403).json({ success: false, message: 'Subscription ownership mismatch.' });
+    const provider = await (getRazorpay() as any).subscriptions.pause(subscriptionId, { pause_at: 'now' });
+    await ref.update({ status: provider.status || 'paused', updatedAt: admin.firestore.Timestamp.now() });
+    return res.json({ success: true, status: provider.status || 'paused' });
+  } catch (error: any) {
+    console.error('[AUTOPAY] pause failed:', error);
+    return res.status(500).json({ success: false, message: 'AutoPay could not be paused.' });
+  }
+});
+
+router.post('/subscriptions/autopay/cancel', async (req: Request, res: Response) => {
+  try {
+    const userId = await getAuthenticatedUserId(req);
+    const subscriptionId = String(req.body?.subscriptionId || '');
+    const db = getDb();
+    const ref = db.collection('subscriptions').doc(subscriptionId);
+    const snap = await ref.get();
+    if (!snap.exists || snap.data()!.userId !== userId) return res.status(403).json({ success: false, message: 'Subscription ownership mismatch.' });
+    const provider = await (getRazorpay() as any).subscriptions.cancel(subscriptionId, { cancel_at_cycle_end: 1 });
+    await ref.update({ status: provider.status || 'cancelled', cancelAtCycleEnd: true,
+      updatedAt: admin.firestore.Timestamp.now() });
+    return res.json({ success: true, status: provider.status || 'cancelled' });
+  } catch (error: any) {
+    console.error('[AUTOPAY] cancel failed:', error);
+    return res.status(500).json({ success: false, message: 'AutoPay could not be cancelled.' });
+  }
+});
+
+router.post('/razorpay/webhook', async (req: Request, res: Response) => {
+  try {
+    const secret = String(process.env.RAZORPAY_WEBHOOK_SECRET || '');
+    if (!secret) throw new Error('WEBHOOK_NOT_CONFIGURED');
+    const signature = String(req.headers['x-razorpay-signature'] || '');
+    const rawBody = (req as any).rawBody as Buffer | undefined;
+    if (!rawBody || !signature) return res.status(400).json({ success: false });
+    const expected = crypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+    if (!crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(signature))) {
+      return res.status(400).json({ success: false });
+    }
+    const event = req.body;
+    const subscription = event?.payload?.subscription?.entity;
+    if (!subscription?.id) return res.json({ success: true, ignored: true });
+    const statusByEvent: Record<string, string> = {
+      'subscription.authenticated': 'authenticated', 'subscription.activated': 'active',
+      'subscription.charged': 'active', 'subscription.pending': 'pending',
+      'subscription.paused': 'paused', 'subscription.resumed': 'active',
+      'subscription.halted': 'payment_failed', 'subscription.cancelled': 'cancelled',
+    };
+    const status = statusByEvent[event.event] || subscription.status;
+    const db = getDb();
+    const ref = db.collection('subscriptions').doc(subscription.id);
+    const snap = await ref.get();
+    if (!snap.exists) return res.json({ success: true, ignored: true });
+    const data = snap.data()!;
+    await ref.update({ status, currentStart: subscription.current_start || null,
+      currentEnd: subscription.current_end || null, nextChargeAt: subscription.charge_at || null,
+      lastWebhookEvent: event.event, updatedAt: admin.firestore.Timestamp.now() });
+    const userUpdate: any = {
+      subscriptionStatus: status === 'active' ? 'active' : status,
+      subscriptionProvider: 'razorpay', subscriptionId: subscription.id,
+      updatedAt: admin.firestore.Timestamp.now(),
+    };
+    if (subscription.current_end) userUpdate.subscriptionExpiry = new Date(subscription.current_end * 1000).toISOString();
+    await db.collection('users').doc(data.userId).set(userUpdate, { merge: true });
+    return res.json({ success: true });
+  } catch (error: any) {
+    console.error('[RAZORPAY WEBHOOK] failed:', error);
+    return res.status(500).json({ success: false });
+  }
+});
 const releaseExpiredBookings = async () => {
   try {
     const db = getDb();
@@ -967,6 +1187,10 @@ router.post('/create-order', async (req: Request, res: Response) => {
       status = 400;
       code = 'ORDER_MISMATCH';
       message = 'Payment order does not match this booking';
+    } else if (error.message === 'FARE_SNAPSHOT_MISSING' || error.message === 'FARE_NOT_LOCKED') {
+      status = 409;
+      code = error.message;
+      message = 'This booking does not have a server-generated locked fare';
     }
 
     res.status(status).json({ success: false, code, message });
@@ -4877,117 +5101,26 @@ async function triggerBackgroundRouteOptimization(rideId: string) {
   });
 }
 
-interface GoogleDirectionsResponse {
-  status: string;
-  routes: any;
-  error_message?: string;
-}
-
 interface GoogleGeocodeResponse {
   status: string;
   results: any;
 }
 
-// Helper: Get optimized directions with cache layer (TTL: 24h)
+// Shared Routes API path used by detour optimization and fare calculation.
 async function getDirections(
   origin: { latitude: number; longitude: number },
   destination: { latitude: number; longitude: number },
   waypoints: Array<{ latitude: number; longitude: number }>,
   db: admin.firestore.Firestore
-): Promise<{ distanceMeters: number; durationSeconds: number; polyline: string; source: 'google' | 'cache' | 'fallback' }> {
-  const waypointsHash = waypoints
-    .map(w => `${w.latitude.toFixed(5)},${w.longitude.toFixed(5)}`)
-    .join('|');
-  const cacheKey = `${origin.latitude.toFixed(5)},${origin.longitude.toFixed(5)}_${destination.latitude.toFixed(5)},${destination.longitude.toFixed(5)}_${waypointsHash}`;
-
-  try {
-    const cacheDoc = await db.collection('routeCache').doc(cacheKey).get();
-    if (cacheDoc.exists) {
-      const cacheData = cacheDoc.data();
-      if (cacheData && Date.now() - new Date(cacheData.createdAt).getTime() < 24 * 60 * 60 * 1000) {
-        console.log('[CACHE HIT] Returning route directions from cache');
-        return {
-          distanceMeters: cacheData.distanceMeters,
-          durationSeconds: cacheData.durationSeconds,
-          polyline: cacheData.polyline,
-          source: 'cache',
-        };
-      }
-    }
-  } catch (cacheErr) {
-    console.warn('[ROUTE CACHE] Cache read error:', cacheErr);
-  }
-
-  // Cache Miss - Call Google Directions API
-  const apiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
-  
-  // Simulated Quota Exceeded Trigger
-  if (apiKey === 'MOCK_429_LIMIT') {
-    console.warn('[GOOGLE ROUTES] Simulating quota limit (429) fallback');
-  } else {
-    const originStr = `${origin.latitude},${origin.longitude}`;
-    const destStr = `${destination.latitude},${destination.longitude}`;
-
-    let url = `https://maps.googleapis.com/maps/api/directions/json?origin=${originStr}&destination=${destStr}&mode=driving&key=${apiKey}`;
-    if (waypoints.length > 0) {
-      const wps = 'optimize:true|' + waypoints.map(w => `${w.latitude},${w.longitude}`).join('|');
-      url += `&waypoints=${encodeURIComponent(wps)}`;
-    }
-
-    console.log('[GOOGLE ROUTES] Requesting routes optimization:', { waypointsCount: waypoints.length });
-
-    try {
-      const response = await fetch(url);
-      const data = (await response.json()) as GoogleDirectionsResponse;
-
-      if (data.status === 'OK' && data.routes?.length > 0) {
-        const route = data.routes[0];
-        let distanceMeters = 0;
-        let durationSeconds = 0;
-        route.legs.forEach((leg: any) => {
-          distanceMeters += leg.distance?.value || 0;
-          durationSeconds += leg.duration?.value || 0;
-        });
-        const polyline = route.overview_polyline.points;
-
-        // Write to Cache
-        try {
-          await db.collection('routeCache').doc(cacheKey).set({
-            polyline,
-            distanceMeters,
-            durationSeconds,
-            createdAt: new Date().toISOString(),
-          });
-        } catch (cacheSetErr) {
-          console.warn('[ROUTE CACHE] Cache write error:', cacheSetErr);
-        }
-
-        return { distanceMeters, durationSeconds, polyline, source: 'google' };
-      } else {
-        console.warn('[GOOGLE ROUTES] Failed with status:', data.status, data.error_message);
-      }
-    } catch (fetchErr) {
-      console.error('[GOOGLE ROUTES] Fetch error:', fetchErr);
-    }
-  }
-
-  // Fallback to straight line if API fails or quota limit simulated
-  let distanceMeters = getHaversineDistance(origin, destination);
-  waypoints.forEach((wp, idx) => {
-    if (idx === 0) {
-      distanceMeters += getHaversineDistance(origin, wp);
-    } else {
-      distanceMeters += getHaversineDistance(waypoints[idx - 1], wp);
-    }
-  });
-  if (waypoints.length > 0) {
-    distanceMeters += getHaversineDistance(waypoints[waypoints.length - 1], destination);
-  }
-  const durationSeconds = Math.round(distanceMeters / 13.88); // 50 km/h avg
-
-  return { distanceMeters, durationSeconds, polyline: '', source: 'fallback' };
+): Promise<{ distanceMeters: number; durationSeconds: number; polyline: string; source: 'google' | 'cache' }> {
+  const route = await getAuthoritativeRoute(db, origin, destination, waypoints);
+  return {
+    distanceMeters: route.distanceMeters,
+    durationSeconds: route.durationSeconds,
+    polyline: route.encodedPolyline,
+    source: route.cacheHit ? 'cache' : 'google',
+  };
 }
-
 // Helper: Reverse geocode coordinate to clean name
 async function reverseGeocode(lat: number, lng: number): Promise<string> {
   const apiKey = process.env.GOOGLE_MAPS_API_KEY || process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || '';
@@ -5226,7 +5359,7 @@ router.post('/evaluate-detour', async (req: Request, res: Response) => {
         distanceToPolyline: distanceToCorridor,
         newPolyline: newRes.polyline,
         optimizationSource: newRes.source,
-        congestionMode: newRes.source === 'fallback',
+        congestionMode: false,
       });
     } else {
       const recommendations = await generateRecommendations();
@@ -5239,7 +5372,7 @@ router.post('/evaluate-detour', async (req: Request, res: Response) => {
         distanceToPolyline: distanceToCorridor,
         recommendations,
         optimizationSource: newRes.source,
-        congestionMode: newRes.source === 'fallback',
+        congestionMode: false,
       });
     }
   } catch (err: any) {

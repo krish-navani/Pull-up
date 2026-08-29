@@ -25,7 +25,7 @@ export default function UserAvatar({ userId, imageUrl, name, size = 44, style }:
   React.useEffect(() => {
     if (!userId) return;
     try {
-      const userRef = doc(db, 'users', userId);
+      const userRef = doc(db, 'publicProfiles', userId);
       const unsub = onSnapshot(userRef, (snap) => {
         if (snap.exists()) {
           const data = snap.data();

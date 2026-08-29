@@ -66,7 +66,7 @@ function TaxiPoolCreatorRow({ creatorId, defaultName, defaultCourse, defaultDivi
 
   useEffect(() => {
     if (!creatorId) return;
-    const userRef = doc(db, 'users', creatorId);
+    const userRef = doc(db, 'publicProfiles', creatorId);
     const unsub = onSnapshot(
       userRef,
       (docSnap) => {
@@ -103,7 +103,7 @@ function TaxiPoolMemberRow({ member, creatorId }: { member: PoolMember; creatorI
 
   useEffect(() => {
     if (!member.passengerId) return;
-    const userRef = doc(db, 'users', member.passengerId);
+    const userRef = doc(db, 'publicProfiles', member.passengerId);
     const unsub = onSnapshot(
       userRef,
       (docSnap) => {
@@ -152,7 +152,7 @@ function TaxiPoolRequestRow({
 
   useEffect(() => {
     if (!req.passengerId) return;
-    const userRef = doc(db, 'users', req.passengerId);
+    const userRef = doc(db, 'publicProfiles', req.passengerId);
     const unsub = onSnapshot(
       userRef,
       (docSnap) => {
@@ -401,11 +401,7 @@ export default function TaxiPoolDetailsScreen() {
       setIsLoadingRoute(true);
       try {
         // We always draw route between Atlas hub and the destination chosen
-        const result = await fetchRoute(
-          ATLAS_LOCATION,
-          pool.destination,
-          'AIzaSyCIZ1Lccen5Ek7-0cXIU3Pxv5he7vhmZ6Y'
-        );
+        const result = await fetchRoute(ATLAS_LOCATION, pool.destination);
         setRouteCoordinates(result.points);
 
         if (mapRef.current && typeof (mapRef.current as any).fitToCoordinates === 'function' && result.points && result.points.length > 1) {
@@ -815,6 +811,18 @@ export default function TaxiPoolDetailsScreen() {
             </View>
           </View>
 
+          {(pool as any).pricing ? (
+            <View style={styles.notesCard}>
+              <MaterialCommunityIcons name="cash-multiple" size={20} color={WARM_CORE.primary} />
+              <Text style={styles.sectionLabel}>Locked fare estimate</Text>
+              <Text style={styles.notesText}>
+                Road distance {((pool as any).pricing.distanceMeters / 1000).toFixed(2)} km ·
+                {Math.ceil((pool as any).pricing.durationSeconds / 60)} min
+              </Text>
+              <Text style={[styles.destText, { marginTop: 6 }]}>₹{((pool as any).pricing.perMemberFarePaise / 100).toFixed(0)} per member</Text>
+              <Text style={styles.notesText}>Vehicle estimate ₹{((pool as any).pricing.totalVehicleFarePaise / 100).toFixed(0)} · {(pool as any).pricing.version}</Text>
+            </View>
+          ) : null}
           {pool.notes ? (
             <View style={styles.notesCard}>
               <MaterialCommunityIcons name="format-quote-open" size={20} color={WARM_CORE.primary} style={{ marginBottom: 4 }} />

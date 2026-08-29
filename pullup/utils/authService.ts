@@ -10,6 +10,8 @@ import { auth, db } from './firebase';
 import { checkEmailExists, sendOTPEmail, verifyOTP } from './otpService';
 import { syncUserSession } from './userSessionService';
 import { forensicTrace } from './forensicLogger';
+import { syncPublicProfile } from './publicProfileService';
+import apiClient from './backendApiClient';
 
 const UNIVERSITY_DOMAIN = '@atlasskilltech.university';
 const STORAGE_KEY_USER = 'pullup_user_data';
@@ -168,42 +170,25 @@ export const verifyOTPAndCreateAccount = async (
     }
     console.log('✅ Forensic Check Passed: Auth UID matches User Document ID.');
 
-    // Create user document in Firestore
-    const userData: User = {
-      id: firebaseUser.uid,
-      email: fullEmail,
-      fullName: signUpData.fullName,
-      phone: signUpData.phone || '',
-      year: signUpData.year,
-      course: signUpData.course,
-      division: signUpData.division,
-      role: signUpData.role,
-      profileImage: signUpData.profileImage || null,
-      homeAddress: signUpData.homeAddress || null,
-      licenseVerified: false,
-      profileComplete: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    console.log('[AUTH] Creating account with profileComplete =', userData.profileComplete);
-    await forensicTrace(
-      'setDoc',
-      'users',
-      firebaseUser.uid,
-      userData,
-      () => setDoc(doc(db, 'users', firebaseUser.uid), userData),
-      {
-        path: `users/${firebaseUser.uid}`,
-        destinationId: firebaseUser.uid,
-        contextUserId: firebaseUser.uid,
-      }
-    );
-
-    // Save user data to device storage for persistent login
+    // The backend derives immutable identity from the verified university-email
+    // claim. Client-supplied names are intentionally ignored.
+    const profileResponse = await apiClient.post('/profile/initialize', {
+      profile: {
+        phone: signUpData.phone || '',
+        year: signUpData.year,
+        course: signUpData.course,
+        division: signUpData.division,
+        role: signUpData.role,
+        profileImage: signUpData.profileImage || null,
+        homeAddress: signUpData.homeAddress || null,
+      },
+    });
+    const userData = profileResponse.data?.user as User | undefined;
+    if (!userData || userData.id !== firebaseUser.uid) {
+      throw new Error('Onboarding aborted: Canonical profile initialization failed.');
+    }
     await saveUserToStorage(userData);
-
-    console.log('[AUTH] Account created successfully with profileComplete:', userData.profileComplete);
+    console.log('[AUTH] Canonical account created successfully with profileComplete:', userData.profileComplete);
     return userData;
   } catch (error: any) {
     throw {
@@ -220,46 +205,25 @@ export const verifyOTPAndLogin = async (email: string, otp: string): Promise<Use
   try {
     const fullEmail = email.includes('@') ? email : email + UNIVERSITY_DOMAIN;
 
-    // Verify OTP
     const verifyResult = await verifyOTP(email, otp);
-
-    // Get user data from Firestore
-    const usersQuery = query(collection(db, 'users'), where('email', '==', fullEmail));
-    const snapshot = await forensicTrace('getDocs', 'users', null, { email: fullEmail }, () =>
-      getDocs(usersQuery)
-    );
-
-    if (snapshot.empty) {
-      throw new Error('User not found. Please sign up first.');
-    }
-
-    const userDoc = snapshot.docs[0];
-    const userData = ensureUserDefaults(userDoc.data());
-
-    console.log('[AUTH] Login: User data:', {
-      profileComplete: userData.profileComplete,
-      role: userData.role,
-      licenseVerified: userData.licenseVerified,
-    });
-
-    // Note: We no longer block login for unverified drivers.
-    // The navigation guard in _layout.tsx will redirect them to license-upload.
-    // This prevents the circular dependency where they can't access any screens.
-    if (userData.role === 'driver' && !userData.licenseVerified) {
-      console.warn('[AUTH] ⚠️ Driver license not verified - navigation guard will redirect to license verification');
-    }
-
-    // Sign in using Custom Token. Do not fall back to anonymous auth; it can create
-    // a stale userSessions mapping and make getPersistentUserId() differ from uid.
-    if (verifyResult.firebaseToken) {
-      console.log('[AUTH] Login: Signing in with Custom Token...');
-      await signInWithCustomToken(auth, verifyResult.firebaseToken);
-    } else {
+    if (!verifyResult.firebaseToken) {
       throw new Error('Login aborted: Backend did not return a Firebase custom token.');
     }
-    console.log('[AUTH] Login: Firebase Auth completed. UID:', auth.currentUser?.uid, '| User Profile ID:', userData.id);
-    console.log('[AUTH] Login: UIDs match?', auth.currentUser?.uid === userData.id);
+    console.log('[AUTH] Login: Signing in with Custom Token...');
+    await signInWithCustomToken(auth, verifyResult.firebaseToken);
     await syncUserSession(auth.currentUser!.uid);
+
+    const activeUid = auth.currentUser?.uid;
+    if (!activeUid) throw new Error('Authenticated user is missing.');
+    const userDoc = await forensicTrace('getDoc', 'users', activeUid, null, () =>
+      getDoc(doc(db, 'users', activeUid))
+    );
+    if (!userDoc.exists()) throw new Error('User not found. Please sign up first.');
+    const userData = ensureUserDefaults(userDoc.data());
+    if (String(userData.email || '').toLowerCase() !== fullEmail.toLowerCase()) {
+      throw new Error('Authenticated profile does not match the verified email.');
+    }
+    await syncPublicProfile(activeUid, userData);
 
     // Save user data to device storage for persistent login
     console.log('[AUTH] Saving user to storage with profileComplete:', userData.profileComplete);
@@ -312,7 +276,9 @@ export const getCurrentUser = async (): Promise<User | null> => {
       );
 
       if (userDoc.exists()) {
-        return ensureUserDefaults(userDoc.data());
+        const userData = ensureUserDefaults(userDoc.data());
+        await syncPublicProfile(activeFirebaseUser.uid, userData);
+        return userData;
       }
 
       const storedUser = await loadUserFromStorage();
@@ -324,8 +290,9 @@ export const getCurrentUser = async (): Promise<User | null> => {
           updatedAt: new Date().toISOString(),
         };
         await forensicTrace('setDoc', 'users', activeFirebaseUser.uid, userData, () =>
-          setDoc(userRef, userData)
+          setDoc(userRef, userData, { merge: true })
         );
+        await syncPublicProfile(activeFirebaseUser.uid, userData);
         return userData;
       }
 
@@ -350,7 +317,9 @@ export const getCurrentUser = async (): Promise<User | null> => {
         getDoc(userRef)
       );
       if (userDoc.exists()) {
-        return ensureUserDefaults(userDoc.data());
+        const userData = ensureUserDefaults(userDoc.data());
+        await syncPublicProfile(storedUser.id, userData);
+        return userData;
       } else {
         // Self-healing: Re-create the user document in Firestore using the local cached user data.
         // This handles cases where the database was wiped but the local app is still logged in.
@@ -360,8 +329,9 @@ export const getCurrentUser = async (): Promise<User | null> => {
           updatedAt: new Date().toISOString(),
         };
         await forensicTrace('setDoc', 'users', storedUser.id, userData, () =>
-          setDoc(userRef, userData)
+          setDoc(userRef, userData, { merge: true })
         );
+        await syncPublicProfile(storedUser.id, userData);
         console.log('[AUTH] ✅ Re-created user document in Firestore.');
         return userData;
       }
@@ -394,15 +364,18 @@ export const getCurrentUser = async (): Promise<User | null> => {
           updatedAt: new Date().toISOString(),
         };
         await forensicTrace('setDoc', 'users', firebaseUser.uid, userData, () =>
-          setDoc(userRef, userData)
+          setDoc(userRef, userData, { merge: true })
         );
+        await syncPublicProfile(firebaseUser.uid, userData);
         console.log('[AUTH] ✅ Re-created user document on active UID.');
         return userData;
       }
       return null;
     }
 
-    return ensureUserDefaults(userDoc.data());
+    const userData = ensureUserDefaults(userDoc.data());
+    await syncPublicProfile(firebaseUser.uid, userData);
+    return userData;
   } catch (error) {
     return null;
   }
@@ -463,18 +436,20 @@ export const verifyOTPAndAutoAuth = async (email: string, otp: string): Promise<
     if (emailExists) {
       // Existing user - login
       console.log('[AUTH] Existing user found, fetching user data from Firestore...');
-      const usersQuery = query(collection(db, 'users'), where('email', '==', fullEmail));
-      const snapshot = await forensicTrace('getDocs', 'users', null, { email: fullEmail }, () =>
-        getDocs(usersQuery)
+      const activeUid = auth.currentUser?.uid;
+      if (!activeUid) throw new Error('Authenticated user is missing.');
+      const userDoc = await forensicTrace('getDoc', 'users', activeUid, null, () =>
+        getDoc(doc(db, 'users', activeUid))
       );
-
-      if (snapshot.empty) {
-        console.error('[AUTH] ❌ User email found but no user document in Firestore');
+      if (!userDoc.exists()) {
+        console.error('[AUTH] User email found but no self user document in Firestore');
         throw new Error('User profile not found');
       }
-
-      const userDoc = snapshot.docs[0];
       const userData = ensureUserDefaults(userDoc.data());
+      if (String(userData.email || '').toLowerCase() !== fullEmail.toLowerCase()) {
+        throw new Error('Authenticated profile does not match the verified email.');
+      }
+      await syncPublicProfile(activeUid, userData);
       
       console.log('[AUTH] Auto-Auth: Firebase Auth UID:', auth.currentUser?.uid, '| User Profile ID:', userData.id);
       console.log('[AUTH] Auto-Auth: UIDs match?', auth.currentUser?.uid === userData.id);
@@ -540,7 +515,9 @@ export const updateUserProfile = async (userId: string, updates: Partial<User>):
       getDoc(userRef)
     );
     if (userDoc.exists()) {
-      return ensureUserDefaults(userDoc.data());
+      const userData = ensureUserDefaults(userDoc.data());
+      await syncPublicProfile(userId, userData);
+      return userData;
     }
     throw new Error('User document not found after update');
   } catch (error: any) {

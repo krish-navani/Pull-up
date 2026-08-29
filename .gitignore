@@ -54,3 +54,9 @@ credentials/
 # IDE files
 *.code-workspace
 
+# Build artifacts, logs, and backups
+*.apk
+*.log
+backups/
+
+

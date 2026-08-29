@@ -46,6 +46,7 @@ function CustomTabBar({ state, descriptors, navigation }: any) {
     } else {
       const isLicenseVerified =
         auth.user?.licenseVerified === true ||
+        auth.user?.licenseVerificationStatus === 'approved' ||
         auth.user?.licenseVerificationStatus === 'verified';
       if (!isLicenseVerified) {
         if (auth.user?.licenseVerificationStatus === 'pending') {

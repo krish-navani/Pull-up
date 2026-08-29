@@ -202,7 +202,7 @@ export const createRideInFirestore = async (
 
     try {
       if (rideData.carModel && driverId) {
-        const userRef = doc(db, 'users', driverId);
+        const userRef = doc(db, 'publicProfiles', driverId);
         const userSnap = await getDoc(userRef);
         if (userSnap.exists()) {
           const userData = userSnap.data();

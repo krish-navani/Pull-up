@@ -183,7 +183,7 @@ export default function GroupChatScreen() {
     const unsubs: (() => void)[] = [];
     members.forEach((member) => {
       if (!member.id) return;
-      const userRef = doc(db, 'users', member.id);
+      const userRef = doc(db, 'publicProfiles', member.id);
       const unsubUser = onSnapshot(userRef, (snap) => {
         if (snap.exists()) {
           const userData = snap.data();

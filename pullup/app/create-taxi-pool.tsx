@@ -28,8 +28,9 @@ import { Location } from '@/types';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
 import { fetchRoute } from '@/utils/routeUtils';
+import apiClient from '@/utils/backendApiClient';
 
-const BYPASS_SUBSCRIPTION_CHECK = true;
+const BYPASS_SUBSCRIPTION_CHECK = false;
 
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import { ATLAS_LOCATION } from '@/utils/atlasLocationUtils';
@@ -81,7 +82,6 @@ export default function CreateTaxiPoolScreen() {
   const [departureTime, setDepartureTime] = useState<string>('');
   const [maxMembers, setMaxMembers] = useState<number>(4);
   const [notes, setNotes] = useState<string>('');
-  const [price, setPrice] = useState<string>('40');
   
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
@@ -97,7 +97,7 @@ export default function CreateTaxiPoolScreen() {
     durationSeconds: number;
   } | null>(null);
   const [loadingRoute, setLoadingRoute] = useState(false);
-  const [priceSuggestion, setPriceSuggestion] = useState('₹40');
+  const [taxiFareQuote, setTaxiFareQuote] = useState<any>(null);
 
   const handleSwapRoute = () => {
     const temp = pickup;
@@ -116,12 +116,7 @@ export default function CreateTaxiPoolScreen() {
     const loadRoutePreview = async () => {
       setLoadingRoute(true);
       try {
-        const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs';
-        const result = await fetchRoute(
-          pickup,
-          destination,
-          apiKey
-        );
+        const result = await fetchRoute(pickup, destination);
 
         if (result.success) {
           setRouteInfo({
@@ -132,15 +127,12 @@ export default function CreateTaxiPoolScreen() {
             durationSeconds: result.durationSeconds || 0,
           });
 
-          const distanceKm = (result.distanceMeters || 0) / 1000;
-          if (distanceKm > 0) {
-            const totalFare = distanceKm * 20;
-            const suggestedPerSeat = Math.max(30, Math.round(totalFare / maxMembers));
-            setPriceSuggestion(`₹${suggestedPerSeat}`);
-            if (!price || price === '40') {
-              setPrice(suggestedPerSeat.toString());
-            }
-          }
+          const quoteResponse = await apiClient.post('/fare/taxi-pool-quote', {
+            pickupLocation: pickup,
+            destination,
+            maxMembers,
+          });
+          setTaxiFareQuote(quoteResponse.data);
         }
       } catch (err) {
         console.warn('[CREATE TAXI] Failed to fetch route preview:', err);
@@ -272,6 +264,10 @@ export default function CreateTaxiPoolScreen() {
       setError('Please select a destination');
       return;
     }
+    if (!taxiFareQuote?.pricing) {
+      setError('Wait for the road fare estimate before creating the pool');
+      return;
+    }
     if (!departureDate) {
       setError('Please select departure date');
       return;
@@ -326,7 +322,6 @@ export default function CreateTaxiPoolScreen() {
         departureTime: departureDateTime,
         maxMembers,
         notes: notes.trim() || null,
-        price: parseInt(price, 10) || 40
       } as any);
 
       Alert.alert(
@@ -608,23 +603,26 @@ export default function CreateTaxiPoolScreen() {
               </View>
             </View>
 
-            {/* ESTIMATED PRICE */}
+            {/* AUTHORITATIVE FARE ESTIMATE */}
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>ESTIMATED FARE / PRICE PER SEAT</Text>
-              <Text style={styles.sectionSubtitle}>Enter the estimated price per seat for the shared cab</Text>
-              <View style={styles.priceInputRow}>
-                <View style={styles.priceSymbolContainer}>
-                  <Text style={styles.priceSymbolText}>₹</Text>
+              <Text style={styles.sectionTitle}>ESTIMATED SHARED TAXI FARE</Text>
+              <Text style={styles.sectionSubtitle}>Calculated from the Google road route and locked when a rider requests to join.</Text>
+              {taxiFareQuote?.pricing ? (
+                <View style={styles.priceInputRow}>
+                  <View style={{ flex: 1, gap: 8 }}>
+                    <Text style={styles.sectionSubtitle}>Road distance: {(taxiFareQuote.pricing.distanceMeters / 1000).toFixed(2)} km</Text>
+                    <Text style={styles.sectionSubtitle}>Estimated duration: {Math.ceil(taxiFareQuote.pricing.durationSeconds / 60)} min</Text>
+                    <Text style={styles.sectionSubtitle}>Vehicle estimate: ₹{taxiFareQuote.totalVehicleFare}</Text>
+                    <Text style={[styles.sectionTitle, { marginTop: 4 }]}>Your estimated share: ₹{taxiFareQuote.perMemberFare}</Text>
+                    <Text style={styles.sectionSubtitle}>Pricing version: {taxiFareQuote.pricing.version}</Text>
+                  </View>
                 </View>
-                <TextInput
-                  style={styles.priceInput}
-                  keyboardType="numeric"
-                  value={price}
-                  onChangeText={(val) => setPrice(val.replace(/[^0-9]/g, ''))}
-                  placeholder="40"
-                  placeholderTextColor={WARM_CORE.textSecondary}
-                />
-              </View>
+              ) : (
+                <View style={styles.priceInputRow}>
+                  <ActivityIndicator color={WARM_CORE.primary} />
+                  <Text style={[styles.sectionSubtitle, { marginLeft: 10 }]}>Calculating road fare...</Text>
+                </View>
+              )}
             </View>
 
             {/* NOTES */}

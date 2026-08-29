@@ -2,7 +2,6 @@ import {
     collection,
     deleteDoc,
     doc,
-    getDoc,
     getDocs,
     onSnapshot,
     orderBy,
@@ -81,34 +80,9 @@ export const sendNotification = async (
   senderName?: string,
   actionUrl?: string
 ): Promise<string> => {
-  // Fetch token for tracing only; delivery is handled by the backend Admin SDK.
-  let token = 'unknown';
-  let tokenType = 'none';
-  try {
-    const userRef = doc(db, 'users', userId);
-    const userSnap = await getDoc(userRef);
-    if (userSnap.exists()) {
-      const userData = userSnap.data();
-      const fcmToken = typeof userData?.fcmToken === 'string' ? userData.fcmToken.trim() : '';
-      const expoPushToken = typeof userData?.expoPushToken === 'string' ? userData.expoPushToken.trim() : '';
-      if (fcmToken && !fcmToken.startsWith('ExponentPushToken') && !fcmToken.startsWith('ExpoPushToken')) {
-        token = `${fcmToken.slice(0, 22)}...`;
-        tokenType = 'fcm';
-      } else if (expoPushToken) {
-        token = `${expoPushToken.slice(0, 22)}...`;
-        tokenType = 'expo';
-      }
-    }
-  } catch (err) {
-    console.warn('[NOTIFICATIONS] Failed to fetch recipient token for logging:', err);
-  }
-
   console.log(`[NOTIFICATION DISPATCH REQUEST]
 recipientId: ${userId}
-tokenType: ${tokenType}
-token: ${token}
 type: ${type}`);
-
 
   let targetScreen: string | null = null;
   let targetId: string | null = null;

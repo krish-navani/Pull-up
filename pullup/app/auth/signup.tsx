@@ -27,6 +27,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WARM_CORE } from '@/constants/theme';
+import { getNameFromEmail } from '@/utils/stringUtils';
 
 const UNIVERSITY_DOMAIN = '@atlasskilltech.university';
 
@@ -270,13 +271,15 @@ export default function SignupScreen() {
       });
       
       if (result.isNewUser) {
-        console.log('[SIGNUP] New user detected, navigating to name setup');
+        const verifiedEmail = email + UNIVERSITY_DOMAIN;
+        console.log('[SIGNUP] New user detected, navigating to canonical profile setup');
         router.push({
-          pathname: '/auth/name-setup' as any,
-          params: { 
-            email: email + UNIVERSITY_DOMAIN, 
+          pathname: '/auth/profile' as any,
+          params: {
+            email: verifiedEmail,
             otp: otpCode,
-            isNewUser: 'true'
+            isNewUser: 'true',
+            fullName: getNameFromEmail(verifiedEmail),
           },
         });
       } else {

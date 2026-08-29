@@ -21,16 +21,19 @@ const originalFetch = globalThis.fetch;
 try {
   {
     const { db, writes } = makeDb();
-    globalThis.fetch = async () => new Response(JSON.stringify({
-      status: 'OK',
-      routes: [{
-        legs: [
-          { distance: { value: 10000 }, duration: { value: 1200 } },
-          { distance: { value: 8770 }, duration: { value: 900 } },
-        ],
-        overview_polyline: { points: 'encoded-road-route' },
-      }],
-    }), { status: 200 });
+    globalThis.fetch = async (input, init) => {
+      assert.equal(String(input), 'https://routes.googleapis.com/directions/v2:computeRoutes');
+      assert.equal(init?.method, 'POST');
+      assert.match(String((init?.headers as Record<string, string>)?.['X-Goog-FieldMask']), /routes\.distanceMeters/);
+      return new Response(JSON.stringify({
+        routes: [{
+          distanceMeters: 18770,
+          duration: '2100s',
+          polyline: { encodedPolyline: 'encoded-road-route' },
+          optimizedIntermediateWaypointIndex: [],
+        }],
+      }), { status: 200 });
+    };
     const route = await getAuthoritativeRoute(db, { latitude: 19, longitude: 72.8 }, { latitude: 19.07, longitude: 72.87 });
     assert.equal(route.distanceMeters, 18770);
     assert.equal(route.durationSeconds, 2100);
@@ -40,7 +43,7 @@ try {
 
   {
     const { db, writes } = makeDb();
-    globalThis.fetch = async () => new Response(JSON.stringify({ status: 'ZERO_RESULTS', routes: [] }), { status: 200 });
+    globalThis.fetch = async () => new Response(JSON.stringify({ routes: [] }), { status: 200 });
     await assert.rejects(
       () => getAuthoritativeRoute(db, { latitude: 19, longitude: 72.8 }, { latitude: 19.07, longitude: 72.87 }),
       /NO_ROUTE_FOUND/,

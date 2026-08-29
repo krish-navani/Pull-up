@@ -63,6 +63,15 @@ service cloud.firestore {
               ));
     }
 
+    function isPublicProfileShape(data, userId) {
+      return data.keys().hasOnly([
+               'id', 'fullName', 'profileImage', 'role', 'course', 'year',
+               'division', 'licenseVerified', 'rating', 'completedRides', 'status', 'lastSeen',
+               'createdAt', 'updatedAt'
+             ]) &&
+             data.id == userId;
+    }
+
     // ─── OTP Verification ───────────────────────────────────────────────────
     // Must be accessible before authentication (signup / login flow)
     // Locked down client-side; only backend Admin SDK has read/write privileges.
@@ -77,17 +86,33 @@ service cloud.firestore {
 
     // ─── Users ──────────────────────────────────────────────────────────────
     match /users/{userId} {
-      // Public reads: needed for messaging, booking display, driver profile pages
-      allow read: if true;
+      allow read: if isSignedIn() && getPersistentUserId() == userId;
 
-      // Only authenticated users can write/modify/delete their own user documents
-      allow create, update, delete: if isSignedIn() && getPersistentUserId() == userId;
+      // Identity is created by the backend from the verified university email.
+      allow create: if false;
+      allow update: if isSignedIn() && getPersistentUserId() == userId &&
+                    request.resource.data.id == resource.data.id &&
+                    request.resource.data.email == resource.data.email &&
+                    request.resource.data.fullName == resource.data.fullName;
+      allow delete: if isSignedIn() && getPersistentUserId() == userId;
 
       // ── Notifications subcollection ──────────────────────────────────────
       match /notifications/{notificationId} {
         allow read, update, delete: if isSignedIn() && getPersistentUserId() == userId;
         allow create: if isSignedIn(); // Fallback client-side notifications write
       }
+    }
+
+    // Sanitized identity used by ride, booking and chat surfaces.
+    match /publicProfiles/{userId} {
+      allow read: if isSignedIn();
+      allow create: if false;
+      allow update: if isSignedIn() &&
+                       getPersistentUserId() == userId &&
+                       isPublicProfileShape(request.resource.data, userId) &&
+                       request.resource.data.id == resource.data.id &&
+                       request.resource.data.fullName == resource.data.fullName;
+      allow delete: if isSignedIn() && getPersistentUserId() == userId;
     }
 
     // ─── Rides ──────────────────────────────────────────────────────────────
@@ -112,27 +137,36 @@ service cloud.firestore {
     // ─── Bookings ───────────────────────────────────────────────────────────
     match /bookings/{bookingId} {
       allow read: if isSignedIn() && (resource == null || resource.data.passengerId == getPersistentUserId() || resource.data.driverId == getPersistentUserId());
-      allow create: if isSignedIn() && request.resource.data.passengerId == getPersistentUserId() && request.resource.data.status == 'pending';
+      allow create: if false; // Authoritative fare bookings are created by the backend only.
       // Passengers can cancel; drivers can accept/reject or update transit states (pickedUp, droppedOff, status)
-      allow update: if isSignedIn() && (
-        (getPersistentUserId() == resource.data.passengerId && request.resource.data.status == 'cancelled') ||
-        (getPersistentUserId() == resource.data.driverId)
-      );
+      allow update: if isSignedIn() &&
+                       request.resource.data.fare == resource.data.fare &&
+                       request.resource.data.fareStatus == resource.data.fareStatus &&
+                       request.resource.data.totalPrice == resource.data.totalPrice &&
+                       (
+                         (getPersistentUserId() == resource.data.passengerId && request.resource.data.status == 'cancelled') ||
+                         (getPersistentUserId() == resource.data.driverId)
+                       );
       allow delete: if false;
     }
 
     // ─── Chat Rooms + Messages ───────────────────────────────────────────────
     match /chatRooms/{rideId} {
-      allow read:   if isSignedIn();
-      allow create: if isSignedIn();
-      allow update: if isSignedIn();
-      allow delete: if isSignedIn();
+      allow read: if canAccessChat(rideId);
+      allow create: if canAccessChat(rideId) &&
+                       getPersistentUserId() in request.resource.data.participants;
+      allow update: if canAccessChat(rideId) &&
+                       request.resource.data.participants == resource.data.participants;
+      allow delete: if false;
 
       match /messages/{messageId} {
-        allow read:   if isSignedIn();
-        allow create: if isSignedIn();
-        allow update: if isSignedIn(); // for read receipts / mark-as-read
-        allow delete: if false;        // soft-delete only (update the doc)
+        allow read: if canAccessChat(rideId);
+        allow create: if canAccessChat(rideId) &&
+                         request.resource.data.rideId == rideId &&
+                         request.resource.data.senderId == getPersistentUserId();
+        allow update: if canAccessChat(rideId) &&
+                         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'content', 'timestamp']);
+        allow delete: if false;
       }
     }
 
@@ -162,11 +196,21 @@ service cloud.firestore {
     }
 
     // ─── Legacy Chats (kept for backward compat) ────────────────────────────
-    match /chats/{document=**} {
-      allow read:   if isSignedIn();
-      allow create: if isSignedIn();
-      allow update: if isSignedIn();
-      allow delete: if isSignedIn();
+    match /chats/{rideId} {
+      allow read: if canAccessChat(rideId);
+      allow create: if canAccessChat(rideId) &&
+                       getPersistentUserId() in request.resource.data.participants;
+      allow update: if canAccessChat(rideId) &&
+                       request.resource.data.participants == resource.data.participants;
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if canAccessChat(rideId);
+        allow create: if canAccessChat(rideId) &&
+                         request.resource.data.rideId == rideId &&
+                         request.resource.data.senderId == getPersistentUserId();
+        allow update, delete: if false;
+      }
     }
 
     // ─── Taxi Pools ─────────────────────────────────────────────────────────
@@ -174,11 +218,14 @@ service cloud.firestore {
     // Client-side sorting avoids composite index requirements.
     match /taxiPools/{poolId} {
       allow read:   if isSignedIn();
-      allow create: if isSignedIn() && request.resource.data.creatorId == getPersistentUserId();
-      allow update: if isSignedIn() && (
-        resource.data.creatorId == getPersistentUserId() || 
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount', 'status', 'currentLocation', 'updatedAt'])
-      );
+      allow create: if false; // Backend creates route-priced Taxi Pools.
+      allow update: if isSignedIn() &&
+        request.resource.data.price == resource.data.price &&
+        request.resource.data.pricing == resource.data.pricing &&
+        request.resource.data.route == resource.data.route && (
+          resource.data.creatorId == getPersistentUserId() ||
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount', 'status', 'currentLocation', 'updatedAt'])
+        );
       allow delete: if isSignedIn() && (
         resource.data.creatorId == getPersistentUserId() ||
         resource.data.status == 'expired' ||
@@ -216,8 +263,11 @@ service cloud.firestore {
           getPersistentUserId() == get(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)).data.creatorId
         )
       );
-      allow create: if isSignedIn() && request.resource.data.passengerId == getPersistentUserId();
-      allow update: if isSignedIn() && (
+      allow create: if false; // Backend creates fare-locked Taxi Pool requests.
+      allow update: if isSignedIn() &&
+        request.resource.data.fare == resource.data.fare &&
+        request.resource.data.fareStatus == resource.data.fareStatus &&
+        request.resource.data.totalPrice == resource.data.totalPrice && (
         resource.data.passengerId == getPersistentUserId() ||
         (
           exists(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)) && 

@@ -162,6 +162,7 @@ export const deletePullUpAccount = async (uid: string): Promise<{ alreadyDeleted
   if (userSnapshot.exists) await db.recursiveDelete(userRef);
   await Promise.all([
     db.collection('userSessions').doc(uid).delete().catch(() => undefined),
+    db.collection('publicProfiles').doc(uid).delete().catch(() => undefined),
     db.collection('wallets').doc(uid).delete().catch(() => undefined),
   ]);
 

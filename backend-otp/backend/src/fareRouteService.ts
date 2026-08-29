@@ -15,6 +15,7 @@ export interface AuthoritativeRoute {
   provider: 'google';
   calculatedAt: string;
   cacheHit: boolean;
+  waypointOrder: number[];
 }
 
 const assertCoordinate = (value: RouteCoordinate, field: string): void => {
@@ -25,9 +26,6 @@ const assertCoordinate = (value: RouteCoordinate, field: string): void => {
     throw new Error(`INVALID_${field.toUpperCase()}_COORDINATES`);
   }
 };
-
-const coordinateParam = (coordinate: RouteCoordinate): string =>
-  `${coordinate.latitude.toFixed(6)},${coordinate.longitude.toFixed(6)}`;
 
 export const geocodeAddress = async (address: string): Promise<RouteCoordinate & { address: string }> => {
   const normalizedAddress = address.trim();
@@ -96,37 +94,41 @@ export const getAuthoritativeRoute = async (
         provider: 'google',
         calculatedAt: calculatedAt.toISOString(),
         cacheHit: true,
+        waypointOrder: cached.waypointOrder || [],
       };
     }
   }
 
-  const params = new URLSearchParams({
-    origin: coordinateParam(origin),
-    destination: coordinateParam(destination),
-    mode: 'driving',
-    key: apiKey,
-  });
-  if (waypoints.length) {
-    params.set('waypoints', `optimize:true|${waypoints.map(coordinateParam).join('|')}`);
-  }
-
-  const diagnosticUrl = `https://maps.googleapis.com/maps/api/directions/json?${new URLSearchParams({
-    origin: params.get('origin') || '',
-    destination: params.get('destination') || '',
-    mode: 'driving',
-    ...(params.get('waypoints') ? { waypoints: params.get('waypoints')! } : {}),
-  }).toString()}`;
-  console.log('[FARE_ROUTE] provider request', { requestId, origin, destination, waypoints, url: diagnosticUrl });
+  const routeRequest = {
+    origin: { location: { latLng: { latitude: origin.latitude, longitude: origin.longitude } } },
+    destination: { location: { latLng: { latitude: destination.latitude, longitude: destination.longitude } } },
+    intermediates: waypoints.map(point => ({
+      location: { latLng: { latitude: point.latitude, longitude: point.longitude } },
+    })),
+    travelMode: 'DRIVE',
+    routingPreference: 'TRAFFIC_UNAWARE',
+    computeAlternativeRoutes: false,
+    optimizeWaypointOrder: waypoints.length > 0,
+  };
+  console.log('[FARE_ROUTE] provider request', { requestId, origin, destination, waypoints });
 
   let response: Response;
   try {
-    response = await fetch(`https://maps.googleapis.com/maps/api/directions/json?${params.toString()}`, {
+    response = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': 'routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline,routes.optimizedIntermediateWaypointIndex',
+      },
+      body: JSON.stringify(routeRequest),
       signal: AbortSignal.timeout(12000),
     });
   } catch (error: any) {
     console.error('[FARE_ROUTE] Google request failed:', error);
     throw new Error('ROUTE_PROVIDER_UNAVAILABLE');
   }
+
   const rawBody = await response.text();
   let data: any;
   try {
@@ -138,34 +140,31 @@ export const getAuthoritativeRoute = async (
   console.log('[FARE_ROUTE] provider response', {
     requestId,
     httpStatus: response.status,
-    providerStatus: data.status,
-    errorMessage: data.error_message || null,
+    providerStatus: data.error?.status || (response.ok ? 'OK' : 'ERROR'),
+    errorMessage: data.error?.message || null,
     routeCount: Array.isArray(data.routes) ? data.routes.length : 0,
   });
   if (!response.ok) {
     console.error('[FARE_ROUTE] provider HTTP failure', { requestId, httpStatus: response.status, body: rawBody.slice(0, 1000) });
+    if (response.status === 429) throw new Error('ROUTE_PROVIDER_QUOTA_EXCEEDED');
     throw new Error(`ROUTE_PROVIDER_HTTP_${response.status}`);
   }
-  if (data.status === 'ZERO_RESULTS' || !data.routes?.length) throw new Error('NO_ROUTE_FOUND');
-  if (data.status === 'OVER_QUERY_LIMIT') throw new Error('ROUTE_PROVIDER_QUOTA_EXCEEDED');
-  if (data.status !== 'OK') {
-    console.error('[FARE_ROUTE] Google response:', data.status, data.error_message || '');
-    throw new Error('ROUTE_CALCULATION_FAILED');
-  }
+  if (!data.routes?.length) throw new Error('NO_ROUTE_FOUND');
 
   const route = data.routes[0];
-  const distanceMeters = route.legs.reduce((sum: number, leg: any) => sum + Number(leg.distance?.value || 0), 0);
-  const durationSeconds = route.legs.reduce((sum: number, leg: any) => sum + Number(leg.duration?.value || 0), 0);
+  const distanceMeters = Number(route.distanceMeters || 0);
+  const durationSeconds = Math.round(Number.parseFloat(String(route.duration || '0').replace(/s$/, '')));
   if (distanceMeters <= 0 || durationSeconds <= 0) throw new Error('INVALID_ROUTE_DISTANCE');
 
   const calculatedAt = new Date().toISOString();
   const result: AuthoritativeRoute = {
     distanceMeters,
     durationSeconds,
-    encodedPolyline: route.overview_polyline?.points || '',
+    encodedPolyline: route.polyline?.encodedPolyline || '',
     provider: 'google',
     calculatedAt,
     cacheHit: false,
+    waypointOrder: route.optimizedIntermediateWaypointIndex || [],
   };
   await cacheRef.set({
     ...result,

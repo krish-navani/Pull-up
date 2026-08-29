@@ -6,7 +6,7 @@ import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { doc, updateDoc, Timestamp, onSnapshot, collection, query, orderBy, where, limitToLast, runTransaction, increment } from 'firebase/firestore';
-import { db } from '../utils/firebase';
+import { auth as firebaseAuth, db } from '../utils/firebase';
 import { GeofenceEngine } from '../utils/geofenceEngine';
 import {
   BACKGROUND_LOCATION_TASK,
@@ -98,6 +98,7 @@ type Action =
   | { type: 'SET_LOADING'; payload: boolean }
   | { type: 'SET_ERROR'; payload: string | null }
   | { type: 'SET_USER'; payload: User }
+  | { type: 'SYNC_USER'; payload: User }
   | { type: 'SWITCH_ROLE'; payload: 'driver' | 'passenger' }
   | { type: 'LOGOUT' }
   | { type: 'SET_RIDES'; payload: Ride[] }
@@ -161,6 +162,15 @@ function appReducer(state: State, action: ExtendedAction): State {
         },
         bookings: [],
         rides: state.rides,
+      };
+    case 'SYNC_USER':
+      return {
+        ...state,
+        auth: {
+          ...state.auth,
+          user: action.payload,
+          error: null,
+        },
       };
     case 'SWITCH_ROLE':
       return {
@@ -489,6 +499,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!currentUserId) return;
 
     const updatePresence = async (statusVal: 'online' | 'offline') => {
+      if (firebaseAuth.currentUser?.uid !== currentUserId) return;
       try {
         const userRef = doc(db, 'users', currentUserId);
         await updateDoc(userRef, {
@@ -760,7 +771,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return;
     }
 
-    startRideCleanupScheduler();
+    startRideCleanupScheduler(state.auth.user.id);
 
     return () => {
       stopRideCleanupScheduler();
@@ -1007,6 +1018,52 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     };
   }, [state.auth.isSignedIn, state.auth.user?.id]);
 
+  // Keep server-owned profile state (license approval and payout verification) live.
+  // This listener never writes to Firestore, so admin/backend fields cannot be
+  // replaced by a stale local profile snapshot.
+  useEffect(() => {
+    const userId = state.auth.user?.id;
+    if (!state.auth.isSignedIn || !userId) {
+      return;
+    }
+
+    const activeUid = firebaseAuth.currentUser?.uid;
+    if (!activeUid || activeUid !== userId) {
+      console.warn('[CONTEXT] Skipping user profile listener until Firebase Auth UID matches context UID.');
+      return;
+    }
+
+    const unsubscribe = onSnapshot(doc(db, 'users', userId), async (snapshot) => {
+      if (!snapshot.exists()) {
+        console.warn('[CONTEXT] Authenticated user document no longer exists:', userId);
+        return;
+      }
+
+      const data = snapshot.data();
+      const status = data.licenseVerificationStatus;
+      const syncedUser = {
+        ...data,
+        id: snapshot.id,
+        licenseVerified:
+          data.licenseVerified === true ||
+          status === 'approved' ||
+          status === 'verified',
+      } as User;
+
+      dispatch({ type: 'SYNC_USER', payload: syncedUser });
+
+      try {
+        const { saveUserToStorage } = require('../utils/authService');
+        await saveUserToStorage(syncedUser);
+      } catch (storageError) {
+        console.warn('[CONTEXT] Failed to cache live user profile:', storageError);
+      }
+    }, (error) => {
+      console.error('[CONTEXT] User profile listener error:', error);
+    });
+
+    return unsubscribe;
+  }, [state.auth.isSignedIn, state.auth.user?.id]);
   // Listen to Firebase auth state changes and restore from storage on startup
   useEffect(() => {
     dispatch({ type: 'SET_AUTH_INITIALIZING', payload: true });
@@ -1287,6 +1344,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             fcmToken: null,
             expoPushToken: null,
             lastTokenRefresh: Timestamp.now(),
+            status: 'offline',
+            lastSeen: new Date().toISOString(),
           });
         } catch (tokenErr) {
           console.warn('[PUSH] Failed to clear push tokens on logout:', tokenErr);
@@ -1965,6 +2024,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const value: AppContextType = {
     auth: state.auth,
     authInitializing: state.authInitializing,
+    firebaseAuthReady: !state.authInitializing,
     rides: state.rides,
     userRides: state.rides.filter(r => r.driverId === state.auth.user?.id),
     bookings: state.bookings,

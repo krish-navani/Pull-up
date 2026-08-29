@@ -1,7 +1,7 @@
 import { Request, Response, Router } from 'express';
 import admin from 'firebase-admin';
 import { getDb } from './firebase.js';
-import { calculatePassengerFare, calculateRidePricing, getFareConfig, paiseToRupees, RidePricing } from './fareService.js';
+import { calculatePassengerFare, calculateRidePricing, calculateTaxiPoolPricing, getFareConfig, paiseToRupees, RidePricing } from './fareService.js';
 import { geocodeAddress, getAuthoritativeRoute, RouteCoordinate } from './fareRouteService.js';
 import { canonicalizeAtlasEndpoint, isAtlasEndpoint } from './atlasConfig.js';
 
@@ -68,7 +68,7 @@ const fail = (res: Response, error: any) => {
   const code = String(error?.message || 'FARE_CALCULATION_FAILED');
   const status = code === 'UNAUTHENTICATED' ? 401
     : code.includes('NOT_FOUND') ? 404
-    : code.includes('UNAVAILABLE') || code.includes('QUOTA') || code.includes('NOT_CONFIGURED') ? 503
+    : code.includes('UNAVAILABLE') || code.includes('QUOTA') || code.includes('NOT_CONFIGURED') || code.startsWith('MISSING_TAXI_') ? 503
     : 400;
   const messages: Record<string, string> = {
     UNAUTHENTICATED: 'Please sign in again.',
@@ -81,6 +81,7 @@ const fail = (res: Response, error: any) => {
     LEGACY_RIDE_FARE_UNAVAILABLE: 'This older ride cannot accept a new authoritative fare booking.',
     DETOUR_BUDGET_EXCEEDED: 'This pickup exceeds the driver\'s remaining detour allowance.',
     FARE_QUOTE_STALE: 'The ride fare changed. Please review the latest quote.',
+    INVALID_TAXI_FARE_CONFIGURATION: 'Taxi Pool pricing is temporarily unavailable.',
     RIDE_EXPIRED: 'This ride has already departed. Please choose another ride.',
     LOCATION_GEOCODE_NOT_FOUND: 'We could not locate one of the ride addresses. Please choose another ride.',
   };
@@ -154,6 +155,29 @@ const bookingQuote = async (db: admin.firestore.Firestore, ride: any, input: any
 };
 
 export const registerFareRoutes = (router: Router, notify: Notify): void => {
+  router.post('/fare/route-preview', async (req, res) => {
+    try {
+      await authenticatedUid(req);
+      const origin = coordinate(req.body.origin, 'origin');
+      const destination = coordinate(req.body.destination, 'destination');
+      const waypoints = Array.isArray(req.body.waypoints)
+        ? req.body.waypoints.map((point: unknown, index: number) => coordinate(point, `waypoint_${index}`))
+        : [];
+      if (waypoints.length > 25) throw new Error('TOO_MANY_WAYPOINTS');
+      const route = await getAuthoritativeRoute(getDb(), origin, destination, waypoints);
+      return res.json({
+        success: true,
+        route,
+        display: {
+          distance: `${(route.distanceMeters / 1000).toFixed(1)} km`,
+          duration: `${Math.max(1, Math.round(route.durationSeconds / 60))} mins`,
+        },
+      });
+    } catch (error: any) {
+      console.error('[FARE] route preview:', error);
+      return fail(res, error);
+    }
+  });
   router.post('/fare/ride-quote', async (req, res) => {
     try {
       await authenticatedUid(req);
@@ -289,6 +313,115 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
     }
   });
 
+  router.post('/fare/taxi-pool-quote', async (req, res) => {
+    try {
+      await authenticatedUid(req);
+      const db = getDb();
+      const pickup = canonicalizeAtlasEndpoint(coordinate(req.body.pickupLocation, 'pickup'));
+      const destination = canonicalizeAtlasEndpoint(coordinate(req.body.destination, 'destination'));
+      validateAtlasRoute(pickup, destination);
+      const maxMembers = Number(req.body.maxMembers);
+      const route = await getAuthoritativeRoute(db, pickup, destination);
+      const pricing = calculateTaxiPoolPricing(route.distanceMeters, route.durationSeconds, maxMembers);
+      return res.json({
+        success: true, route, pricing,
+        totalVehicleFare: paiseToRupees(pricing.totalVehicleFarePaise),
+        perMemberFare: paiseToRupees(pricing.perMemberFarePaise),
+      });
+    } catch (error: any) {
+      console.error('[FARE] taxi pool quote:', error);
+      return fail(res, error);
+    }
+  });
+
+  router.post('/fare/create-taxi-pool', async (req, res) => {
+    try {
+      const creatorId = await authenticatedUid(req);
+      const db = getDb();
+      const userDoc = await db.collection('users').doc(creatorId).get();
+      if (!userDoc.exists) throw new Error('USER_NOT_FOUND');
+      const user = userDoc.data()!;
+      const expiry = user.subscriptionExpiry ? new Date(user.subscriptionExpiry).getTime() : 0;
+      if (user.subscriptionStatus !== 'active' || expiry <= Date.now()) throw new Error('SUBSCRIPTION_REQUIRED');
+      const pickup = canonicalizeAtlasEndpoint(coordinate(req.body.pickupLocation, 'pickup'));
+      const destination = canonicalizeAtlasEndpoint(coordinate(req.body.destination, 'destination'));
+      validateAtlasRoute(pickup, destination);
+      const departure = new Date(req.body.departureTime);
+      if (!Number.isFinite(departure.getTime()) || departure.getTime() <= Date.now()) throw new Error('INVALID_DEPARTURE_TIME');
+      const maxMembers = Number(req.body.maxMembers);
+      const route = await getAuthoritativeRoute(db, pickup, destination);
+      const pricing = calculateTaxiPoolPricing(route.distanceMeters, route.durationSeconds, maxMembers);
+      const ref = db.collection('taxiPools').doc();
+      const now = admin.firestore.Timestamp.now();
+      await db.runTransaction(async transaction => {
+        transaction.create(ref, {
+          creatorId, creatorName: user.fullName, creatorImage: user.profileImage || null,
+          creatorCourse: user.course || '', creatorDivision: user.division || '',
+          pickupLocation: pickup, destination, departureTime: departure.toISOString(),
+          maxMembers, memberCount: 1, notes: String(req.body.notes || '').trim() || null,
+          price: paiseToRupees(pricing.perMemberFarePaise), pricing,
+          route: { origin: pickup, destination, distanceMeters: route.distanceMeters,
+            durationSeconds: route.durationSeconds, encodedPolyline: route.encodedPolyline,
+            provider: 'google', calculatedAt: route.calculatedAt },
+          status: 'OPEN', createdAt: now, updatedAt: now,
+        });
+        transaction.create(db.collection('poolMembers').doc(ref.id + '_' + creatorId), {
+          poolId: ref.id, passengerId: creatorId, passengerName: user.fullName,
+          passengerImage: user.profileImage || null, passengerCourse: user.course || '',
+          passengerDivision: user.division || '', joinedAt: new Date().toISOString(),
+        });
+      });
+      return res.status(201).json({ success: true, poolId: ref.id, route, pricing });
+    } catch (error: any) {
+      console.error('[FARE] create taxi pool:', error);
+      return fail(res, error);
+    }
+  });
+
+  router.post('/fare/create-taxi-pool-request', async (req, res) => {
+    try {
+      const passengerId = await authenticatedUid(req);
+      const db = getDb();
+      const poolId = String(req.body.poolId || '');
+      const poolRef = db.collection('taxiPools').doc(poolId);
+      const poolDoc = await poolRef.get();
+      if (!poolDoc.exists) throw new Error('TAXI_POOL_NOT_FOUND');
+      const pool = poolDoc.data()!;
+      if (pool.creatorId === passengerId) throw new Error('OWN_RIDE_BOOKING');
+      if (pool.status !== 'OPEN' || new Date(pool.departureTime).getTime() <= Date.now()) throw new Error('RIDE_NOT_ACTIVE');
+      const passengerDoc = await db.collection('users').doc(passengerId).get();
+      if (!passengerDoc.exists) throw new Error('USER_NOT_FOUND');
+      const passenger = passengerDoc.data()!;
+      const route = await getAuthoritativeRoute(db, coordinate(pool.pickupLocation, 'pickup'), coordinate(pool.destination, 'destination'));
+      const pricing = calculateTaxiPoolPricing(route.distanceMeters, route.durationSeconds, Number(pool.maxMembers));
+      if (pool.pricing?.version !== pricing.version ||
+          Number(pool.route?.distanceMeters) !== pricing.distanceMeters ||
+          Number(pool.route?.durationSeconds) !== pricing.durationSeconds) throw new Error('FARE_QUOTE_STALE');
+      const requestRef = db.collection('poolRequests').doc(poolId + '_' + passengerId);
+      await db.runTransaction(async transaction => {
+        const existing = await transaction.get(requestRef);
+        if (existing.exists && ['requested', 'accepted', 'payment_pending', 'payment_completed'].includes(existing.data()!.status)) {
+          throw new Error('DUPLICATE_BOOKING');
+        }
+        transaction.set(requestRef, {
+          poolId, creatorId: pool.creatorId, passengerId, passengerName: passenger.fullName,
+          passengerImage: passenger.profileImage || null, passengerCourse: passenger.course || '',
+          passengerDivision: passenger.division || '', status: 'requested',
+          fare: pricing, fareStatus: 'locked',
+          totalPrice: paiseToRupees(pricing.perMemberFarePaise),
+          createdAt: admin.firestore.Timestamp.now(), updatedAt: admin.firestore.Timestamp.now(),
+        });
+      });
+      await notify(pool.creatorId, 'pool_request', 'New Pool Request',
+        passenger.fullName + ' requested to join your Taxi Pool.', poolId, requestRef.id,
+        'taxi-pool-details', poolId).catch(error => console.error('[FARE] taxi request notification failed:', error));
+      return res.status(201).json({ success: true, requestId: requestRef.id, fare: pricing,
+        totalAmount: paiseToRupees(pricing.perMemberFarePaise) });
+    } catch (error: any) {
+      console.error('[FARE] create taxi pool request:', error);
+      return fail(res, error);
+    }
+  });
   router.post('/fare/accept-booking', async (req, res) => {
     try {
       const driverId = await authenticatedUid(req);

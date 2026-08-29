@@ -621,7 +621,7 @@ export default function ProfileScreen() {
               
               <View style={styles.idCardHeaderRow}>
                 <TouchableOpacity onPress={handleProfilePicturePress} activeOpacity={0.8} style={{ position: 'relative', flexShrink: 0 }}>
-                  <PulsingAvatarRing isVerified={auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'verified'}>
+                  <PulsingAvatarRing isVerified={auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'approved' || auth.user?.licenseVerificationStatus === 'verified'}>
                     <UserAvatar imageUrl={auth.user?.profileImage} name={auth.user?.fullName} size={64} />
                   </PulsingAvatarRing>
                   <View style={{
@@ -835,7 +835,7 @@ export default function ProfileScreen() {
             )}
 
             {/* LICENSE VERIFICATION PROMPT CARD FOR PASSENGER */}
-            {!isDriver && !(auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'verified') && (
+            {!isDriver && !(auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'approved' || auth.user?.licenseVerificationStatus === 'verified') && (
               <Animated.View
                 style={{
                   opacity: actionRowAnim.opacity,

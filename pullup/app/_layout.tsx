@@ -272,7 +272,7 @@ function RootLayoutContent() {
       const isSignedIn = auth.isSignedIn;
       const isProfileComplete = auth.user?.profileComplete ?? false;
       const isDriver = auth.user?.role === 'driver';
-      const isLicenseVerified = auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'verified';
+      const isLicenseVerified = auth.user?.licenseVerified === true || auth.user?.licenseVerificationStatus === 'approved' || auth.user?.licenseVerificationStatus === 'verified';
       
       // A driver needs license verification to host rides.
       // However, they can explore other app features if their license status is pending or verified.

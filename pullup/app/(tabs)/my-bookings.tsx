@@ -26,7 +26,7 @@ import {
     ViewStyle,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { subscribeToCreatorPools, subscribeToMemberPools, TaxiPool } from '@/utils/taxiPoolService';
+import { subscribeToCreatorPools, subscribeToMemberPools, subscribeToPoolRequests, TaxiPool } from '@/utils/taxiPoolService';
 import { collection, doc, onSnapshot, query, where, getDoc, updateDoc, Timestamp } from 'firebase/firestore';
 import { db, auth as firebaseAuth } from '@/utils/firebase';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
@@ -595,25 +595,40 @@ export default function MyBookingsScreen() {
       setCreatedTaxiPools(pools);
     });
 
-    const reqsQuery = query(
-      collection(db, 'poolRequests'),
-      where('creatorId', '==', currentUserId),
-      where('status', '==', 'requested')
-    );
-    const unsubReqs = onSnapshot(reqsQuery, (snapshot) => {
-      const reqs = snapshot.docs.map(docSnap => ({ id: docSnap.id, ...docSnap.data() }));
-      setHostedPoolRequests(reqs);
-    }, (err) => {
-      console.warn('[MY COMMUTES] Hosted pool requests subscription warning:', err);
-    });
 
     return () => {
       if (unsubJoined) unsubJoined();
       if (unsubCreated) unsubCreated();
-      if (unsubReqs) unsubReqs();
     };
   }, [canStartRealtimeListeners, auth.user?.id]);
 
+  // Firestore can authorize request reads when each query is scoped to a pool
+  // owned by this driver. A global creatorId query cannot satisfy that rule.
+  useEffect(() => {
+    const currentUserId = auth.user?.id;
+    if (!canStartRealtimeListeners || !currentUserId || createdTaxiPools.length === 0) {
+      setHostedPoolRequests([]);
+      return;
+    }
+
+    const requestsByPool = new Map<string, any[]>();
+    const publishRequests = () => {
+      setHostedPoolRequests(
+        Array.from(requestsByPool.values())
+          .flat()
+          .filter((request) => request.status === 'requested')
+      );
+    };
+
+    const unsubscribers = createdTaxiPools.map((pool) =>
+      subscribeToPoolRequests(pool.id, (requests) => {
+        requestsByPool.set(pool.id, requests);
+        publishRequests();
+      })
+    );
+
+    return () => unsubscribers.forEach((unsubscribe) => unsubscribe());
+  }, [canStartRealtimeListeners, auth.user?.id, createdTaxiPools]);
   // Cinematic 2-stage stagger on mount
   useEffect(() => {
     Animated.stagger(80, [
@@ -1845,7 +1860,7 @@ function PassengerProfileRow({
 
   useEffect(() => {
     if (!booking.passengerId) return;
-    const userRef = doc(db, 'users', booking.passengerId);
+    const userRef = doc(db, 'publicProfiles', booking.passengerId);
     const unsub = onSnapshot(
       userRef,
       (docSnap) => {

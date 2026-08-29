@@ -91,15 +91,6 @@ export default function ProfileEditScreen() {
   const validateProfile = useCallback((): boolean => {
     const newErrors: ValidationErrors = {};
 
-    // Full Name validation
-    if (!profile.fullName.trim()) {
-      newErrors.fullName = 'Full name is required';
-    } else if (profile.fullName.trim().length < 2) {
-      newErrors.fullName = 'Full name must be at least 2 characters';
-    } else if (profile.fullName.trim().length > 50) {
-      newErrors.fullName = 'Full name must not exceed 50 characters';
-    }
-
     // Phone validation
     if (profile.phone.trim()) {
       if (!/^[6-9]\d{9}$/.test(profile.phone.replace(/\s/g, ''))) {
@@ -131,7 +122,6 @@ export default function ProfileEditScreen() {
    */
   useEffect(() => {
     const hasChanged =
-      profile.fullName !== (user?.fullName || '') ||
       profile.phone !== (user?.phone || '') ||
       profile.course !== (user?.course || '') ||
       profile.year !== (user?.year || 'First Year') ||

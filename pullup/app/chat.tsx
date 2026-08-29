@@ -285,7 +285,7 @@ export default function ChatScreen() {
     }
 
     console.log('[CHAT] Subscribing to recipient profile:', recipientId);
-    const userRef = doc(db, 'users', recipientId);
+    const userRef = doc(db, 'publicProfiles', recipientId);
     const unsub = onSnapshot(
       userRef,
       (docSnap) => {

@@ -56,7 +56,7 @@ const init = async () => {
 };
 
 // Middleware
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '1mb', verify: (req: any, _res, buffer) => { req.rawBody = Buffer.from(buffer); } }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
 // Request timeout

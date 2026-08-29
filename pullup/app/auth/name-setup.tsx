@@ -118,9 +118,9 @@ export default function NameSetupScreen() {
 
         {/* Title Section */}
         <Animated.View style={[styles.titleContainer, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
-          <Text style={styles.title}>What should we call you?</Text>
+          <Text style={styles.title}>Your university identity</Text>
           <Text style={styles.subtitle}>
-            Enter your full name so fellow students and drivers can recognize you on PullUp.
+            Your name is derived from your verified university email and cannot be changed.
           </Text>
         </Animated.View>
 
@@ -134,13 +134,7 @@ export default function NameSetupScreen() {
               placeholder="Firstname Lastname"
               placeholderTextColor={WARM_CORE.textSecondary}
               value={fullName}
-              onChangeText={(text) => {
-                setFullName(text);
-                if (error) setError('');
-              }}
-              autoCapitalize="words"
-              autoCorrect={false}
-              autoFocus
+              editable={false}
             />
           </View>
 

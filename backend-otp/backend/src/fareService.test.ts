@@ -1,5 +1,5 @@
 import { strict as assert } from 'node:assert';
-import { calculatePassengerFare, calculateRidePricing, FareConfigSnapshot, getStoredBookingAmountPaise } from './fareService.js';
+import { calculatePassengerFare, calculateRidePricing, calculateTaxiPoolPricing, FareConfigSnapshot, getStoredBookingAmountPaise } from './fareService.js';
 
 const config: FareConfigSnapshot = {
   version: 'test-cost-recovery-v2',
@@ -73,6 +73,19 @@ assert.throws(() => calculateRidePricing(14000, 4, 'Petrol', 0, config), /INVALI
 const lockedSnapshot = { fare: { totalAmountPaise: 4321 }, fareStatus: 'locked', totalPrice: 999 };
 assert.equal(getStoredBookingAmountPaise(lockedSnapshot, true), 4321);
 assert.throws(() => getStoredBookingAmountPaise({ ...lockedSnapshot, fareStatus: 'quoted' }, true), /FARE_NOT_LOCKED/);
-assert.equal(getStoredBookingAmountPaise({ totalPrice: 120 }, true), 12000, 'legacy stored total remains readable');
-assert.throws(() => getStoredBookingAmountPaise({ totalPrice: 0 }, true), /INVALID_ORDER_AMOUNT/);
+assert.throws(() => getStoredBookingAmountPaise({ totalPrice: 120 }, true), /FARE_SNAPSHOT_MISSING/);
+assert.throws(() => getStoredBookingAmountPaise({ fare: { totalAmountPaise: 0 }, fareStatus: 'locked' }, true), /INVALID_ORDER_AMOUNT/);
+process.env.TAXI_FARE_CONFIG_VERSION = 'test-road-share-v1';
+process.env.TAXI_BASE_FARE_PAISE = '0';
+process.env.TAXI_PER_KM_PAISE = '2000';
+process.env.TAXI_PER_MINUTE_PAISE = '0';
+process.env.TAXI_MIN_VEHICLE_FARE_PAISE = '3000';
+process.env.TAXI_MAX_VEHICLE_FARE_PAISE = '70000';
+const taxi5km = calculateTaxiPoolPricing(5000, 900, 4);
+const taxi10km = calculateTaxiPoolPricing(10000, 1800, 4);
+const taxi15km = calculateTaxiPoolPricing(15000, 2700, 4);
+assert.ok(taxi10km.totalVehicleFarePaise > taxi5km.totalVehicleFarePaise);
+assert.ok(taxi15km.totalVehicleFarePaise > taxi10km.totalVehicleFarePaise);
+assert.equal(taxi10km.perMemberFarePaise, Math.ceil(taxi10km.totalVehicleFarePaise / 4 / 100) * 100);
+assert.equal(taxi10km.routeProvider, 'google');
 console.log('fareService tests passed');

@@ -234,14 +234,76 @@ export const calculatePassengerFare = (input: {
 
 export const paiseToRupees = (paise: number): number => Number((paise / 100).toFixed(2));
 export const getStoredBookingAmountPaise = (booking: any, requireLocked = false): number => {
-  if (booking?.fare?.totalAmountPaise != null) {
-    if (requireLocked && booking.fareStatus !== 'locked') throw new Error('FARE_NOT_LOCKED');
-    const amount = Number(booking.fare.totalAmountPaise);
-    if (!Number.isInteger(amount) || amount <= 0 || amount > 70000) throw new Error('INVALID_ORDER_AMOUNT');
-    return amount;
+  if (booking?.fare?.totalAmountPaise == null) throw new Error('FARE_SNAPSHOT_MISSING');
+  if (requireLocked && booking.fareStatus !== 'locked') throw new Error('FARE_NOT_LOCKED');
+  const amount = Number(booking.fare.totalAmountPaise);
+  if (!Number.isInteger(amount) || amount <= 0 || amount > 70000) throw new Error('INVALID_ORDER_AMOUNT');
+  return amount;
+};
+export interface TaxiPoolPricingSnapshot {
+  product: 'taxi_pool';
+  version: string;
+  currency: 'INR';
+  routeProvider: 'google';
+  distanceMeters: number;
+  durationSeconds: number;
+  baseFarePaise: number;
+  distanceFarePaise: number;
+  durationFarePaise: number;
+  totalVehicleFarePaise: number;
+  perMemberFarePaise: number;
+  maxMembers: number;
+  perKmPaise: number;
+  perMinutePaise: number;
+  minimumVehicleFarePaise: number;
+  maximumVehicleFarePaise: number;
+  calculatedAt: string;
+}
+
+const requiredNonNegativeInt = (name: string): number => {
+  const value = Number(process.env[name]);
+  if (!Number.isInteger(value) || value < 0) throw new Error('MISSING_' + name);
+  return value;
+};
+
+const requiredPositiveInt = (name: string): number => {
+  const value = Number(process.env[name]);
+  if (!Number.isInteger(value) || value <= 0) throw new Error('MISSING_' + name);
+  return value;
+};
+
+export const calculateTaxiPoolPricing = (
+  distanceMeters: number,
+  durationSeconds: number,
+  maxMembers: number,
+): TaxiPoolPricingSnapshot => {
+  if (!Number.isFinite(distanceMeters) || distanceMeters <= 0) throw new Error('INVALID_ROUTE_DISTANCE');
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) throw new Error('INVALID_ROUTE_DURATION');
+  if (!Number.isInteger(maxMembers) || maxMembers < 2 || maxMembers > 6) throw new Error('INVALID_MEMBER_COUNT');
+
+  const version = String(process.env.TAXI_FARE_CONFIG_VERSION || '').trim();
+  if (!version) throw new Error('MISSING_TAXI_FARE_CONFIG_VERSION');
+  const baseFarePaise = requiredNonNegativeInt('TAXI_BASE_FARE_PAISE');
+  const perKmPaise = requiredNonNegativeInt('TAXI_PER_KM_PAISE');
+  const perMinutePaise = requiredNonNegativeInt('TAXI_PER_MINUTE_PAISE');
+  const minimumVehicleFarePaise = requiredPositiveInt('TAXI_MIN_VEHICLE_FARE_PAISE');
+  const maximumVehicleFarePaise = requiredPositiveInt('TAXI_MAX_VEHICLE_FARE_PAISE');
+  if (maximumVehicleFarePaise < minimumVehicleFarePaise || (perKmPaise === 0 && perMinutePaise === 0)) {
+    throw new Error('INVALID_TAXI_FARE_CONFIGURATION');
   }
-  // Historical bookings created before fare snapshots retain their stored amount.
-  const legacyAmount = Math.round(Number(booking?.totalPrice || 0) * 100);
-  if (!Number.isInteger(legacyAmount) || legacyAmount <= 0 || legacyAmount > 70000) throw new Error('INVALID_ORDER_AMOUNT');
-  return legacyAmount;
+
+  const distanceFarePaise = roundMoney((distanceMeters / 1000) * perKmPaise, 'ceil_rupee');
+  const durationFarePaise = roundMoney((durationSeconds / 60) * perMinutePaise, 'ceil_rupee');
+  const uncapped = baseFarePaise + distanceFarePaise + durationFarePaise;
+  const totalVehicleFarePaise = Math.min(maximumVehicleFarePaise, Math.max(minimumVehicleFarePaise, uncapped));
+  const perMemberFarePaise = Math.ceil(totalVehicleFarePaise / maxMembers / 100) * 100;
+
+  return {
+    product: 'taxi_pool', version, currency: 'INR', routeProvider: 'google',
+    distanceMeters: Math.round(distanceMeters), durationSeconds: Math.round(durationSeconds),
+    baseFarePaise, distanceFarePaise, durationFarePaise, totalVehicleFarePaise,
+    perMemberFarePaise, maxMembers, perKmPaise, perMinutePaise,
+    minimumVehicleFarePaise, maximumVehicleFarePaise,
+    calculatedAt: new Date().toISOString(),
+  };
 };

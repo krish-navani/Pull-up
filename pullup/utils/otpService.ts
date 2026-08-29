@@ -1,4 +1,4 @@
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import { signInAnonymously } from 'firebase/auth';
 import { sendOTPViaBackend, verifyOTPViaBackend } from './backendApiClient';
 import { auth, db } from './firebase';
@@ -89,21 +89,13 @@ export const checkEmailExists = async (
       await ensureAuthenticated();
     }
 
-    const usersQuery = query(
-      collection(db, 'users'),
-      where('email', '==', fullEmail)
+    const currentUid = auth.currentUser?.uid;
+    if (!currentUid) throw new Error('checkEmailExists requires an authenticated UID.');
+    const snapshot = await forensicTrace('getDoc', 'users', currentUid, null, () =>
+      getDoc(doc(db, 'users', currentUid))
     );
-    const snapshot = await forensicTrace('getDocs', 'users', null, { email: fullEmail }, () =>
-      getDocs(usersQuery)
-    );
-
-    const exists = !snapshot.empty;
-    console.log('[OTP] checkEmailExists result:', exists, '| Users found:', snapshot.size);
-
-    if (exists && snapshot.size > 0) {
-      console.log('[OTP] User document data:', snapshot.docs[0].data());
-    }
-
+    const exists = snapshot.exists() && String(snapshot.data()?.email || '').toLowerCase() === fullEmail.toLowerCase();
+    console.log('[OTP] checkEmailExists self lookup result:', exists);
     return exists;
   } catch (error) {
     console.error('[OTP] checkEmailExists error:', error);

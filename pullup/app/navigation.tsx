@@ -160,7 +160,7 @@ export default function NavigationScreen() {
     if (!ride?.driverId) return;
     const fetchDriverProfile = async () => {
       try {
-        const userSnap = await getDoc(doc(db, 'users', ride.driverId));
+        const userSnap = await getDoc(doc(db, 'publicProfiles', ride.driverId));
         if (userSnap.exists()) {
           setDriverProfileImage(userSnap.data()?.profileImage || null);
         }
@@ -451,9 +451,8 @@ export default function NavigationScreen() {
     if (!ride) return;
     setRefreshingRoute(true);
     try {
-      const apiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY || 'AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs';
       const destination = { latitude: ride.dropLocation.latitude, longitude: ride.dropLocation.longitude };
-      const result = await fetchRoute(currentCoords, destination, apiKey, waypoints);
+      const result = await fetchRoute(currentCoords, destination, waypoints);
       if (result.success) {
         setRouteCoordinates(result.points);
         setRouteDistance(result.distance || 'N/A');

@@ -43,12 +43,7 @@
         "android.permission.VIBRATE",
         "android.permission.WAKE_LOCK",
         "android.permission.POST_NOTIFICATIONS"
-      ],
-      "config": {
-        "googleMaps": {
-          "apiKey": "AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs"
-        }
-      }
+      ]
     },
     "web": {
       "output": "static",
