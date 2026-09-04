@@ -22,7 +22,7 @@ import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import { useAppContext } from '@/context/AppContext';
 import { WARM_CORE } from '@/constants/theme';
 import UserAvatar from '@/components/UserAvatar';
-import { ATLAS_LOCATION, calculateDistance } from '@/utils/atlasLocationUtils';
+import { ATLAS_ARRIVAL_GEOFENCE_METERS, ATLAS_LOCATION, calculateDistance } from '@/utils/atlasLocationUtils';
 import * as Location from 'expo-location';
 import { fetchRoute } from '@/utils/routeUtils';
 import {
@@ -40,6 +40,7 @@ import {
 } from '@/utils/taxiPoolService';
 import { doc, onSnapshot, updateDoc } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
+import apiClient from '@/utils/backendApiClient';
 
 // Custom Map style (reused from ride-details.tsx)
 const warmMapStyle = [
@@ -228,6 +229,9 @@ export default function TaxiPoolDetailsScreen() {
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null); // tracks loading per action button
   const [isJoinLoading, setIsJoinLoading] = useState(false);
+  const [fareQuote, setFareQuote] = useState<TaxiPool['pricing'] | null>(null);
+  const [isLoadingFare, setIsLoadingFare] = useState(false);
+  const [fareError, setFareError] = useState<string | null>(null);
 
   const mapRef = useRef<MapView>(null);
   const [driverHeading, setDriverHeading] = useState(0);
@@ -400,8 +404,11 @@ export default function TaxiPoolDetailsScreen() {
     const loadRoute = async () => {
       setIsLoadingRoute(true);
       try {
-        // We always draw route between Atlas hub and the destination chosen
-        const result = await fetchRoute(ATLAS_LOCATION, pool.destination);
+        const routeOrigin = pool.pickupLocation || pool.route?.origin;
+        if (!routeOrigin) {
+          throw new Error('This pool does not contain pickup coordinates for route display.');
+        }
+        const result = await fetchRoute(routeOrigin, pool.destination);
         setRouteCoordinates(result.points);
 
         if (mapRef.current && typeof (mapRef.current as any).fitToCoordinates === 'function' && result.points && result.points.length > 1) {
@@ -426,6 +433,44 @@ export default function TaxiPoolDetailsScreen() {
     loadRoute();
   }, [pool]);
 
+  useEffect(() => {
+    if (!pool || !auth.user) return;
+    if (pool.pricing) {
+      setIsLoadingFare(false);
+      setFareQuote(pool.pricing);
+      setFareError(null);
+      return;
+    }
+
+    const pickupLocation = pool.pickupLocation || pool.route?.origin;
+    if (!pickupLocation) {
+      setIsLoadingFare(false);
+      setFareQuote(null);
+      setFareError('This pool does not contain the route coordinates required for a fare quote.');
+      return;
+    }
+
+    let active = true;
+    setIsLoadingFare(true);
+    setFareError(null);
+    apiClient.post('/fare/taxi-pool-quote', {
+      pickupLocation,
+      destination: pool.destination,
+      maxMembers: pool.maxMembers,
+    }).then((response) => {
+      if (!active) return;
+      const pricing = response.data?.pricing || null;
+      setFareQuote(pricing);
+      if (!pricing) setFareError('The server did not return a fare quote for this route.');
+    }).catch((error) => {
+      if (!active) return;
+      setFareQuote(null);
+      setFareError(error?.message || 'The road-distance fare quote is unavailable.');
+    }).finally(() => {
+      if (active) setIsLoadingFare(false);
+    });
+    return () => { active = false; };
+  }, [pool?.id, pool?.pricing, pool?.pickupLocation, pool?.route?.origin, pool?.destination, pool?.maxMembers, auth.user?.id]);
   // Start location watching for creator if pool is in_progress
   useEffect(() => {
     let watcher: Location.LocationSubscription | null = null;
@@ -478,7 +523,8 @@ export default function TaxiPoolDetailsScreen() {
               );
 
               // Auto-complete if creator is within 2 km of destination or ATLAS_LOCATION
-              if (distanceToDest <= 2.0 || distanceToAtlas <= 2.0) {
+              const arrivalGeofenceKm = ATLAS_ARRIVAL_GEOFENCE_METERS / 1000;
+              if (distanceToDest <= arrivalGeofenceKm || distanceToAtlas <= arrivalGeofenceKm) {
                 console.log('[POOL DETAILS] Creator within 2km geofence. Completing Taxi Pool.');
                 try {
                   const { completeTaxiPoolRide } = require('@/utils/taxiPoolService');
@@ -811,16 +857,25 @@ export default function TaxiPoolDetailsScreen() {
             </View>
           </View>
 
-          {(pool as any).pricing ? (
+          {fareQuote ? (
             <View style={styles.notesCard}>
               <MaterialCommunityIcons name="cash-multiple" size={20} color={WARM_CORE.primary} />
               <Text style={styles.sectionLabel}>Locked fare estimate</Text>
               <Text style={styles.notesText}>
-                Road distance {((pool as any).pricing.distanceMeters / 1000).toFixed(2)} km ·
-                {Math.ceil((pool as any).pricing.durationSeconds / 60)} min
+                Road distance {(fareQuote.distanceMeters / 1000).toFixed(2)} km · {Math.ceil(fareQuote.durationSeconds / 60)} min
               </Text>
-              <Text style={[styles.destText, { marginTop: 6 }]}>₹{((pool as any).pricing.perMemberFarePaise / 100).toFixed(0)} per member</Text>
-              <Text style={styles.notesText}>Vehicle estimate ₹{((pool as any).pricing.totalVehicleFarePaise / 100).toFixed(0)} · {(pool as any).pricing.version}</Text>
+              <Text style={[styles.destText, { marginTop: 6 }]}>₹{(fareQuote.perMemberFarePaise / 100).toFixed(0)} per member</Text>
+              <Text style={styles.notesText}>Vehicle estimate ₹{(fareQuote.totalVehicleFarePaise / 100).toFixed(0)} · {fareQuote.version}</Text>
+            </View>
+          ) : isLoadingFare ? (
+            <View style={styles.notesCard}>
+              <ActivityIndicator size="small" color={WARM_CORE.primary} />
+              <Text style={styles.notesText}>Calculating road-distance fare...</Text>
+            </View>
+          ) : fareError ? (
+            <View style={styles.notesCard}>
+              <MaterialCommunityIcons name="alert-circle-outline" size={20} color={WARM_CORE.error} />
+              <Text style={styles.notesText}>{fareError}</Text>
             </View>
           ) : null}
           {pool.notes ? (
@@ -937,9 +992,9 @@ export default function TaxiPoolDetailsScreen() {
             ) : (
               requestStatus === 'idle' && pool.status === 'OPEN' && (
                 <TouchableOpacity
-                  style={styles.joinButton}
+                  style={[styles.joinButton, !fareQuote && { opacity: 0.55 }]}
                   onPress={handleJoinRequest}
-                  disabled={isJoinLoading}
+                  disabled={isJoinLoading || !fareQuote}
                   activeOpacity={0.85}
                 >
                   {isJoinLoading ? (

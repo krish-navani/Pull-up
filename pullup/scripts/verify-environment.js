@@ -42,6 +42,7 @@ async function runVerification() {
   const expectedUrl = 'https://backend-eight-gamma-77.vercel.app';
   const apiUrl = process.env.EXPO_PUBLIC_API_URL;
   const otpUrl = process.env.EXPO_PUBLIC_OTP_BACKEND_URL;
+  const googleMapsApiKey = process.env.EXPO_PUBLIC_GOOGLE_MAPS_API_KEY;
 
   console.log(`[VERIFY-ENV] EXPO_PUBLIC_API_URL: ${apiUrl}`);
   console.log(`[VERIFY-ENV] EXPO_PUBLIC_OTP_BACKEND_URL: ${otpUrl}`);
@@ -53,6 +54,11 @@ async function runVerification() {
 
   if (otpUrl !== expectedUrl) {
     console.error(`[VERIFY-ENV] ❌ ERROR: EXPO_PUBLIC_OTP_BACKEND_URL is "${otpUrl}" but expected "${expectedUrl}".`);
+    process.exit(1);
+  }
+
+  if (!googleMapsApiKey) {
+    console.error('[VERIFY-ENV] ❌ ERROR: EXPO_PUBLIC_GOOGLE_MAPS_API_KEY is required for native builds.');
     process.exit(1);
   }
 

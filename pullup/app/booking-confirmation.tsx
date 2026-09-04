@@ -408,8 +408,8 @@ export default function BookingConfirmationScreen() {
     apiClient.post('/fare/booking-quote', {
       rideId: ride.id,
       seatsBooked: seatsSelected,
-      pickupLocation: direction === 'atlas-to-home' ? ATLAS_LOCATION : selectedPickup,
-      dropLocation: direction === 'home-to-atlas' ? ATLAS_LOCATION : selectedDrop,
+      pickupLocation: selectedPickup,
+      dropLocation: selectedDrop,
     }).then(response => {
       if (active) {
         setFareQuote(response.data);

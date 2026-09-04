@@ -7,7 +7,7 @@ import {
 } from '@/utils/animationConfig';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
-import { useRouter } from 'expo-router';
+import { Href, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     ActivityIndicator,
@@ -594,6 +594,15 @@ export default function SignupScreen() {
                 )}
               </TouchableOpacity>
             </Animated.View>
+
+            <TouchableOpacity
+              style={styles.reviewerAccess}
+              onPress={() => router.push('/auth/reviewer' as Href)}
+              accessibilityRole="button"
+            >
+              <MaterialCommunityIcons name="shield-account-outline" size={18} color={WARM_CORE.textSecondary} />
+              <Text style={styles.reviewerAccessText}>Google Play reviewer access</Text>
+            </TouchableOpacity>
           </Animated.View>
 
           <View style={styles.footer}>
@@ -611,6 +620,19 @@ export default function SignupScreen() {
 }
 
 const styles = StyleSheet.create({
+  reviewerAccess: {
+    minHeight: 44,
+    marginTop: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  reviewerAccessText: {
+    color: WARM_CORE.textSecondary,
+    fontSize: 14,
+    fontWeight: '600',
+  },
   safeArea: {
     flex: 1,
     backgroundColor: WARM_CORE.background,
@@ -925,3 +947,5 @@ const styles = StyleSheet.create({
     fontSize: 14,
   } as TextStyle,
 });
+
+

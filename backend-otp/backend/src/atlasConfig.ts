@@ -9,6 +9,7 @@ export const ATLAS_LOCATION: RouteCoordinate & { address: string; city: string }
 });
 
 export const ATLAS_GEOFENCE_METERS = 2000;
+export const ATLAS_ENDPOINT_IDENTITY_METERS = 250;
 
 export const isAtlasEndpoint = (location: RouteCoordinate): boolean => {
   const earthRadiusMeters = 6371000;
@@ -18,7 +19,7 @@ export const isAtlasEndpoint = (location: RouteCoordinate): boolean => {
   const deltaLng = (ATLAS_LOCATION.longitude - location.longitude) * Math.PI / 180;
   const a = Math.sin(deltaLat / 2) ** 2
     + Math.cos(lat1) * Math.cos(lat2) * Math.sin(deltaLng / 2) ** 2;
-  return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) <= ATLAS_GEOFENCE_METERS;
+  return earthRadiusMeters * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) <= ATLAS_ENDPOINT_IDENTITY_METERS;
 };
 
 export const canonicalizeAtlasEndpoint = <T extends RouteCoordinate>(location: T): T | typeof ATLAS_LOCATION =>

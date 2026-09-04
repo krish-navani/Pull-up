@@ -83,7 +83,11 @@ const fail = (res: Response, error: any) => {
     FARE_QUOTE_STALE: 'The ride fare changed. Please review the latest quote.',
     INVALID_TAXI_FARE_CONFIGURATION: 'Taxi Pool pricing is temporarily unavailable.',
     RIDE_EXPIRED: 'This ride has already departed. Please choose another ride.',
+    INVALID_DEPARTURE_TIME: 'Departure time must be in the future. Please choose a new date and time.',
     LOCATION_GEOCODE_NOT_FOUND: 'We could not locate one of the ride addresses. Please choose another ride.',
+    ROUTE_PROVIDER_HTTP_400: 'The road route service rejected these locations. Please reselect them and retry.',
+    ROUTE_PROVIDER_INVALID_RESPONSE: 'The road route service returned an invalid route. Please retry.',
+    INVALID_ROUTE_DISTANCE: 'The road route service did not return a usable distance. Please retry.',
   };
   return res.status(status).json({ success: false, code, message: messages[code] || 'Fare could not be calculated from this route.' });
 };
@@ -216,7 +220,15 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
       const pickup = canonicalizeAtlasEndpoint(rawPickup);
       const drop = canonicalizeAtlasEndpoint(rawDrop);
       const departure = new Date(req.body.departureTime);
-      if (!Number.isFinite(departure.getTime()) || departure.getTime() <= Date.now()) throw new Error('INVALID_DEPARTURE_TIME');
+      if (!Number.isFinite(departure.getTime()) || departure.getTime() <= Date.now()) {
+        console.warn('[FARE] create ride rejected before route calculation', {
+          code: 'INVALID_DEPARTURE_TIME',
+          departureTime: req.body.departureTime || null,
+          parsedDepartureTime: Number.isFinite(departure.getTime()) ? departure.toISOString() : null,
+          serverTime: new Date().toISOString(),
+        });
+        throw new Error('INVALID_DEPARTURE_TIME');
+      }
       const totalSeats = Number(req.body.totalSeats ?? req.body.availableSeats);
       const route = await getAuthoritativeRoute(db, pickup, drop);
       const pricing = calculateRidePricing(route.distanceMeters, totalSeats, req.body.fuelType || 'Petrol');
@@ -347,7 +359,15 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
       const destination = canonicalizeAtlasEndpoint(coordinate(req.body.destination, 'destination'));
       validateAtlasRoute(pickup, destination);
       const departure = new Date(req.body.departureTime);
-      if (!Number.isFinite(departure.getTime()) || departure.getTime() <= Date.now()) throw new Error('INVALID_DEPARTURE_TIME');
+      if (!Number.isFinite(departure.getTime()) || departure.getTime() <= Date.now()) {
+        console.warn('[FARE] create taxi pool rejected before route calculation', {
+          code: 'INVALID_DEPARTURE_TIME',
+          departureTime: req.body.departureTime || null,
+          parsedDepartureTime: Number.isFinite(departure.getTime()) ? departure.toISOString() : null,
+          serverTime: new Date().toISOString(),
+        });
+        throw new Error('INVALID_DEPARTURE_TIME');
+      }
       const maxMembers = Number(req.body.maxMembers);
       const route = await getAuthoritativeRoute(db, pickup, destination);
       const pricing = calculateTaxiPoolPricing(route.distanceMeters, route.durationSeconds, maxMembers);

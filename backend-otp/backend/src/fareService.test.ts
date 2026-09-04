@@ -10,6 +10,7 @@ const config: FareConfigSnapshot = {
   driverCostSharePercent: 20,
   passengerCostSharePercent: 80,
   minimumPassengerFarePaise: 100,
+  minimumFareReferenceDistanceMeters: 18000,
   maximumPassengerFarePaise: 70000,
   maximumRideFarePaise: 70000,
   platformFeePaise: 0,
@@ -54,6 +55,19 @@ const realisticFare = calculatePassengerFare({
 });
 assert.ok(realisticFare.totalAmountPaise >= 3000, '18.77 km fare must respect the configured minimum');
 assert.notEqual(realisticFare.totalAmountPaise, 800, '18.77 km fare must not collapse to INR 8');
+const shortPricing = calculateRidePricing(5000, 4, 'Petrol', undefined, productionMinimumConfig);
+const mediumPricing = calculateRidePricing(10000, 4, 'Petrol', undefined, productionMinimumConfig);
+const longPricing = calculateRidePricing(15000, 4, 'Petrol', undefined, productionMinimumConfig);
+const contributionFor = (distanceMeters: number, ridePricing: ReturnType<typeof calculateRidePricing>) =>
+  calculatePassengerFare({
+    driverRouteDistanceMeters: distanceMeters,
+    passengerRouteDistanceMeters: distanceMeters,
+    incrementalDetourDistanceMeters: 0,
+    seatsBooked: 1,
+    ridePricing,
+  }).totalAmountPaise;
+assert.ok(contributionFor(5000, shortPricing) < contributionFor(10000, mediumPricing));
+assert.ok(contributionFor(10000, mediumPricing) < contributionFor(15000, longPricing));
 
 const cappedConfig = { ...config, maximumPassengerFarePaise: 70000, maximumRideFarePaise: 70000 };
 const cappedPricing = calculateRidePricing(1000000, 1, 'Petrol', undefined, cappedConfig);

@@ -10,6 +10,7 @@ export interface FareConfigSnapshot {
   driverCostSharePercent: number;
   passengerCostSharePercent: number;
   minimumPassengerFarePaise: number;
+  minimumFareReferenceDistanceMeters: number;
   maximumPassengerFarePaise: number;
   maximumRideFarePaise: number;
   platformFeePaise: number;
@@ -36,6 +37,7 @@ export interface RidePricing {
   driverCostSharePercent: number;
   passengerCostSharePercent: number;
   minimumPassengerFarePaise: number;
+  minimumFareReferenceDistanceMeters: number;
   maximumPassengerFarePaise: number;
   maximumRideFarePaise: number;
   platformFeePaise: number;
@@ -62,6 +64,7 @@ export interface FareSnapshot {
   operatingCostPerKmPaise: number;
   operatingCostPaise: number;
   passengerContributionPaise: number;
+  distanceAdjustedMinimumPaise: number;
   tollAmountPaise: number;
   detourAmountPaise: number;
   detourCostPaise: number;
@@ -105,6 +108,7 @@ export const getFareConfig = (): FareConfigSnapshot => {
     driverCostSharePercent,
     passengerCostSharePercent,
     minimumPassengerFarePaise: positiveInt(process.env.FARE_MIN_PASSENGER_PAISE, 3000),
+    minimumFareReferenceDistanceMeters: positiveInt(process.env.FARE_MIN_REFERENCE_DISTANCE_METERS, 18000),
     maximumPassengerFarePaise: positiveInt(process.env.FARE_MAX_PASSENGER_PAISE, 70000),
     maximumRideFarePaise: positiveInt(process.env.FARE_MAX_RIDE_PAISE, 70000),
     platformFeePaise: Math.max(0, Number(process.env.FARE_PLATFORM_FEE_PAISE || 0)),
@@ -138,10 +142,14 @@ export const calculateRidePricing = (
   const estimatedMaintenanceCostPaise = roundMoney(roadDistanceKm * fareConfig.maintenanceCostPerKmPaise, fareConfig.roundingPolicy);
   const estimatedTripCostPaise = roundMoney(roadDistanceKm * operatingCostPerKmPaise, fareConfig.roundingPolicy);
   const contribution = estimatedTripCostPaise * (fareConfig.passengerCostSharePercent / 100) / totalSeats;
+  const distanceAdjustedMinimumPaise = fareConfig.minimumPassengerFarePaise * Math.min(
+    1,
+    distanceMeters / fareConfig.minimumFareReferenceDistanceMeters,
+  );
   const automaticPassengerContributionPaise = Math.min(
     fareConfig.maximumPassengerFarePaise,
     fareConfig.maximumRideFarePaise,
-    roundMoney(Math.max(fareConfig.minimumPassengerFarePaise, contribution), fareConfig.roundingPolicy),
+    roundMoney(Math.max(distanceAdjustedMinimumPaise, contribution), fareConfig.roundingPolicy),
   );
 
   return {
@@ -162,6 +170,7 @@ export const calculateRidePricing = (
     driverCostSharePercent: fareConfig.driverCostSharePercent,
     passengerCostSharePercent: fareConfig.passengerCostSharePercent,
     minimumPassengerFarePaise: fareConfig.minimumPassengerFarePaise,
+    minimumFareReferenceDistanceMeters: fareConfig.minimumFareReferenceDistanceMeters,
     maximumPassengerFarePaise: fareConfig.maximumPassengerFarePaise,
     maximumRideFarePaise: fareConfig.maximumRideFarePaise,
     platformFeePaise: fareConfig.platformFeePaise,
@@ -190,10 +199,17 @@ export const calculatePassengerFare = (input: {
     * (ridePricing.passengerCostSharePercent / 100)
     / ridePricing.totalPassengerSeats
     * input.seatsBooked;
-  const minimumForSeats = ridePricing.minimumPassengerFarePaise * input.seatsBooked;
+  const segmentShareOfReferenceRoute = Math.min(
+    1,
+    input.passengerRouteDistanceMeters / ridePricing.minimumFareReferenceDistanceMeters,
+  );
+  const distanceAdjustedMinimumPaise = roundMoney(
+    ridePricing.minimumPassengerFarePaise * segmentShareOfReferenceRoute * input.seatsBooked,
+    ridePricing.roundingPolicy,
+  );
   const baseFarePaise = Math.min(
     ridePricing.maximumPassengerFarePaise * input.seatsBooked,
-    roundMoney(Math.max(minimumForSeats, allocatedContribution), ridePricing.roundingPolicy),
+    roundMoney(Math.max(distanceAdjustedMinimumPaise, allocatedContribution), ridePricing.roundingPolicy),
   );
   const detourCostPaise = roundMoney(detourDistanceKm * ridePricing.operatingCostPerKmPaise, ridePricing.roundingPolicy);
   const passengerContributionPaise = baseFarePaise + detourCostPaise;
@@ -219,6 +235,7 @@ export const calculatePassengerFare = (input: {
     operatingCostPerKmPaise: ridePricing.operatingCostPerKmPaise,
     operatingCostPaise,
     passengerContributionPaise,
+    distanceAdjustedMinimumPaise,
     tollAmountPaise: 0,
     detourAmountPaise: detourCostPaise,
     detourCostPaise,

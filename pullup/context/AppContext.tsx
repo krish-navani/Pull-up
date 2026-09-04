@@ -1147,9 +1147,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           } catch (refreshError) {
             console.warn('[CONTEXT] ⚠️ Background refresh failed (will use cached data):', refreshError);
           }
-          return;
         }
-        console.log('[CONTEXT] ℹ️ No user in storage, setting up Firebase auth listener');
+        if (!storedUser) {
+          console.log('[CONTEXT] ℹ️ No user in storage, setting up Firebase auth listener');
+        }
       } catch (error) {
         console.error('[CONTEXT] Error loading from storage:', error);
         // Continue with Firebase auth anyway

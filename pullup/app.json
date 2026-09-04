@@ -19,9 +19,13 @@
           "location",
           "remote-notification"
         ],
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "Allow PullUp to take a profile photo or photograph a driving licence for verification.",
+        "NSPhotoLibraryUsageDescription": "Allow PullUp to choose a profile photo or driving licence image for verification.",
+        "NSLocationWhenInUseUsageDescription": "Allow PullUp to use your precise location while choosing pickup points and navigating an active ride.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Allow PullUp to share your location in the background only while an active ride is being tracked."
       },
-      "bundleIdentifier": "com.pullup.app"
+      "bundleIdentifier": "com.pullupapp"
     },
     "android": {
       "adaptiveIcon": {
@@ -81,10 +85,24 @@
           "sounds": []
         }
       ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "extraPods": [
+              {
+                "name": "GoogleUtilities",
+                "modular_headers": true
+              }
+            ]
+          }
+        }
+      ],
       "@react-native-firebase/app",
       "./plugins/withReanimatedWorkletsBuildFix",
       "./plugins/withRazorpayAndroidFix",
-      "./plugins/withNotificationFix"
+      "./plugins/withNotificationFix",
+      "./plugins/withGoogleMapsGradleEnv"
     ],
     "experiments": {
       "typedRoutes": true

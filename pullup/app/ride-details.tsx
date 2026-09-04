@@ -581,7 +581,7 @@ export default function RideDetailsScreen() {
         };
       default:
         return {
-          text: 'Request Seat',
+          text: 'Review Fare & Request',
           icon: 'plus-circle',
           color: WARM_CORE.white,
           bgColor: WARM_CORE.primary,
@@ -1006,8 +1006,9 @@ export default function RideDetailsScreen() {
       {/* STICKY FOOTER */}
       <View style={styles.footer}>
         <View>
-          <Text style={styles.totalLabel}>TOTAL TO PAY</Text>
+          <Text style={styles.totalLabel}>ESTIMATED FARE / SEAT</Text>
           <Text style={styles.totalAmount}>₹{ride.price}</Text>
+          <Text style={styles.fareHint}>Exact fare after pickup selection</Text>
         </View>
 
         {ride && auth.user && (ride.driverId === auth.user.id || ((requestStatus === 'accepted' || requestStatus === 'confirmed') && paymentStatus === 'paid')) ? (
@@ -1570,6 +1571,12 @@ const styles = StyleSheet.create({
     fontSize: 32,
     fontWeight: "800",
     color: WARM_CORE.primary,
+  },
+  fareHint: {
+    maxWidth: 180,
+    fontSize: 10,
+    lineHeight: 14,
+    color: WARM_CORE.textSecondary,
   },
   ctaButton: {
     paddingVertical: 15,

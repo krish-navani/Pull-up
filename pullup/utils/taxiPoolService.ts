@@ -36,6 +36,27 @@ export interface TaxiPool {
     latitude: number;
     longitude: number;
   };
+  pickupLocation?: {
+    address: string;
+    city?: string;
+    latitude: number;
+    longitude: number;
+    placeId?: string;
+  };
+  price?: number;
+  pricing?: {
+    distanceMeters: number;
+    durationSeconds: number;
+    perMemberFarePaise: number;
+    totalVehicleFarePaise: number;
+    version: string;
+  };
+  route?: {
+    origin?: TaxiPool['pickupLocation'];
+    destination?: TaxiPool['destination'];
+    distanceMeters?: number;
+    durationSeconds?: number;
+  };
   departureTime: string; // ISO String
   maxMembers: number;
   memberCount: number;

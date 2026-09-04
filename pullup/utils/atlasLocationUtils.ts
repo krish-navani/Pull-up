@@ -10,7 +10,8 @@ export const ATLAS_LOCATION = {
   city: 'Mumbai',
 } as const;
 
-export const ATLAS_RADIUS_KM = 2;
+export const ATLAS_ENDPOINT_IDENTITY_METERS = 250;
+export const ATLAS_ARRIVAL_GEOFENCE_METERS = 2000;
 
 /**
  * Calculate distance between two coordinates using Haversine formula
@@ -36,16 +37,30 @@ export function calculateDistance(
 }
 
 /**
- * Check if a location is within Atlas radius
+ * Check whether a coordinate represents the Atlas endpoint itself.
  */
-export function isWithinAtlasRadius(latitude: number, longitude: number): boolean {
+export function isAtlasEndpoint(latitude: number, longitude: number): boolean {
   const distance = calculateDistance(
     latitude,
     longitude,
     ATLAS_LOCATION.latitude,
     ATLAS_LOCATION.longitude
   );
-  return distance <= ATLAS_RADIUS_KM;
+  return distance * 1000 <= ATLAS_ENDPOINT_IDENTITY_METERS;
+}
+
+/**
+ * Check whether a device is within the wider ride arrival/completion geofence.
+ * This must never be used to rewrite a selected pickup or drop-off identity.
+ */
+export function isWithinAtlasArrivalGeofence(latitude: number, longitude: number): boolean {
+  const distance = calculateDistance(
+    latitude,
+    longitude,
+    ATLAS_LOCATION.latitude,
+    ATLAS_LOCATION.longitude
+  );
+  return distance * 1000 <= ATLAS_ARRIVAL_GEOFENCE_METERS;
 }
 
 /**
@@ -55,7 +70,7 @@ export function isWithinAtlasRadius(latitude: number, longitude: number): boolea
  * - 'other': Neither (not allowed in production)
  */
 export function canonicalizeAtlasEndpoint<T extends { latitude: number; longitude: number }>(location: T): T | typeof ATLAS_LOCATION {
-  return isWithinAtlasRadius(location.latitude, location.longitude) ? ATLAS_LOCATION : location;
+  return isAtlasEndpoint(location.latitude, location.longitude) ? ATLAS_LOCATION : location;
 }
 
 export function getRideDirectionType(
@@ -64,8 +79,8 @@ export function getRideDirectionType(
   dropoffLat: number,
   dropoffLon: number
 ): 'home-to-atlas' | 'atlas-to-home' | 'other' {
-  const pickupIsAtlas = isWithinAtlasRadius(pickupLat, pickupLon);
-  const dropoffIsAtlas = isWithinAtlasRadius(dropoffLat, dropoffLon);
+  const pickupIsAtlas = isAtlasEndpoint(pickupLat, pickupLon);
+  const dropoffIsAtlas = isAtlasEndpoint(dropoffLat, dropoffLon);
 
   if (!pickupIsAtlas && dropoffIsAtlas) {
     return 'home-to-atlas';

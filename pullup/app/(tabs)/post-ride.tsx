@@ -2,7 +2,7 @@ import LocationSearchInput from '@/components/LocationSearchInput';
 import { useAppContext } from '@/context/AppContext';
 import { Location } from '@/types';
 import { WARM_CORE } from '@/constants/theme';
-import { ATLAS_LOCATION, isWithinAtlasRadius, validateRideDirections } from '@/utils/atlasLocationUtils';
+import { ATLAS_LOCATION, isAtlasEndpoint, validateRideDirections } from '@/utils/atlasLocationUtils';
 import { getCurrentLocation } from '@/utils/locationUtils';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -709,9 +709,9 @@ function PostRideScreenInner() {
           !isNaN(currentLocation.longitude)) {
         let withinAtlas = false;
         try {
-          withinAtlas = isWithinAtlasRadius(currentLocation.latitude, currentLocation.longitude);
+          withinAtlas = isAtlasEndpoint(currentLocation.latitude, currentLocation.longitude);
         } catch (e) {
-          console.warn('[POST RIDE] isWithinAtlasRadius threw:', e);
+          console.warn('[POST RIDE] isAtlasEndpoint threw:', e);
         }
 
         if (withinAtlas) {
@@ -904,6 +904,11 @@ function PostRideScreenInner() {
       setError('Please select departure time');
       return;
     }
+    const selectedDeparture = new Date(`${formData.departureDate}T${formData.departureTime}`);
+    if (!Number.isFinite(selectedDeparture.getTime()) || selectedDeparture.getTime() <= Date.now()) {
+      setError('Departure time must be in the future. Please choose a new date and time.');
+      return;
+    }
     if (!rideQuote) {
       setError("We couldn't calculate the road distance. Please try again.");
       return;
@@ -916,7 +921,7 @@ function PostRideScreenInner() {
 
     setIsLoading(true);
     try {
-      const selectedDate = new Date(`${formData.departureDate}T${formData.departureTime}`);
+      const selectedDate = selectedDeparture;
       let weekdayDates: Date[] = [];
 
       if (isRecurringWeekdays) {
@@ -2846,4 +2851,3 @@ const styles = StyleSheet.create({
     color: WARM_CORE.primary,
   },
 });
-

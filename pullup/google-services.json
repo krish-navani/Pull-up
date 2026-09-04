@@ -7,28 +7,6 @@
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:286433202099:android:d1fa230db7382a023005c6",
-        "android_client_info": {
-          "package_name": "com.pullup.app"
-        }
-      },
-      "oauth_client": [],
-      "api_key": [
-        {
-          "current_key": "AIzaSyDnBOMpesEh50yFK9xA1NYr2VmXXwvTLDw"
-        },
-        {
-          "current_key": "AIzaSyCdnyZ7HERA-Oc8OONAsuzIhATlcMweuFs"
-        }
-      ],
-      "services": {
-        "appinvite_service": {
-          "other_platform_oauth_client": []
-        }
-      }
-    },
-    {
-      "client_info": {
         "mobilesdk_app_id": "1:286433202099:android:a5fd1a20444158e53005c6",
         "android_client_info": {
           "package_name": "com.pullupapp"
