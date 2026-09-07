@@ -20,6 +20,14 @@ export interface User {
   phone?: string;
   profileImage?: string | null;
   homeAddress?: Location | null;
+  homeToAtlasDistanceKm?: number;
+  homeFareEstimate?: {
+    label: string;
+    carpoolPerSeatRupees: number;
+    taxiPoolPerMemberRupees: number;
+    assumptions: string;
+    calculatedAt?: string;
+  };
   licenseVerified?: boolean;
   profileComplete: boolean;
   createdAt?: string;

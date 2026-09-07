@@ -78,6 +78,7 @@ export interface OTPSignUpData {
   role: 'passenger' | 'driver';
   profileImage?: string; // Cloudinary URL for profile picture
   homeAddress?: User['homeAddress'];
+  homeToAtlasDistanceKm?: number;
 }
 
 export interface OTPLoginData {
@@ -181,6 +182,7 @@ export const verifyOTPAndCreateAccount = async (
         role: signUpData.role,
         profileImage: signUpData.profileImage || null,
         homeAddress: signUpData.homeAddress || null,
+        homeToAtlasDistanceKm: signUpData.homeToAtlasDistanceKm,
       },
     });
     const userData = profileResponse.data?.user as User | undefined;

@@ -44,6 +44,7 @@ export const config = {
     user: process.env.MAIL_USER || '',
     password: process.env.MAIL_PASSWORD || '',
     fromName: process.env.MAIL_FROM_NAME || 'PullUp',
+    fromAddress: process.env.MAIL_FROM_ADDRESS || 'noreply@pullupapp.in',
     secondary: {
       host: process.env.SECONDARY_MAIL_HOST || 'smtp.gmail.com',
       port: parseInt(process.env.SECONDARY_MAIL_PORT || '465', 10),

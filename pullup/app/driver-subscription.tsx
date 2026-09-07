@@ -21,7 +21,7 @@ import { db } from '@/utils/firebase';
 import apiClient from '@/utils/backendApiClient';
 
 interface Plan {
-  id: 'monthly' | 'quarterly' | 'yearly';
+  id: 'monthly' | 'semester';
   name: string;
   price: number;
   duration: string;
@@ -34,7 +34,14 @@ const PLANS: Plan[] = [
     id: 'monthly',
     name: 'Monthly Driver Pass',
     price: 250,
-    duration: 'Renews monthly',
+    duration: 'Renews monthly until paused or cancelled',
+  },
+  {
+    id: 'semester',
+    name: 'Semester Driver Pass',
+    price: 999,
+    duration: 'Renews every 6 months until paused or cancelled',
+    savings: 'Save ₹501',
   },
 ];
 
@@ -42,11 +49,13 @@ export default function DriverSubscriptionScreen() {
   const router = useRouter();
   const { auth } = useAppContext();
 
-  const [selectedPlan] = useState<'monthly'>('monthly');
+  const [selectedPlan, setSelectedPlan] = useState<'monthly' | 'semester'>('monthly');
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [subscription, setSubscription] = useState<any>(null);
   const status = String(subscription?.status || 'inactive');
+  const selectedPlanDetails = PLANS.find(plan => plan.id === selectedPlan)!;
+  const activePlanName = subscription?.product === 'driver_semester' ? 'Semester Driver Pass' : 'Monthly Driver Pass';
   const isActive = status === 'active';
   const isPausable = ['active', 'authenticated'].includes(status);
 
@@ -72,7 +81,7 @@ export default function DriverSubscriptionScreen() {
     }
     setSubmitting(true);
     try {
-      const response = await apiClient.post('/subscriptions/autopay/create');
+      const response = await apiClient.post('/subscriptions/autopay/create', { planKey: selectedPlan });
       const data = response.data;
       if (!data?.subscriptionId || !data?.keyId || !data?.amount) {
         throw new Error(data?.message || 'AutoPay authorization could not be initialized.');
@@ -83,13 +92,13 @@ export default function DriverSubscriptionScreen() {
         amount: data.amount,
         currency: data.currency || 'INR',
         name: 'PullUp',
-        description: 'Monthly Driver Pass AutoPay mandate',
+        description: `${selectedPlanDetails.name} AutoPay mandate`,
         prefill: {
           name: auth.user.fullName,
           email: auth.user.email,
           contact: auth.user.phone,
         },
-        notes: { userId: auth.user.id, product: 'driver_monthly_autopay' },
+        notes: { userId: auth.user.id, product: `driver_${selectedPlan}_autopay` },
         theme: { color: WARM_CORE.primary },
         readonly: { name: true, email: true },
       });
@@ -102,7 +111,7 @@ export default function DriverSubscriptionScreen() {
         razorpay_signature: payment.razorpay_signature,
       });
       await fetchSubscriptionStatus();
-      Alert.alert('AutoPay authorized', 'Your monthly mandate was authorized. Subscription state will update from Razorpay webhooks.');
+      Alert.alert('AutoPay authorized', 'Your ' + selectedPlanDetails.name + ' mandate was authorized. Subscription state will update from Razorpay webhooks.');
     } catch (err: any) {
       console.error('[AUTOPAY ERROR]', err);
       Alert.alert('AutoPay not enabled', err?.description || err?.message || 'Authorization was cancelled or failed.');
@@ -169,17 +178,17 @@ export default function DriverSubscriptionScreen() {
           </View>
           <Text style={styles.statusDescription}>
             {isActive
-              ? '₹' + ((subscription?.amountPaise || 25000) / 100).toFixed(0) + ' monthly · next debit ' +
+              ? '₹' + (subscription?.amountPaise / 100).toFixed(0) + ' · ' + activePlanName + ' · next debit ' +
                 (subscription?.nextChargeAt ? new Date(subscription.nextChargeAt * 1000).toLocaleDateString() : 'awaiting Razorpay schedule')
-              : 'Enable AutoPay only after reviewing the ₹250 monthly amount. Razorpay will ask you to explicitly authorize the mandate.'}
+              : 'Choose a pass and review its recurring amount. Razorpay will ask you to explicitly authorize the mandate.'}
           </Text>
         </View>
 
         <View style={styles.benefitsCard}>
-          <Text style={styles.benefitsTitle}>Monthly Driver Pass</Text>
+          <Text style={styles.benefitsTitle}>Driver Pass AutoPay</Text>
           <View style={styles.benefitRow}>
             <MaterialCommunityIcons name="cash-sync" size={20} color={WARM_CORE.primary} />
-            <Text style={styles.benefitText}>₹250 billed monthly after explicit UPI AutoPay, card, or eMandate authorization</Text>
+            <Text style={styles.benefitText}>Choose ₹250 monthly or ₹999 every six months, then explicitly authorize UPI AutoPay, card, or eMandate</Text>
           </View>
           <View style={styles.benefitRow}>
             <MaterialCommunityIcons name="calendar-clock" size={20} color={WARM_CORE.primary} />
@@ -191,13 +200,24 @@ export default function DriverSubscriptionScreen() {
           </View>
         </View>
 
-        <View style={[styles.planCard, styles.planCardSelected]}>
-          <View style={styles.planInfo}>
-            <Text style={styles.planName}>Monthly Driver Pass</Text>
-            <Text style={styles.planDuration}>Renews monthly until paused or cancelled</Text>
-          </View>
-          <Text style={styles.planPrice}>₹250</Text>
-        </View>
+        <Text style={styles.plansSectionTitle}>Choose your pass</Text>
+        {PLANS.map(plan => (
+          <TouchableOpacity
+            key={plan.id}
+            style={[styles.planCard, selectedPlan === plan.id && styles.planCardSelected]}
+            onPress={() => setSelectedPlan(plan.id)}
+            disabled={isActive || submitting}
+          >
+            <View style={styles.planInfo}>
+              <View style={styles.planRow}>
+                <Text style={styles.planName}>{plan.name}</Text>
+                {plan.savings ? <View style={styles.savingsBadge}><Text style={styles.savingsText}>{plan.savings}</Text></View> : null}
+              </View>
+              <Text style={styles.planDuration}>{plan.duration}</Text>
+            </View>
+            <Text style={styles.planPrice}>₹{plan.price}</Text>
+          </TouchableOpacity>
+        ))}
 
         <TouchableOpacity
           style={[styles.subscribeBtn, (submitting || isActive) && styles.disabledBtn]}

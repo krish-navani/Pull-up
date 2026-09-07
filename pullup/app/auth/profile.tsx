@@ -72,6 +72,7 @@ interface FormData {
   division: string;
   appId: string;
   homeAddress: PullUpLocation | null;
+  homeToAtlasDistanceKm: string;
   role?: 'driver' | 'passenger';
 }
 
@@ -119,6 +120,7 @@ export default function ProfileScreen() {
     division: '',
     appId: '',
     homeAddress: null,
+    homeToAtlasDistanceKm: '',
   });
 
   const [showYearDropdown, setShowYearDropdown] = useState(false);
@@ -280,6 +282,11 @@ export default function ProfileScreen() {
       setError('What is your home address?');
       return;
     }
+    const homeToAtlasDistanceKm = Number(formData.homeToAtlasDistanceKm);
+    if (!Number.isFinite(homeToAtlasDistanceKm) || homeToAtlasDistanceKm < 0.5 || homeToAtlasDistanceKm > 100) {
+      setError('Enter an approximate home-to-Atlas distance between 0.5 and 100 km');
+      return;
+    }
 
     // Step 2: Validate email and OTP parameters
     if (!emailFromParams || !otpFromParams) {
@@ -314,6 +321,7 @@ export default function ProfileScreen() {
         role,
         profileImage: image || undefined, // Include uploaded image URL or undefined if no image
         homeAddress: formData.homeAddress,
+        homeToAtlasDistanceKm,
       });
 
       console.log('[PROFILE] verifyOTPAndSignUp completed, user role:', role);
@@ -357,7 +365,10 @@ export default function ProfileScreen() {
     formData.course.length > 0 &&
     formData.division.length > 0 &&
     formData.appId.trim().length > 0 &&
-    !!formData.homeAddress;
+    !!formData.homeAddress &&
+    Number.isFinite(Number(formData.homeToAtlasDistanceKm)) &&
+    Number(formData.homeToAtlasDistanceKm) >= 0.5 &&
+    Number(formData.homeToAtlasDistanceKm) <= 100;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -722,6 +733,25 @@ export default function ProfileScreen() {
               placeholder="Search your home address"
               onChange={(location) => handleInputChange('homeAddress', location)}
             />
+          </View>
+
+          <View style={styles.fieldContainer}>
+            <Text style={styles.label}>Approximate distance from home to Atlas</Text>
+            <View style={styles.inputWrapper}>
+              <View style={styles.inputIcon}>
+                <MaterialCommunityIcons name="map-marker-distance" size={20} color={WARM_CORE.textSecondary} />
+              </View>
+              <TextInput
+                style={styles.input}
+                placeholder="Distance in km"
+                placeholderTextColor={WARM_CORE.textSecondary}
+                value={formData.homeToAtlasDistanceKm}
+                onChangeText={(text) => handleInputChange('homeToAtlasDistanceKm', text.replace(/[^0-9.]/g, ''))}
+                keyboardType="decimal-pad"
+                maxLength={5}
+              />
+            </View>
+            <Text style={{ marginTop: 6, fontSize: 12, lineHeight: 17, color: WARM_CORE.textSecondary }}>Used only for a planning estimate. Actual ride fares use the live road route.</Text>
           </View>
 
           {/* Role Selection */}

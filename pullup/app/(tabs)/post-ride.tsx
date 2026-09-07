@@ -1303,6 +1303,12 @@ function PostRideScreenInner() {
         <Animated.View style={[styles.section, { opacity: section3Anim.opacity, transform: [{ translateY: section3Anim.translateY }] }]}>
           <Text style={styles.sectionTitle}>PRICING & SEATS</Text>
 
+          {auth.user?.homeFareEstimate ? (
+            <View style={{ marginBottom: 12, padding: 14, borderRadius: 8, backgroundColor: 'rgba(212,80,10,0.06)', borderWidth: 1, borderColor: 'rgba(212,80,10,0.18)' }}>
+              <Text style={{ color: WARM_CORE.text, fontSize: 14, fontWeight: '700' }}>Home planning estimate: ₹{auth.user.homeFareEstimate.carpoolPerSeatRupees} per seat</Text>
+              <Text style={{ color: WARM_CORE.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 4 }}>Based on your approximate home-to-Atlas distance. This is not a guaranteed fare; the live route quote below is authoritative.</Text>
+            </View>
+          ) : null}
           <View style={styles.priceCard}>
             <View style={styles.priceIcon}>
               <MaterialCommunityIcons name="calculator-variant" size={20} color={WARM_CORE.success} />

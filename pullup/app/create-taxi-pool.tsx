@@ -4,6 +4,7 @@ import {
   Animated,
   Easing,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -186,7 +187,7 @@ export default function CreateTaxiPoolScreen() {
   };
 
   const handleDateChange = (event: any, selectedDate?: Date) => {
-    setShowDatePicker(false);
+    if (Platform.OS !== 'ios') setShowDatePicker(false);
     if (selectedDate) {
       const year = selectedDate.getFullYear();
       const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
@@ -197,7 +198,7 @@ export default function CreateTaxiPoolScreen() {
   };
 
   const handleTimeChange = (event: any, selectedTime?: Date) => {
-    setShowTimePicker(false);
+    if (Platform.OS !== 'ios') setShowTimePicker(false);
     if (selectedTime) {
       const hours = String(selectedTime.getHours()).padStart(2, '0');
       const minutes = String(selectedTime.getMinutes()).padStart(2, '0');
@@ -528,6 +529,12 @@ export default function CreateTaxiPoolScreen() {
               </View>
             </View>
 
+            {auth.user?.homeFareEstimate ? (
+              <View style={{ marginBottom: 16, padding: 14, borderRadius: 8, backgroundColor: 'rgba(212,80,10,0.06)', borderWidth: 1, borderColor: 'rgba(212,80,10,0.18)' }}>
+                <Text style={{ color: WARM_CORE.text, fontSize: 14, fontWeight: '700' }}>Home planning estimate: ₹{auth.user.homeFareEstimate.taxiPoolPerMemberRupees} per member</Text>
+                <Text style={{ color: WARM_CORE.textSecondary, fontSize: 12, lineHeight: 17, marginTop: 4 }}>Based on your approximate home-to-Atlas distance. This is not a guaranteed fare; the live route quote below is authoritative.</Text>
+              </View>
+            ) : null}
             {/* AUTHORITATIVE FARE ESTIMATE */}
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>ESTIMATED SHARED TAXI FARE</Text>
@@ -608,31 +615,35 @@ export default function CreateTaxiPoolScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* DatePicker Overlay */}
-      {showDatePicker && DateTimePicker != null && (
-        <DateTimePicker
-          value={departureDate ? new Date(`${departureDate}T00:00:00`) : new Date()}
-          mode="date"
-          display="default"
-          minimumDate={new Date()}
-          onChange={handleDateChange}
-        />
-      )}
-
-      {/* TimePicker Overlay */}
-      {showTimePicker && DateTimePicker != null && (
-        <DateTimePicker
-          value={departureTime ? new Date(`2026-01-01T${departureTime}:00`) : new Date()}
-          mode="time"
-          display="default"
-          onChange={handleTimeChange}
-        />
-      )}
+      {Platform.OS === 'ios' && DateTimePicker != null ? (
+        <Modal transparent animationType="slide" visible={showDatePicker || showTimePicker} onRequestClose={() => { setShowDatePicker(false); setShowTimePicker(false); }}>
+          <View style={styles.pickerBackdrop}>
+            <Pressable style={StyleSheet.absoluteFill} onPress={() => { setShowDatePicker(false); setShowTimePicker(false); }} />
+            <View style={styles.pickerSheet}>
+              <View style={styles.pickerHeader}>
+                <TouchableOpacity onPress={() => { setShowDatePicker(false); setShowTimePicker(false); }}><Text style={styles.pickerCancel}>Cancel</Text></TouchableOpacity>
+                <Text style={styles.pickerTitle}>{showDatePicker ? 'Select date' : 'Select time'}</Text>
+                <TouchableOpacity onPress={() => { setShowDatePicker(false); setShowTimePicker(false); }}><Text style={styles.pickerDone}>Done</Text></TouchableOpacity>
+              </View>
+              {showDatePicker ? <DateTimePicker value={departureDate ? new Date(`${departureDate}T00:00:00`) : new Date()} mode="date" display="spinner" minimumDate={new Date()} onChange={handleDateChange} /> : null}
+              {showTimePicker ? <DateTimePicker value={departureTime ? new Date(`2026-01-01T${departureTime}:00`) : new Date()} mode="time" display="spinner" onChange={handleTimeChange} /> : null}
+            </View>
+          </View>
+        </Modal>
+      ) : null}
+      {Platform.OS !== 'ios' && showDatePicker && DateTimePicker != null ? <DateTimePicker value={departureDate ? new Date(`${departureDate}T00:00:00`) : new Date()} mode="date" display="default" minimumDate={new Date()} onChange={handleDateChange} /> : null}
+      {Platform.OS !== 'ios' && showTimePicker && DateTimePicker != null ? <DateTimePicker value={departureTime ? new Date(`2026-01-01T${departureTime}:00`) : new Date()} mode="time" display="default" onChange={handleTimeChange} /> : null}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
+  pickerBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.28)' } as ViewStyle,
+  pickerSheet: { backgroundColor: WARM_CORE.background, borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingBottom: 24 } as ViewStyle,
+  pickerHeader: { minHeight: 52, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 18, borderBottomWidth: 1, borderBottomColor: WARM_CORE.border } as ViewStyle,
+  pickerTitle: { fontSize: 15, fontWeight: '700', color: WARM_CORE.text } as TextStyle,
+  pickerCancel: { fontSize: 15, color: WARM_CORE.textSecondary } as TextStyle,
+  pickerDone: { fontSize: 15, fontWeight: '700', color: WARM_CORE.primary } as TextStyle,
   safeArea: {
     flex: 1,
     backgroundColor: WARM_CORE.background,

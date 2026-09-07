@@ -31,6 +31,7 @@ const logCandidateConfig = (candidate: SmtpCandidate, phase: string) => {
   console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] secure=${candidate.secure}`);
   console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] requireTLS=${candidate.requireTLS}`);
   console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] user=${candidate.user || 'NOT_SET'}`);
+  console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] from=${config.mail.fromAddress}`);
   console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] passwordPresent=${candidate.pass.length > 0}`);
   console.log(`[SMTP DIAGNOSTICS] [${candidate.name}] passwordLength=${candidate.pass.length}`);
 };
@@ -207,7 +208,7 @@ export const sendOTPEmail = async (
     try {
       const transporter = createTransporter(candidate);
       const info = await transporter.sendMail({
-        from: `"${candidate.fromName}" <${candidate.user}>`,
+        from: `"${candidate.fromName}" <${config.mail.fromAddress}>`,
         to: email,
         subject: `Your PullUp OTP: ${otp}`,
         html: htmlContent,
@@ -236,7 +237,7 @@ export const sendOTPEmail = async (
         tls: { rejectUnauthorized: false },
       });
       const info = await etherealTransporter.sendMail({
-        from: '"PullUp Support" <noreply@pullupapp.in>',
+        from: `"PullUp Support" <${config.mail.fromAddress}>`,
         to: email,
         subject: `Your PullUp OTP: ${otp}`,
         html: htmlContent,

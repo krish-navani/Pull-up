@@ -10,7 +10,7 @@ import admin from 'firebase-admin';
 import { getHaversineDistance, getDistanceToPolyline, decodePolyline, simplifyDouglasPeucker } from './routeMatching.js';
 import { registerFareRoutes } from './fareRoutes.js';
 import { getAuthoritativeRoute } from './fareRouteService.js';
-import { getStoredBookingAmountPaise } from './fareService.js';
+import { calculateRidePricing, calculateTaxiPoolPricing, getStoredBookingAmountPaise } from './fareService.js';
 import { ATLAS_GEOFENCE_METERS, ATLAS_LOCATION } from './atlasConfig.js';
 import { consumeDeletionAuthorization, createDeletionAuthorization, deletePullUpAccount } from './accountDeletionService.js';
 
@@ -469,6 +469,26 @@ const canonicalNameFromUniversityEmail = (email: string): string => {
   return parts.map(part => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
 };
 
+const buildHomeFareEstimate = (distanceKm: number) => {
+  if (!Number.isFinite(distanceKm) || distanceKm < 0.5 || distanceKm > 100) {
+    throw new Error('INVALID_HOME_DISTANCE');
+  }
+  const distanceMeters = Math.round(distanceKm * 1000);
+  const planningSpeedKph = Number(process.env.FARE_PLANNING_AVG_SPEED_KPH || 25);
+  if (!Number.isFinite(planningSpeedKph) || planningSpeedKph < 5 || planningSpeedKph > 80) {
+    throw new Error('INVALID_FARE_PLANNING_CONFIG');
+  }
+  const estimatedDurationSeconds = Math.round((distanceKm / planningSpeedKph) * 3600);
+  const carpool = calculateRidePricing(distanceMeters, 4, 'Petrol');
+  const taxiPool = calculateTaxiPoolPricing(distanceMeters, estimatedDurationSeconds, 4);
+  return {
+    label: 'Estimated fare',
+    carpoolPerSeatRupees: Math.round(carpool.automaticPassengerContributionPaise / 100),
+    taxiPoolPerMemberRupees: Math.round(taxiPool.perMemberFarePaise / 100),
+    assumptions: 'Planning estimate using your approximate distance, 4 total riders, and typical traffic. Actual fare uses the live Google road route.',
+    calculatedAt: new Date().toISOString(),
+  };
+};
 router.post('/profile/initialize', async (req: Request, res: Response) => {
   try {
     const authorization = req.headers.authorization || '';
@@ -477,6 +497,9 @@ router.post('/profile/initialize', async (req: Request, res: Response) => {
     const email = String((decoded as any).universityEmail || '').trim().toLowerCase();
     const fullName = canonicalNameFromUniversityEmail(email);
     const profile = req.body?.profile || {};
+    const hasHomeDistance = profile.homeToAtlasDistanceKm !== undefined && profile.homeToAtlasDistanceKm !== null && profile.homeToAtlasDistanceKm !== '';
+    const homeToAtlasDistanceKm = hasHomeDistance ? Number(profile.homeToAtlasDistanceKm) : null;
+    const homeFareEstimate = homeToAtlasDistanceKm === null ? null : buildHomeFareEstimate(homeToAtlasDistanceKm);
     const allowed = {
       id: decoded.uid, email, fullName,
       phone: String(profile.phone || '').trim(),
@@ -485,6 +508,7 @@ router.post('/profile/initialize', async (req: Request, res: Response) => {
       role: profile.role === 'driver' ? 'driver' : 'passenger',
       profileImage: profile.profileImage || null,
       homeAddress: profile.homeAddress || null,
+      homeToAtlasDistanceKm, homeFareEstimate,
       licenseVerified: false, profileComplete: true,
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     };
@@ -750,38 +774,49 @@ router.post('/verify-subscription', async (req: Request, res: Response) => {
   }
 });
 
-const getMonthlyAutopayPlan = () => {
-  const planId = String(process.env.RAZORPAY_MONTHLY_PLAN_ID || '').trim();
-  const amountPaise = Number(process.env.RAZORPAY_MONTHLY_PLAN_AMOUNT_PAISE);
+type AutopayPlanKey = 'monthly' | 'semester';
+
+const getAutopayPlan = (planKey: unknown) => {
+  const key: AutopayPlanKey = planKey === 'semester' ? 'semester' : 'monthly';
+  const isSemester = key === 'semester';
+  const planId = String(process.env[isSemester ? 'RAZORPAY_SEMESTER_PLAN_ID' : 'RAZORPAY_MONTHLY_PLAN_ID'] || '').trim();
+  const amountPaise = Number(process.env[isSemester ? 'RAZORPAY_SEMESTER_PLAN_AMOUNT_PAISE' : 'RAZORPAY_MONTHLY_PLAN_AMOUNT_PAISE']);
   if (!planId || !Number.isInteger(amountPaise) || amountPaise <= 0) throw new Error('AUTOPAY_PLAN_NOT_CONFIGURED');
-  return { planId, amountPaise, currency: 'INR', interval: 'monthly' as const };
+  return {
+    key,
+    planId,
+    amountPaise,
+    currency: 'INR',
+    product: isSemester ? 'driver_semester' : 'driver_monthly',
+    totalCount: isSemester ? 20 : 120,
+  };
 };
 
 router.post('/subscriptions/autopay/create', async (req: Request, res: Response) => {
   try {
     const userId = await getAuthenticatedUserId(req);
-    const plan = getMonthlyAutopayPlan();
+    const plan = getAutopayPlan(req.body?.planKey);
     const db = getDb();
     const userDoc = await db.collection('users').doc(userId).get();
     if (!userDoc.exists) return res.status(404).json({ success: false, message: 'User not found.' });
     const active = await db.collection('subscriptions').where('userId', '==', userId)
       .where('provider', '==', 'razorpay').where('kind', '==', 'autopay').get();
     const reusable = active.docs.map(doc => ({ id: doc.id, ...doc.data() } as any))
-      .find(sub => ['created', 'authenticated', 'active', 'pending'].includes(sub.status));
+      .find(sub => sub.product === plan.product && ['created', 'authenticated', 'active', 'pending'].includes(sub.status));
     if (reusable) {
       return res.json({ success: true, subscriptionId: reusable.id, keyId: config.razorpay.keyId,
-        amount: plan.amountPaise, currency: plan.currency, status: reusable.status });
+        amount: plan.amountPaise, currency: plan.currency, planKey: plan.key, status: reusable.status });
     }
     const providerSubscription = await (getRazorpay() as any).subscriptions.create({
       plan_id: plan.planId,
-      total_count: 120,
+      total_count: plan.totalCount,
       quantity: 1,
       customer_notify: 1,
-      notes: { userId, product: 'driver_monthly_autopay' },
+      notes: { userId, product: plan.product + '_autopay' },
     });
     await db.collection('subscriptions').doc(providerSubscription.id).set({
       userId, provider: 'razorpay', kind: 'autopay', planId: plan.planId,
-      product: 'driver_monthly', amountPaise: plan.amountPaise, currency: plan.currency,
+      product: plan.product, planKey: plan.key, amountPaise: plan.amountPaise, currency: plan.currency,
       status: providerSubscription.status || 'created',
       currentStart: providerSubscription.current_start || null,
       currentEnd: providerSubscription.current_end || null,
@@ -789,7 +824,7 @@ router.post('/subscriptions/autopay/create', async (req: Request, res: Response)
       createdAt: admin.firestore.Timestamp.now(), updatedAt: admin.firestore.Timestamp.now(),
     });
     return res.status(201).json({ success: true, subscriptionId: providerSubscription.id,
-      keyId: config.razorpay.keyId, amount: plan.amountPaise, currency: plan.currency,
+      keyId: config.razorpay.keyId, amount: plan.amountPaise, currency: plan.currency, planKey: plan.key,
       status: providerSubscription.status || 'created' });
   } catch (error: any) {
     const code = String(error?.message || 'AUTOPAY_CREATE_FAILED');
