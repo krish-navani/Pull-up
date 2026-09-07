@@ -190,23 +190,22 @@ const styles = StyleSheet.create({
   },
   textLogoContainer: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'baseline',
     marginBottom: 4,
-    transform: [{ scaleX: 1.15 }], // Stretches text horizontally to match wide geometric logotype
   },
   textPull: {
     fontSize: 58,
-    fontWeight: '900', // Extra bold matching the logo logotype
+    fontWeight: '900',
     color: WARM_CORE.text,
     fontFamily: Platform.OS === 'ios' ? 'AvenirNext-Heavy' : 'sans-serif-black',
-    letterSpacing: -5.0, // Tight spacing compensating for horizontal stretch
+    letterSpacing: 0,
   },
   textUp: {
     fontSize: 58,
-    fontWeight: '900', // Extra bold matching the logo logotype
+    fontWeight: '600',
     color: WARM_CORE.primary,
-    fontFamily: Platform.OS === 'ios' ? 'AvenirNext-Heavy' : 'sans-serif-black',
-    letterSpacing: -5.0, // Tight spacing compensating for horizontal stretch
+    fontFamily: Platform.OS === 'ios' ? 'AvenirNext-Medium' : 'sans-serif-medium',
+    letterSpacing: 0,
   },
   subtitle: {
     fontSize: 11.5,
