@@ -353,8 +353,6 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
       const userDoc = await db.collection('users').doc(creatorId).get();
       if (!userDoc.exists) throw new Error('USER_NOT_FOUND');
       const user = userDoc.data()!;
-      const expiry = user.subscriptionExpiry ? new Date(user.subscriptionExpiry).getTime() : 0;
-      if (user.subscriptionStatus !== 'active' || expiry <= Date.now()) throw new Error('SUBSCRIPTION_REQUIRED');
       const pickup = canonicalizeAtlasEndpoint(coordinate(req.body.pickupLocation, 'pickup'));
       const destination = canonicalizeAtlasEndpoint(coordinate(req.body.destination, 'destination'));
       validateAtlasRoute(pickup, destination);

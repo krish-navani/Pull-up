@@ -388,7 +388,7 @@ export default function TaxiPoolDetailsScreen() {
     if (pool && pool.creatorId !== auth.user.id) return;
 
     console.log('[POOL DETAILS] Subscribing to pool requests list for pool:', poolId);
-    const unsubRequests = subscribeToPoolRequests(poolId, (updatedRequests) => {
+    const unsubRequests = subscribeToPoolRequests(poolId, auth.user.id, (updatedRequests) => {
       setRequests(updatedRequests);
     });
 

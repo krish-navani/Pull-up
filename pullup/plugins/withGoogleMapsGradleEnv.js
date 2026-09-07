@@ -19,7 +19,7 @@ def readProjectEnvValue = { String name ->
 
     def entry = envFile.readLines("UTF-8").find { line ->
         def trimmed = line.trim()
-        !trimmed.startsWith("#") && trimmed.startsWith("\\${name}=")
+        !trimmed.startsWith("#") && trimmed.startsWith("\${name}=")
     }
     if (!entry) return null
 

@@ -199,11 +199,16 @@ export const subscribeToPoolDetails = (
  */
 export const subscribeToPoolRequests = (
   poolId: string,
+  creatorId: string,
   onUpdate: (requests: PoolRequest[]) => void
 ): Unsubscribe => {
   const requestsRef = collection(db, 'poolRequests');
   // NOTE: Single field filter only — composite index not available. Sort client-side.
-  const q = query(requestsRef, where('poolId', '==', poolId));
+  const q = query(
+    requestsRef,
+    where('poolId', '==', poolId),
+    where('creatorId', '==', creatorId)
+  );
 
   return onSnapshot(
     q,

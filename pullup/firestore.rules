@@ -258,10 +258,7 @@ service cloud.firestore {
       allow read:   if isSignedIn() && (
         resource == null || 
         resource.data.passengerId == getPersistentUserId() || 
-        (
-          exists(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)) && 
-          getPersistentUserId() == get(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)).data.creatorId
-        )
+        resource.data.creatorId == getPersistentUserId()
       );
       allow create: if false; // Backend creates fare-locked Taxi Pool requests.
       allow update: if isSignedIn() &&
@@ -269,10 +266,7 @@ service cloud.firestore {
         request.resource.data.fareStatus == resource.data.fareStatus &&
         request.resource.data.totalPrice == resource.data.totalPrice && (
         resource.data.passengerId == getPersistentUserId() ||
-        (
-          exists(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)) && 
-          getPersistentUserId() == get(/databases/$(database)/documents/taxiPools/$(resource.data.poolId)).data.creatorId
-        )
+        resource.data.creatorId == getPersistentUserId()
       );
       allow delete: if isSignedIn() && resource.data.passengerId == getPersistentUserId();
     }

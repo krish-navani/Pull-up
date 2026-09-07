@@ -25,8 +25,6 @@ import { WARM_CORE } from '@/constants/theme';
 import { createTaxiPool } from '@/utils/taxiPoolService';
 import LocationSearchInput from '@/components/LocationSearchInput';
 import { Location } from '@/types';
-import { doc, getDoc } from 'firebase/firestore';
-import { db } from '@/utils/firebase';
 import { fetchRoute } from '@/utils/routeUtils';
 import apiClient from '@/utils/backendApiClient';
 
@@ -84,7 +82,6 @@ export default function CreateTaxiPoolScreen() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [checkingSubscription, setCheckingSubscription] = useState(true);
   const [error, setError] = useState('');
 
   const [routeInfo, setRouteInfo] = useState<{
@@ -158,47 +155,6 @@ export default function CreateTaxiPoolScreen() {
   const formSlideY = useRef(new Animated.Value(20)).current;
 
   useEffect(() => {
-    const checkSubscription = async () => {
-      if (!auth.user) {
-        setCheckingSubscription(false);
-        return;
-      }
-      try {
-        const userRef = doc(db, 'users', auth.user.id);
-        const userSnap = await getDoc(userRef);
-        if (userSnap.exists()) {
-          const userData = userSnap.data();
-
-          // TaxiPool does NOT require license/driver verification.
-          // Only a subscription check is needed here.
-          if (userData?.subscriptionStatus !== 'active') {
-            Alert.alert(
-              'Subscription Required',
-              'You need an active TaxiPool subscription (₹250/month) to create a TaxiPool.',
-              [
-                {
-                  text: 'Subscribe Now',
-                  onPress: () => router.replace('/driver-subscription')
-                },
-                {
-                  text: 'Go Back',
-                  onPress: () => router.back()
-                }
-              ],
-              { cancelable: false }
-            );
-            return;
-          }
-        }
-      } catch (err) {
-        console.error('[CREATE TAXI] Subscription check failed:', err);
-      } finally {
-        setCheckingSubscription(false);
-      }
-    };
-
-    checkSubscription();
-
     Animated.parallel([
       Animated.timing(formOpacity, {
         toValue: 1,
@@ -278,26 +234,6 @@ export default function CreateTaxiPoolScreen() {
     setIsLoading(true);
     setError('');
 
-    // Pre-check subscription status immediately before creation
-    try {
-      const userRef = doc(db, 'users', auth.user.id);
-      const userSnap = await getDoc(userRef);
-      if (userSnap.exists()) {
-        const userData = userSnap.data();
-        if (userData?.subscriptionStatus !== 'active') {
-          Alert.alert(
-            'Subscription Required',
-            'Your subscription has expired or is inactive. Please subscribe to continue.',
-            [{ text: 'Subscribe', onPress: () => router.push('/driver-subscription') }]
-          );
-          setIsLoading(false);
-          return;
-        }
-      }
-    } catch (err) {
-      console.error('[CREATE TAXI] Pre-check failed:', err);
-    }
-
     try {
       const departureDateTime = `${departureDate}T${departureTime}:00`;
       
@@ -343,15 +279,6 @@ export default function CreateTaxiPoolScreen() {
       setIsLoading(false);
     }
   };
-
-  if (checkingSubscription) {
-    return (
-      <SafeAreaView style={[styles.safeArea, { justifyContent: 'center', alignItems: 'center' }]}>
-        <ActivityIndicator size="large" color="#3b82f6" />
-        <Text style={{ marginTop: 12, color: WARM_CORE.text, fontSize: 14 }}>Checking subscription status...</Text>
-      </SafeAreaView>
-    );
-  }
 
   return (
     <SafeAreaView style={styles.safeArea}>

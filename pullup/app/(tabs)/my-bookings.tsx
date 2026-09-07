@@ -621,7 +621,7 @@ export default function MyBookingsScreen() {
     };
 
     const unsubscribers = createdTaxiPools.map((pool) =>
-      subscribeToPoolRequests(pool.id, (requests) => {
+      subscribeToPoolRequests(pool.id, currentUserId, (requests) => {
         requestsByPool.set(pool.id, requests);
         publishRequests();
       })
