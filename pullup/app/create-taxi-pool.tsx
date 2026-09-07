@@ -561,7 +561,6 @@ export default function CreateTaxiPoolScreen() {
                       <Text style={styles.fareShareAmount}>₹{taxiFareQuote.perMemberFare}</Text>
                     </View>
                   </View>
-                  <Text style={styles.fareVersion}>Pricing model {taxiFareQuote.pricing.version}</Text>
                 </View>
               ) : (
                 <View style={styles.fareLoadingCard}>
@@ -857,7 +856,6 @@ const styles = StyleSheet.create({
   fareShareBlock: { alignItems: 'flex-end', flexShrink: 1 } as ViewStyle,
   fareShareLabel: { fontSize: 10, fontWeight: '700', color: WARM_CORE.textSecondary, textTransform: 'uppercase' } as TextStyle,
   fareShareAmount: { marginTop: 4, fontSize: 24, fontWeight: '800', color: WARM_CORE.primary } as TextStyle,
-  fareVersion: { marginTop: 14, fontSize: 10, color: WARM_CORE.textSecondary } as TextStyle,
   fareLoadingCard: {
     minHeight: 76,
     flexDirection: 'row',

@@ -865,7 +865,7 @@ export default function TaxiPoolDetailsScreen() {
                 Road distance {(fareQuote.distanceMeters / 1000).toFixed(2)} km · {Math.ceil(fareQuote.durationSeconds / 60)} min
               </Text>
               <Text style={[styles.destText, { marginTop: 6 }]}>₹{(fareQuote.perMemberFarePaise / 100).toFixed(0)} per member</Text>
-              <Text style={styles.notesText}>Vehicle estimate ₹{(fareQuote.totalVehicleFarePaise / 100).toFixed(0)} · {fareQuote.version}</Text>
+              <Text style={styles.notesText}>Vehicle estimate ₹{(fareQuote.totalVehicleFarePaise / 100).toFixed(0)}</Text>
             </View>
           ) : isLoadingFare ? (
             <View style={styles.notesCard}>
