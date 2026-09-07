@@ -533,19 +533,40 @@ export default function CreateTaxiPoolScreen() {
               <Text style={styles.sectionTitle}>ESTIMATED SHARED TAXI FARE</Text>
               <Text style={styles.sectionSubtitle}>Calculated from the Google road route and locked when a rider requests to join.</Text>
               {taxiFareQuote?.pricing ? (
-                <View style={styles.priceInputRow}>
-                  <View style={{ flex: 1, gap: 8 }}>
-                    <Text style={styles.sectionSubtitle}>Road distance: {(taxiFareQuote.pricing.distanceMeters / 1000).toFixed(2)} km</Text>
-                    <Text style={styles.sectionSubtitle}>Estimated duration: {Math.ceil(taxiFareQuote.pricing.durationSeconds / 60)} min</Text>
-                    <Text style={styles.sectionSubtitle}>Vehicle estimate: ₹{taxiFareQuote.totalVehicleFare}</Text>
-                    <Text style={[styles.sectionTitle, { marginTop: 4 }]}>Your estimated share: ₹{taxiFareQuote.perMemberFare}</Text>
-                    <Text style={styles.sectionSubtitle}>Pricing version: {taxiFareQuote.pricing.version}</Text>
+                <View style={styles.fareCard}>
+                  <View style={styles.fareMetricsRow}>
+                    <View style={styles.fareMetric}>
+                      <MaterialCommunityIcons name="map-marker-distance" size={20} color={WARM_CORE.primary} />
+                      <View>
+                        <Text style={styles.fareMetricLabel}>Road distance</Text>
+                        <Text style={styles.fareMetricValue}>{(taxiFareQuote.pricing.distanceMeters / 1000).toFixed(2)} km</Text>
+                      </View>
+                    </View>
+                    <View style={styles.fareMetric}>
+                      <MaterialCommunityIcons name="clock-outline" size={20} color={WARM_CORE.primary} />
+                      <View>
+                        <Text style={styles.fareMetricLabel}>Est. duration</Text>
+                        <Text style={styles.fareMetricValue}>{Math.ceil(taxiFareQuote.pricing.durationSeconds / 60)} min</Text>
+                      </View>
+                    </View>
                   </View>
+                  <View style={styles.fareDivider} />
+                  <View style={styles.fareAmountRow}>
+                    <View>
+                      <Text style={styles.fareAmountLabel}>Vehicle estimate</Text>
+                      <Text style={styles.fareVehicleAmount}>₹{taxiFareQuote.totalVehicleFare}</Text>
+                    </View>
+                    <View style={styles.fareShareBlock}>
+                      <Text style={styles.fareShareLabel}>Your estimated share</Text>
+                      <Text style={styles.fareShareAmount}>₹{taxiFareQuote.perMemberFare}</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.fareVersion}>Pricing model {taxiFareQuote.pricing.version}</Text>
                 </View>
               ) : (
-                <View style={styles.priceInputRow}>
+                <View style={styles.fareLoadingCard}>
                   <ActivityIndicator color={WARM_CORE.primary} />
-                  <Text style={[styles.sectionSubtitle, { marginLeft: 10 }]}>Calculating road fare...</Text>
+                  <Text style={styles.fareLoadingText}>Calculating road fare...</Text>
                 </View>
               )}
             </View>
@@ -804,7 +825,50 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     height: 54,
   } as ViewStyle,
-  priceSymbolContainer: {
+  fareCard: {
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+    padding: 16,
+  } as ViewStyle,
+  fareMetricsRow: {
+    flexDirection: 'row',
+    gap: 12,
+  } as ViewStyle,
+  fareMetric: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+  } as ViewStyle,
+  fareMetricLabel: { fontSize: 10, fontWeight: '600', color: WARM_CORE.textSecondary } as TextStyle,
+  fareMetricValue: { marginTop: 2, fontSize: 15, fontWeight: '800', color: WARM_CORE.text } as TextStyle,
+  fareDivider: { height: 1, backgroundColor: WARM_CORE.border, marginVertical: 16 } as ViewStyle,
+  fareAmountRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: 12,
+  } as ViewStyle,
+  fareAmountLabel: { fontSize: 10, fontWeight: '700', color: WARM_CORE.textSecondary, textTransform: 'uppercase' } as TextStyle,
+  fareVehicleAmount: { marginTop: 4, fontSize: 20, fontWeight: '800', color: WARM_CORE.text } as TextStyle,
+  fareShareBlock: { alignItems: 'flex-end', flexShrink: 1 } as ViewStyle,
+  fareShareLabel: { fontSize: 10, fontWeight: '700', color: WARM_CORE.textSecondary, textTransform: 'uppercase' } as TextStyle,
+  fareShareAmount: { marginTop: 4, fontSize: 24, fontWeight: '800', color: WARM_CORE.primary } as TextStyle,
+  fareVersion: { marginTop: 14, fontSize: 10, color: WARM_CORE.textSecondary } as TextStyle,
+  fareLoadingCard: {
+    minHeight: 76,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: WARM_CORE.card,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: WARM_CORE.border,
+  } as ViewStyle,
+  fareLoadingText: { marginLeft: 10, fontSize: 12, fontWeight: '600', color: WARM_CORE.textSecondary } as TextStyle,  priceSymbolContainer: {
     marginRight: 8,
   } as ViewStyle,
   priceSymbolText: {
