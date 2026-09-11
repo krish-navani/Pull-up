@@ -32,13 +32,13 @@ interface Plan {
 const PLANS: Plan[] = [
   {
     id: 'monthly',
-    name: 'Monthly Driver Pass',
+    name: 'Monthly PullUp Pass',
     price: 250,
     duration: 'Renews monthly until paused or cancelled',
   },
   {
     id: 'semester',
-    name: 'Semester Driver Pass',
+    name: 'Semester PullUp Pass',
     price: 999,
     duration: 'Renews every 6 months until paused or cancelled',
     savings: 'Save ₹501',
@@ -55,7 +55,7 @@ export default function DriverSubscriptionScreen() {
   const [subscription, setSubscription] = useState<any>(null);
   const status = String(subscription?.status || 'inactive');
   const selectedPlanDetails = PLANS.find(plan => plan.id === selectedPlan)!;
-  const activePlanName = subscription?.product === 'driver_semester' ? 'Semester Driver Pass' : 'Monthly Driver Pass';
+  const activePlanName = subscription?.product === 'driver_semester' ? 'Semester PullUp Pass' : 'Monthly PullUp Pass';
   const isActive = status === 'active';
   const isPausable = ['active', 'authenticated'].includes(status);
 
@@ -160,7 +160,7 @@ export default function DriverSubscriptionScreen() {
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <MaterialCommunityIcons name="chevron-left" size={30} color={WARM_CORE.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Driver Subscription</Text>
+        <Text style={styles.headerTitle}>Car Owner Passes</Text>
         <View style={styles.backButton} />
       </View>
 
@@ -185,7 +185,7 @@ export default function DriverSubscriptionScreen() {
         </View>
 
         <View style={styles.benefitsCard}>
-          <Text style={styles.benefitsTitle}>Driver Pass AutoPay</Text>
+          <Text style={styles.benefitsTitle}>Car Owner Pass AutoPay</Text>
           <View style={styles.benefitRow}>
             <MaterialCommunityIcons name="cash-sync" size={20} color={WARM_CORE.primary} />
             <Text style={styles.benefitText}>Choose ₹250 monthly or ₹999 every six months, then explicitly authorize UPI AutoPay, card, or eMandate</Text>

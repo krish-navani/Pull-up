@@ -1073,7 +1073,7 @@ export default function ProfileScreen() {
                       <View style={[styles.menuItemIconBox, { backgroundColor: 'rgba(212, 80, 10, 0.08)' }]}>
                         <MaterialCommunityIcons name="card-account-details-star-outline" size={20} color={WARM_CORE.primary} />
                       </View>
-                      <Text style={styles.menuItemText}>Driver Subscription</Text>
+                      <Text style={styles.menuItemText}>Car Owner Passes</Text>
                       <MaterialCommunityIcons name="chevron-right" size={20} color={WARM_CORE.textSecondary} />
                     </View>
                   </PressableCard>

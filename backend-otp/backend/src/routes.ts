@@ -1499,7 +1499,7 @@ router.post('/verify-payment', async (req: Request, res: Response) => {
           result.passengerId,
           'payment_confirmed',
           'Payment Success (Escrow) 💰',
-          `Your payment of INR ${result.totalPrice} was successful. Driver approval is pending.`,
+          `Your payment of INR ${result.totalPrice} was successful. Car owner approval is pending.`,
           result.rideId,
           bookingId,
           'ride-details',

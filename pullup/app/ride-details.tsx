@@ -990,10 +990,14 @@ export default function RideDetailsScreen() {
 
                   <View style={{ flex: 1 }}>
                     <Text style={styles.driverName}>{ride.driverName}</Text>
+                    <Text style={styles.vehicleName}>{ride.carModel || 'Vehicle details unavailable'}</Text>
                     <Text style={styles.verified}>VERIFIED</Text>
                   </View>
 
-                  <Text style={styles.seatBadge}>{ride.availableSeats}</Text>
+                  <View style={styles.seatCountGroup}>
+                    <Text style={styles.seatCountLabel}>SEATS LEFT</Text>
+                    <Text style={styles.seatBadge}>{ride.availableSeats}</Text>
+                  </View>
                 </View>
               </View>
             </Animated.View>
@@ -1533,6 +1537,21 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: "700",
     color: WARM_CORE.text,
+  },
+  vehicleName: {
+    marginTop: 2,
+    fontSize: 13,
+    color: WARM_CORE.textSecondary,
+  },
+  seatCountGroup: {
+    alignItems: 'center',
+    gap: 5,
+  },
+  seatCountLabel: {
+    fontSize: 9,
+    fontWeight: '700',
+    color: WARM_CORE.textSecondary,
+    letterSpacing: 0,
   },
   verified: {
     fontSize: 11,

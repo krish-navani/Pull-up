@@ -864,7 +864,7 @@ export default function MyBookingsScreen() {
           ? { bg: '#D1FAE5', text: '#059669', label: 'Confirmed' }
           : { bg: '#FEF3C7', text: '#D97706', label: 'Awaiting Payment' };
       case 'pending':
-        return { bg: '#FFEBE0', text: '#D4500A', label: 'Waiting for driver approval.' };
+        return { bg: '#FFEBE0', text: '#D4500A', label: 'Waiting for car owner approval.' };
       default:
         return { bg: '#F3F4F6', text: '#4B5563', label: bookingStatus };
     }
