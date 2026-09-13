@@ -68,6 +68,7 @@ export const config = {
   },
 
   corsOrigin: process.env.CORS_ORIGIN || '*',
+  adminPanelUrl: (process.env.ADMIN_PANEL_URL || 'https://admin-panel-kappa-lake.vercel.app').trim(),
   universityDomain: process.env.UNIVERSITY_DOMAIN || '@atlasskilltech.university',
 
   // Razorpay Configuration

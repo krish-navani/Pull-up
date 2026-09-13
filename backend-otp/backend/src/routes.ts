@@ -79,6 +79,7 @@ router.post('/notify-license-submission', async (req: Request, res: Response) =>
     const mailer = getMailer();
     const fromAddress = (config.mail.user || '').trim();
     const submittedAt = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+    const adminPanelUrl = new URL(config.adminPanelUrl).toString();
 
     const html = `
 <!DOCTYPE html>
@@ -145,7 +146,7 @@ router.post('/notify-license-submission', async (req: Request, res: Response) =>
             <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:16px;">
               <tr>
                 <td width="48%" style="padding-right:8px;">
-                  <a href="https://krish.pullupapp.in" target="_blank"
+                  <a href="${adminPanelUrl}" target="_blank" rel="noopener noreferrer"
                      style="display:block;background:#D4500A;color:#ffffff;text-align:center;padding:14px 20px;border-radius:10px;text-decoration:none;font-weight:700;font-size:14px;">
                     ✅ Open Admin Panel
                   </a>
@@ -184,7 +185,7 @@ router.post('/notify-license-submission', async (req: Request, res: Response) =>
       to: adminAlertEmail,
       subject: `🚗 License Review Required — ${userName || 'New Driver'} (${submittedAt})`,
       html,
-      text: `New license submission from ${userName || 'Unknown'} (${userEmail}). User ID: ${userId}. Submitted at: ${submittedAt} IST. License image: ${licenseImageUrl}. Open admin panel to approve/reject.`,
+      text: `New license submission from ${userName || 'Unknown'} (${userEmail}). User ID: ${userId}. Submitted at: ${submittedAt} IST. License image: ${licenseImageUrl}. Open admin panel to approve/reject: ${adminPanelUrl}`,
     });
 
     // Log to Firestore audit trail
@@ -198,6 +199,7 @@ router.post('/notify-license-submission', async (req: Request, res: Response) =>
         licenseImageUrl,
         notifiedAt: admin.firestore.FieldValue.serverTimestamp(),
         notifiedTo: adminAlertEmail,
+        adminPanelUrl,
       });
     } catch (auditErr) {
       console.warn('[NOTIFY] Audit log failed (non-fatal):', auditErr);
