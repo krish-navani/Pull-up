@@ -1,20 +1,71 @@
 import Razorpay from 'razorpay';
 
-// Override prototype method to inject mock orders resource
+// Store created orders so payment.fetch can return matching amounts
+const mockOrders = new Map<string, { amount: number; id: string }>();
+
+// Override prototype method to inject mock resources
 (Razorpay.prototype as any).addResources = function(this: any) {
   this.orders = {
     create: async (params: any) => {
       console.log('[MOCK RAZORPAY] orders.create called with:', params);
-      return {
+      const order = {
         id: `order_mock_${Date.now()}`,
         amount: params.amount,
         currency: params.currency,
         receipt: params.receipt,
         status: 'created',
       };
-    }
+      mockOrders.set(order.id, { amount: params.amount, id: order.id });
+      return order;
+    },
+  };
+
+  this.payments = {
+    fetch: async (paymentId: string) => {
+      console.log('[MOCK RAZORPAY] payments.fetch called with:', paymentId);
+      // Derive the order ID that the test computed the signature against
+      // The payment's order_id is stored per payment – we look it up from mockPayments
+      const paymentMeta = mockPayments.get(paymentId);
+      if (!paymentMeta) {
+        // Return a captured payment whose order matches the first pending mock order
+        // This covers simple single-order tests
+        const [firstOrderId, firstOrder] = mockOrders.entries().next().value ?? [];
+        return {
+          id: paymentId,
+          order_id: firstOrderId || 'order_mock_unknown',
+          amount: firstOrder?.amount || 10000,
+          currency: 'INR',
+          status: 'captured',
+        };
+      }
+      return {
+        id: paymentId,
+        order_id: paymentMeta.orderId,
+        amount: paymentMeta.amount,
+        currency: 'INR',
+        status: 'captured',
+      };
+    },
+    capture: async (paymentId: string, amount: number) => {
+      console.log('[MOCK RAZORPAY] payments.capture called:', paymentId, amount);
+      return { id: paymentId, amount, status: 'captured' };
+    },
+    refund: async (paymentId: string, params: any) => {
+      console.log('[MOCK RAZORPAY] payments.refund called:', paymentId, params);
+      return { id: `rfnd_mock_${Date.now()}`, payment_id: paymentId, amount: params.amount, status: 'processed' };
+    },
+    transfer: async (paymentId: string, params: any) => {
+      console.log('[MOCK RAZORPAY] payments.transfer called:', paymentId, params);
+      return {
+        items: [{ id: `trf_mock_${Date.now()}`, source: paymentId, status: 'processed' }],
+      };
+    },
   };
 };
+
+// Registry so tests can declare "paymentId → orderId + amount" for payments.fetch to return correctly
+export const mockPayments = new Map<string, { orderId: string; amount: number }>();
+
 
 import express from 'express';
 import http from 'http';
@@ -309,12 +360,16 @@ async function runTestCases(db: admin.firestore.Firestore) {
     .update(orderId + '|' + paymentId)
     .digest('hex');
 
+  // Register mock payment so payments.fetch returns correct orderId + amount
+  mockPayments.set(paymentId, { orderId, amount: 10000 });
+
   console.log(`  Verifying payment for Booking A with orderId: ${orderId}, payId: ${paymentId}...`);
   const verifyRes = await postJson('/api/otp/verify-payment', {
     razorpay_payment_id: paymentId,
     razorpay_order_id: orderId,
     razorpay_signature: signature,
     bookingId: bookingAId,
+    passengerId: passengerAId, // dev-mode auth fallback (production uses Bearer token)
   });
 
   if (verifyRes.statusCode !== 200 || !verifyRes.data.success) {
@@ -519,11 +574,13 @@ async function runTestCases(db: admin.firestore.Firestore) {
   // Simulate payment verification for C (succeeds)
   console.log('  Verifying payment for Booking C...');
   const sigC = crypto.createHmac('sha256', config.razorpay.keySecret).update(orderIdC + '|pay_C').digest('hex');
+  mockPayments.set('pay_C', { orderId: orderIdC, amount: 10000 });
   const verifyCRes = await postJson('/api/otp/verify-payment', {
     razorpay_payment_id: 'pay_C',
     razorpay_order_id: orderIdC,
     razorpay_signature: sigC,
     bookingId: bookingCId,
+    passengerId: passengerCId, // dev-mode auth fallback
   });
 
   if (verifyCRes.statusCode !== 200 || !verifyCRes.data.success) {
@@ -540,11 +597,13 @@ async function runTestCases(db: admin.firestore.Firestore) {
   // Simulate payment verification for D (must FAIL due to INSUFFICIENT_SEATS)
   console.log('  Verifying payment for Booking D (should fail since seats are 0)...');
   const sigD = crypto.createHmac('sha256', config.razorpay.keySecret).update(orderIdD + '|pay_D').digest('hex');
+  mockPayments.set('pay_D', { orderId: orderIdD, amount: 10000 });
   const verifyDRes = await postJson('/api/otp/verify-payment', {
     razorpay_payment_id: 'pay_D',
     razorpay_order_id: orderIdD,
     razorpay_signature: sigD,
     bookingId: bookingDId,
+    passengerId: passengerDId, // dev-mode auth fallback
   });
 
   if (verifyDRes.statusCode === 200) {

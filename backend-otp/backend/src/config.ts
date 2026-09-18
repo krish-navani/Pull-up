@@ -73,19 +73,13 @@ export const config = {
 
   // Razorpay Configuration
   razorpay: {
-    keyId: (process.env.RAZORPAY_KEY_ID || '').trim(),
-    keySecret: (process.env.RAZORPAY_KEY_SECRET || '').trim(),
+    get keyId() { return (process.env.RAZORPAY_KEY_ID || '').trim(); },
+    get keySecret() { return (process.env.RAZORPAY_KEY_SECRET || '').trim(); },
+    get webhookSecret() { return (process.env.RAZORPAY_WEBHOOK_SECRET || '').trim(); },
   },
 
   // Commission System Config
   commissionPercentage: parseFloat(process.env.COMMISSION_PERCENTAGE || '10'), // defaults to 10%
-
-  // Withdrawal Limits & Frequencies
-  withdrawal: {
-    minAmount: parseInt(process.env.MIN_WITHDRAWAL_AMOUNT || '100', 10), // Min ₹100
-    maxAmount: parseInt(process.env.MAX_WITHDRAWAL_AMOUNT || '2000', 10), // Max ₹2000
-    maxPerDay: parseInt(process.env.MAX_WITHDRAWALS_PER_DAY || '1', 10), // Max 1 per day
-  }
 };
 
 // Strict validation (fail fast)
@@ -111,4 +105,3 @@ export const validateConfig = () => {
     console.log('[CONFIG] Validation passed');
   }
 };
-

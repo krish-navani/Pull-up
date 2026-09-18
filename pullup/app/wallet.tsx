@@ -16,425 +16,289 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { doc, onSnapshot, collection, query, where, orderBy, Timestamp } from 'firebase/firestore';
+import { doc, onSnapshot, collection, query, where, orderBy } from 'firebase/firestore';
 
 import { useAppContext } from '@/context/AppContext';
 import { WARM_CORE } from '@/constants/theme';
-import { db, auth as firebaseAuth } from '@/utils/firebase';
+import { db } from '@/utils/firebase';
 import apiClient from '@/utils/backendApiClient';
 
-interface Transaction {
+interface RouteTransfer {
   id: string;
-  amount: number;
-  type: 'ride_earning' | 'withdrawal' | 'refund' | 'adjustment';
-  status: 'pending' | 'completed' | 'failed';
-  referenceType: 'ride' | 'withdrawal' | 'booking';
-  referenceId: string;
-  createdAt: any;
+  transferId?: string;
+  paymentId?: string;
+  bookingId?: string;
+  rideId?: string;
+  grossAmountPaise?: number;
+  platformFeePaise?: number;
+  driverSharePaise?: number;
+  status: 'processed' | 'pending_driver_onboarding' | 'failed' | 'reversed' | 'pending';
+  createdAt?: any;
 }
 
 export default function WalletScreen() {
   const router = useRouter();
   const { auth } = useAppContext();
 
-  // Balances
-  const [walletBalance, setWalletBalance] = useState(0);
-  const [pendingBalance, setPendingBalance] = useState(0);
-  const [lockedBalance, setLockedBalance] = useState(0);
-  const [lifetimeEarnings, setLifetimeEarnings] = useState(0);
+  // Razorpay Route Account state
+  const [razorpayAccountId, setRazorpayAccountId] = useState<string>('');
+  const [razorpayAccountStatus, setRazorpayAccountStatus] = useState<string>('unlinked');
+  const [loadingAccount, setLoadingAccount] = useState<boolean>(true);
+  const [savingAccount, setSavingAccount] = useState<boolean>(false);
+  const [inputAccountId, setInputAccountId] = useState<string>('');
 
-  // Payout Method (UPI)
-  const [upiId, setUpiId] = useState('');
-  const [isUpiVerified, setIsUpiVerified] = useState(false);
-  const [verifyingUpi, setVerifyingUpi] = useState(false);
+  // Transfer history
+  const [transfers, setTransfers] = useState<RouteTransfer[]>([]);
+  const [loadingTransfers, setLoadingTransfers] = useState<boolean>(true);
 
-  // Withdraw request
-  const [withdrawAmount, setWithdrawAmount] = useState('');
-  const [submittingWithdraw, setSubmittingWithdraw] = useState(false);
-
-  // Transaction History
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [loadingTransactions, setLoadingTransactions] = useState(true);
+  // Total Lifetime Earnings from transfers
+  const [totalLifetimeEarnings, setTotalLifetimeEarnings] = useState<number>(0);
 
   useEffect(() => {
     if (!auth.user) return;
 
-    // Part A & B: UID Match Verification Tracing
-    const firebaseUid = firebaseAuth.currentUser?.uid;
-    const profileId = auth.user?.id;
-    console.log('Firebase UID:', firebaseUid);
-    console.log('Profile ID:', profileId);
-    console.log('Wallet Query UserId:', profileId);
-    console.log('UID_MATCH =', firebaseUid === profileId);
-
-    const triggerClear = async () => {
+    // 1. Fetch Razorpay Route Account Status
+    const fetchAccountStatus = async () => {
       try {
-        console.log('[WALLET] Triggering clear balance clearance check via API...');
-        await apiClient.post('/refresh-wallet', { userId: auth.user!.id });
-      } catch (error) {
-        console.warn('[WALLET] Initial clearance check failed:', error);
+        setLoadingAccount(true);
+        const res = await apiClient.get('/driver/payout-account');
+        if (res.data?.success) {
+          setRazorpayAccountId(res.data.razorpayAccountId || '');
+          setRazorpayAccountStatus(res.data.razorpayAccountStatus || 'unlinked');
+          if (res.data.razorpayAccountId) {
+            setInputAccountId(res.data.razorpayAccountId);
+          }
+        }
+      } catch (err) {
+        console.warn('[PAYOUT ACCOUNT] Failed to fetch account status:', err);
+      } finally {
+        setLoadingAccount(false);
       }
     };
-    triggerClear();
+    fetchAccountStatus();
 
-    // 1. Listen to driver's wallet document
-    const walletRef = doc(db, 'wallets', auth.user.id);
-    console.log('[COLLECTION] wallets');
-    console.log('[QUERY] doc(db, "wallets", "' + auth.user.id + '")');
-    const unsubWallet = onSnapshot(walletRef, (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        setWalletBalance(data.walletBalance || 0);
-        setPendingBalance(data.pendingBalance || 0);
-        setLockedBalance(data.lockedBalance || 0);
-        setLifetimeEarnings(data.lifetimeEarnings || 0);
-      }
-    }, (error) => {
-      console.log('[COLLECTION] wallets');
-      console.log('[QUERY] doc(db, "wallets", "' + auth.user!.id + '")');
-      console.error('[PERMISSION ERROR] ' + error.message);
-    });
-
-    // 2. Listen to driver's user document to get UPI status
+    // 2. Listen to driver's user document for live Account updates
     const userRef = doc(db, 'users', auth.user.id);
-    console.log('[COLLECTION] users');
-    console.log('[QUERY] doc(db, "users", "' + auth.user.id + '")');
     const unsubUser = onSnapshot(userRef, (snap) => {
       if (snap.exists()) {
         const data = snap.data();
-        if (data.payoutMethod && data.payoutMethod.type === 'upi') {
-          const rawUpi = data.payoutMethod.upiId || '';
-          // Prompt to update if static or missing
-          if (rawUpi && rawUpi !== 'pullup@oksbi' && rawUpi !== 'static@upi') {
-            setUpiId(rawUpi);
-            setIsUpiVerified(data.payoutMethod.verified || false);
-          } else {
-            setUpiId('');
-            setIsUpiVerified(false);
-          }
+        if (data.razorpayAccountId) {
+          setRazorpayAccountId(data.razorpayAccountId);
+          setRazorpayAccountStatus(data.razorpayAccountStatus || 'active');
         }
       }
-    }, (error) => {
-      console.log('[COLLECTION] users');
-      console.log('[QUERY] doc(db, "users", "' + auth.user!.id + '")');
-      console.error('[PERMISSION ERROR] ' + error.message);
     });
 
-    // 3. Listen to driver's transactions
-    const txQuery = query(
-      collection(db, 'walletTransactions'),
-      where('userId', '==', auth.user.id),
+    // 3. Listen to driver's transfers collection in Firestore
+    const transfersQuery = query(
+      collection(db, 'transfers'),
+      where('driverId', '==', auth.user.id),
       orderBy('createdAt', 'desc')
     );
-    console.log('[COLLECTION] walletTransactions');
-    console.log('[QUERY] query(collection(db, "walletTransactions"), where("userId", "==", "' + auth.user.id + '"), orderBy("createdAt", "desc"))');
 
-    const unsubTx = onSnapshot(txQuery, (snap) => {
-      const txs: Transaction[] = [];
-      snap.forEach((doc) => {
-        const d = doc.data();
-        txs.push({
-          id: doc.id,
-          amount: d.amount,
-          type: d.type,
-          status: d.status,
-          referenceType: d.referenceType,
-          referenceId: d.referenceId,
-          createdAt: d.createdAt,
+    const unsubTransfers = onSnapshot(
+      transfersQuery,
+      (snap) => {
+        const list: RouteTransfer[] = [];
+        let totalEarningsPaise = 0;
+        snap.forEach((docSnap) => {
+          const t = { id: docSnap.id, ...docSnap.data() } as RouteTransfer;
+          list.push(t);
+          if (t.status === 'processed' && t.driverSharePaise) {
+            totalEarningsPaise += t.driverSharePaise;
+          }
         });
-      });
-      setTransactions(txs);
-      setLoadingTransactions(false);
-    }, (error) => {
-      console.log('[COLLECTION] walletTransactions');
-      console.log('[QUERY] query(collection(db, "walletTransactions"), where("userId", "==", "' + auth.user!.id + '"), orderBy("createdAt", "desc"))');
-      console.error('[PERMISSION ERROR] ' + error.message);
-      setLoadingTransactions(false);
-    });
+        setTransfers(list);
+        setTotalLifetimeEarnings(totalEarningsPaise / 100);
+        setLoadingTransfers(false);
+      },
+      (error) => {
+        console.error('[TRANSFERS LISTEN ERROR]:', error.message);
+        setLoadingTransfers(false);
+      }
+    );
 
     return () => {
-      unsubWallet();
       unsubUser();
-      unsubTx();
+      unsubTransfers();
     };
   }, [auth.user]);
 
-  const handleVerifyUpi = async () => {
-    if (!auth.user || verifyingUpi) return;
-    const formattedUpi = upiId.trim().toLowerCase();
-    if (!formattedUpi) {
-      Alert.alert('Error', 'Please enter your UPI ID (e.g. example@oksbi).');
-      return;
-    }
-
-    const upiRegex = /^[a-zA-Z0-9.\-_]{2,256}@[a-zA-Z]{2,64}$/;
-    if (!upiRegex.test(formattedUpi)) {
-      Alert.alert('Invalid Format', 'Please enter a valid UPI ID (e.g. example@oksbi).');
-      return;
-    }
-
-    setVerifyingUpi(true);
-    try {
-      const res = await apiClient.post('/verify-upi', {
-        userId: auth.user.id,
-        upiId: formattedUpi,
-      });
-
-      if (res.data?.success) {
-        setUpiId(formattedUpi);
-        setIsUpiVerified(true);
-        Alert.alert('Success', 'Your UPI ID has been verified successfully!');
-      } else {
-        throw new Error(res.data?.message || 'Verification failed');
-      }
-    } catch (err: any) {
-      Alert.alert('UPI Verification Failed', err.message || 'Invalid UPI ID format. Ensure it follows example@oksbi.');
-    } finally {
-      setVerifyingUpi(false);
-    }
-  };
-
-  const handleRequestWithdrawal = async () => {
+  // Handle Linking or Creating Razorpay Route Account
+  const handleSavePayoutAccount = async () => {
     if (!auth.user) return;
-    
-    if (!isUpiVerified) {
-      Alert.alert('Verification Required', 'Please add and verify your UPI ID first before requesting a withdrawal.');
-      return;
-    }
-
-    const amount = parseFloat(withdrawAmount);
-    if (isNaN(amount) || amount <= 0) {
-      Alert.alert('Invalid Amount', 'Please enter a valid amount to withdraw.');
-      return;
-    }
-
-    if (amount < 100 || amount > 2000) {
-      Alert.alert('Limit Error', 'Withdrawals must be between ₹100 and ₹2000 per request.');
-      return;
-    }
-
-    if (amount > walletBalance) {
-      Alert.alert('Insufficient Balance', 'You do not have enough withdrawable balance.');
-      return;
-    }
-
-    setSubmittingWithdraw(true);
+    setSavingAccount(true);
     try {
-      const res = await apiClient.post('/request-withdrawal', {
-        userId: auth.user.id,
-        amount,
+      const res = await apiClient.post('/driver/payout-account', {
+        accountId: inputAccountId.trim() || undefined,
+        name: auth.user.fullName,
+        email: auth.user.email,
+        phone: auth.user.phone,
       });
 
       if (res.data?.success) {
-        Alert.alert('Payout Requested', 'Your withdrawal request of ₹' + amount + ' has been submitted and is processing.');
-        setWithdrawAmount('');
+        setRazorpayAccountId(res.data.accountId);
+        setRazorpayAccountStatus(res.data.status || 'active');
+        Alert.alert(
+          'Razorpay Account Configured 💳',
+          `Your driver payout account (${res.data.accountId}) is linked. Earnings are transferred directly by Razorpay Route.`
+        );
       } else {
-        throw new Error(res.data?.message || 'Withdrawal request failed');
+        throw new Error(res.data?.message || 'Failed to setup payout account');
       }
     } catch (err: any) {
-      Alert.alert('Withdrawal Failed', err.message || 'Failed to submit withdrawal request. Please try again.');
+      Alert.alert('Setup Failed', err.message || 'Could not configure Razorpay payout account');
     } finally {
-      setSubmittingWithdraw(false);
+      setSavingAccount(false);
     }
   };
 
-  const formatTxDate = (timestamp: any) => {
-    if (!timestamp) return '';
-    let d: Date;
-    if (timestamp instanceof Timestamp) {
-      d = timestamp.toDate();
-    } else if (timestamp.seconds) {
-      d = new Date(timestamp.seconds * 1000);
-    } else {
-      d = new Date(timestamp);
-    }
-    return d.toLocaleDateString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-  };
+  const renderTransferItem = ({ item }: { item: RouteTransfer }) => {
+    const driverShare = (item.driverSharePaise || 0) / 100;
+    const gross = (item.grossAmountPaise || 0) / 100;
+    const platformFee = (item.platformFeePaise || 0) / 100;
 
-  const getTxTypeLabel = (type: string) => {
-    switch (type) {
-      case 'ride_earning': return 'Ride Earnings';
-      case 'withdrawal': return 'Withdrawal';
-      case 'refund': return 'Refund Payout';
-      case 'adjustment': return 'Adjustment';
-      default: return 'Transaction';
-    }
-  };
+    let statusColor = '#EAA315';
+    let statusLabel = 'Pending Setup';
+    let iconName: any = 'clock-outline';
 
-  const getTxIcon = (type: string) => {
-    switch (type) {
-      case 'ride_earning': return 'cash-plus';
-      case 'withdrawal': return 'bank-transfer-out';
-      case 'refund': return 'cash-refund';
-      default: return 'swap-horizontal';
+    if (item.status === 'processed') {
+      statusColor = '#10B981';
+      statusLabel = 'Transferred to Bank';
+      iconName = 'check-circle-outline';
+    } else if (item.status === 'failed') {
+      statusColor = '#EF4444';
+      statusLabel = 'Payout Failed';
+      iconName = 'alert-circle-outline';
+    } else if (item.status === 'reversed') {
+      statusColor = '#F59E0B';
+      statusLabel = 'Reversed (Cancelled)';
+      iconName = 'undo-variant';
+    } else if (item.status === 'pending_driver_onboarding') {
+      statusColor = '#3B82F6';
+      statusLabel = 'Awaiting Account Setup';
+      iconName = 'account-clock-outline';
     }
+
+    return (
+      <View style={styles.txCard}>
+        <View style={styles.txHeader}>
+          <View style={styles.txTypeContainer}>
+            <MaterialCommunityIcons name={iconName} size={22} color={statusColor} />
+            <Text style={styles.txTitle}>Ride Payout</Text>
+          </View>
+          <Text style={styles.txAmount}>+₹{driverShare.toFixed(2)}</Text>
+        </View>
+
+        <View style={styles.txDetailsRow}>
+          <Text style={styles.txDetailText}>Gross Fare: ₹{gross.toFixed(2)}</Text>
+          <Text style={styles.txDetailText}>Fee: -₹{platformFee.toFixed(2)}</Text>
+        </View>
+
+        <View style={styles.txFooter}>
+          <Text style={[styles.txStatus, { color: statusColor }]}>{statusLabel}</Text>
+          <Text style={styles.txDate}>
+            {item.createdAt?.toDate ? item.createdAt.toDate().toLocaleDateString() : 'Recent'}
+          </Text>
+        </View>
+      </View>
+    );
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor={WARM_CORE.background} />
-      
+      <StatusBar barStyle="dark-content" backgroundColor="#F4F5F7" />
+
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-          <MaterialCommunityIcons name="chevron-left" size={30} color={WARM_CORE.text} />
+        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+          <MaterialCommunityIcons name="arrow-left" size={24} color="#1A1A1A" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>My Wallet</Text>
-        <View style={styles.backButton} />
+        <Text style={styles.headerTitle}>Driver Payouts & Earnings</Text>
+        <View style={{ width: 24 }} />
       </View>
 
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{ flex: 1 }}
-      >
-        <ScrollView contentContainerStyle={styles.scrollContainer} showsVerticalScrollIndicator={false}>
-          
-          {/* Main withdrawable balance card */}
-          <View style={styles.balanceCard}>
-            <Text style={styles.balanceLabel}>WITHDRAWABLE BALANCE</Text>
-            <Text style={styles.balanceAmount}>₹{walletBalance.toFixed(2)}</Text>
-            
-            <View style={styles.cardDivider} />
-            
-            <View style={styles.balancesGrid}>
-              <View style={styles.gridCell}>
-                <Text style={styles.gridLabel}>Escrow/Pending</Text>
-                <Text style={styles.gridValue}>₹{pendingBalance.toFixed(2)}</Text>
-              </View>
-              <View style={styles.gridDivider} />
-              <View style={styles.gridCell}>
-                <Text style={styles.gridLabel}>Locked/Pending</Text>
-                <Text style={styles.gridValue}>₹{lockedBalance.toFixed(2)}</Text>
-              </View>
-            </View>
+      <ScrollView contentContainerStyle={styles.contentContainer}>
+        {/* Earnings Card */}
+        <View style={styles.balanceCard}>
+          <View style={styles.balanceHeader}>
+            <MaterialCommunityIcons name="shield-check" size={24} color="#FFFFFF" />
+            <Text style={styles.balanceCardTag}>Direct Razorpay Route</Text>
+          </View>
+          <Text style={styles.balanceLabel}>Lifetime Direct Earnings</Text>
+          <Text style={styles.balanceAmount}>₹{totalLifetimeEarnings.toFixed(2)}</Text>
+          <Text style={styles.balanceSubtext}>
+            No internal balances held. Rider payments are transferred directly to your bank account.
+          </Text>
+        </View>
+
+        {/* Razorpay Linked Account Card */}
+        <View style={styles.accountCard}>
+          <View style={styles.cardHeader}>
+            <MaterialCommunityIcons name="bank-transfer" size={24} color={WARM_CORE.primary} />
+            <Text style={styles.cardTitle}>Razorpay Payout Account</Text>
           </View>
 
-          {/* Life stats */}
-          <View style={styles.statsRow}>
-            <View style={styles.statBox}>
-              <MaterialCommunityIcons name="trophy-outline" size={18} color={WARM_CORE.primary} />
-              <Text style={styles.statLabel}>Lifetime Earnings</Text>
-              <Text style={styles.statValue}>₹{lifetimeEarnings.toFixed(2)}</Text>
+          {loadingAccount ? (
+            <ActivityIndicator size="small" color={WARM_CORE.primary} style={{ marginVertical: 12 }} />
+          ) : razorpayAccountId ? (
+            <View style={styles.linkedInfoBox}>
+              <View style={styles.statusBadge}>
+                <MaterialCommunityIcons name="check-decagram" size={18} color="#10B981" />
+                <Text style={styles.statusBadgeText}>Linked & Active</Text>
+              </View>
+              <Text style={styles.accountIdLabel}>Account ID:</Text>
+              <Text style={styles.accountIdValue}>{razorpayAccountId}</Text>
             </View>
-          </View>
-
-          {/* UPI ID Setup */}
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Payout Method</Text>
-            <Text style={styles.sectionDesc}>Specify your verified UPI ID where payouts will be credited.</Text>
-            
-            <View style={styles.upiInputRow}>
+          ) : (
+            <View style={styles.setupBox}>
+              <Text style={styles.setupDesc}>
+                Set up your Razorpay Linked Account to receive automated ride payout transfers directly to your bank.
+              </Text>
               <TextInput
-                style={[styles.input, isUpiVerified && styles.inputDisabled]}
-                placeholder="example@oksbi"
-                placeholderTextColor={WARM_CORE.textSecondary}
-                value={upiId}
-                onChangeText={(text) => {
-                  setUpiId(text);
-                  setIsUpiVerified(false); // reset verified on text change
-                }}
-                editable={!isUpiVerified && !verifyingUpi}
+                style={styles.input}
+                placeholder="Razorpay Account ID (e.g. acc_XXXXX) or leave blank to auto-create"
+                value={inputAccountId}
+                onChangeText={setInputAccountId}
+                placeholderTextColor="#9CA3AF"
                 autoCapitalize="none"
-                autoCorrect={false}
               />
               <TouchableOpacity
-                style={[
-                  styles.verifyBtn,
-                  isUpiVerified && styles.verifyBtnSuccess,
-                  verifyingUpi && styles.disabledBtn
-                ]}
-                onPress={handleVerifyUpi}
-                disabled={isUpiVerified || verifyingUpi}
+                style={[styles.saveButton, savingAccount && { opacity: 0.7 }]}
+                onPress={handleSavePayoutAccount}
+                disabled={savingAccount}
               >
-                {verifyingUpi ? (
-                  <ActivityIndicator size="small" color="#fff" />
+                {savingAccount ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
                 ) : (
-                  <Text style={styles.verifyBtnText}>
-                    {isUpiVerified ? 'Verified' : 'Verify'}
-                  </Text>
+                  <Text style={styles.saveButtonText}>Configure Payout Account</Text>
                 )}
               </TouchableOpacity>
             </View>
-          </View>
+          )}
+        </View>
 
-          {/* Withdrawal Request */}
-          <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Withdraw Funds</Text>
-            <Text style={styles.sectionDesc}>
-              Daily Limit: ₹100 - ₹2,000 (Max 1 transfer per day).
-            </Text>
-            
-            <View style={styles.withdrawRow}>
-              <TextInput
-                style={styles.withdrawInput}
-                placeholder="Enter amount (₹)"
-                placeholderTextColor={WARM_CORE.textSecondary}
-                keyboardType="numeric"
-                value={withdrawAmount}
-                onChangeText={setWithdrawAmount}
-                editable={!submittingWithdraw}
-              />
-              <TouchableOpacity
-                style={[styles.withdrawBtn, submittingWithdraw && styles.disabledBtn]}
-                onPress={handleRequestWithdrawal}
-                disabled={submittingWithdraw}
-              >
-                {submittingWithdraw ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={styles.withdrawBtnText}>Request Payout</Text>
-                )}
-              </TouchableOpacity>
+        {/* Transfer History Section */}
+        <View style={styles.historySection}>
+          <Text style={styles.sectionTitle}>Payout Transfer History</Text>
+
+          {loadingTransfers ? (
+            <ActivityIndicator size="small" color={WARM_CORE.primary} style={{ marginTop: 20 }} />
+          ) : transfers.length === 0 ? (
+            <View style={styles.emptyBox}>
+              <MaterialCommunityIcons name="history" size={40} color="#D1D5DB" />
+              <Text style={styles.emptyText}>No payout transfers recorded yet.</Text>
             </View>
-          </View>
-
-          {/* Transaction History */}
-          <View style={styles.txSection}>
-            <Text style={styles.txSectionTitle}>Transaction Ledger</Text>
-            
-            {loadingTransactions ? (
-              <ActivityIndicator size="small" color={WARM_CORE.primary} style={{ marginTop: 20 }} />
-            ) : transactions.length === 0 ? (
-              <View style={styles.emptyContainer}>
-                <MaterialCommunityIcons name="swap-horizontal" size={36} color={WARM_CORE.textSecondary} />
-                <Text style={styles.emptyText}>No transactions recorded yet.</Text>
-              </View>
-            ) : (
-              transactions.map((tx) => (
-                <View key={tx.id} style={styles.txRow}>
-                  <View style={styles.txIconContainer}>
-                    <MaterialCommunityIcons name={getTxIcon(tx.type)} size={20} color={WARM_CORE.primary} />
-                  </View>
-                  <View style={styles.txDetails}>
-                    <Text style={styles.txLabel}>{getTxTypeLabel(tx.type)}</Text>
-                    <Text style={styles.txDate}>{formatTxDate(tx.createdAt)}</Text>
-                  </View>
-                  <View style={styles.txAmountContainer}>
-                    <Text style={[
-                      styles.txAmount,
-                      { color: tx.amount < 0 ? WARM_CORE.error : WARM_CORE.success }
-                    ]}>
-                      {tx.amount < 0 ? '-' : '+'}₹{Math.abs(tx.amount).toFixed(2)}
-                    </Text>
-                    <View style={[
-                      styles.statusBadge,
-                      tx.status === 'completed' ? styles.statusBadgeSuccess : tx.status === 'pending' ? styles.statusBadgePending : styles.statusBadgeFailed
-                    ]}>
-                      <Text style={[
-                        styles.statusBadgeText,
-                        { color: tx.status === 'completed' ? WARM_CORE.success : tx.status === 'pending' ? '#D97706' : WARM_CORE.error }
-                      ]}>
-                        {tx.status.toUpperCase()}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-              ))
-            )}
-          </View>
-
-        </ScrollView>
-      </KeyboardAvoidingView>
+          ) : (
+            <FlatList
+              data={transfers}
+              keyExtractor={(item) => item.id}
+              renderItem={renderTransferItem}
+              scrollEnabled={false}
+            />
+          )}
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -442,7 +306,7 @@ export default function WalletScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: WARM_CORE.background,
+    backgroundColor: '#F4F5F7',
   },
   header: {
     flexDirection: 'row',
@@ -450,273 +314,208 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingVertical: 12,
+    backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
-    borderBottomColor: WARM_CORE.border,
-    backgroundColor: WARM_CORE.background,
+    borderBottomColor: '#E5E7EB',
   },
   backButton: {
-    width: 40,
-    height: 40,
-    justifyContent: 'center',
-    alignItems: 'center',
+    padding: 4,
   },
   headerTitle: {
     fontSize: 18,
     fontWeight: '700',
-    color: WARM_CORE.text,
+    color: '#111827',
   },
-  scrollContainer: {
-    padding: 20,
+  contentContainer: {
+    padding: 16,
   },
   balanceCard: {
     backgroundColor: WARM_CORE.primary,
     borderRadius: 16,
-    padding: 24,
+    padding: 20,
     marginBottom: 16,
-    shadowColor: WARM_CORE.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 12,
-    elevation: 6,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
   },
-  balanceLabel: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: 'rgba(255, 255, 255, 0.7)',
-    letterSpacing: 1.0,
-    marginBottom: 6,
-  },
-  balanceAmount: {
-    fontSize: 34,
-    fontWeight: '800',
-    color: '#fff',
-    letterSpacing: -0.5,
-  },
-  cardDivider: {
-    height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    marginVertical: 18,
-  },
-  balancesGrid: {
+  balanceHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-  },
-  gridCell: {
-    flex: 1,
-  },
-  gridDivider: {
-    width: 1,
-    height: 24,
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
-    marginHorizontal: 16,
-  },
-  gridLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: 'rgba(255, 255, 255, 0.7)',
-    marginBottom: 4,
-  },
-  gridValue: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#fff',
-  },
-  statsRow: {
-    flexDirection: 'row',
-    marginBottom: 20,
-  },
-  statBox: {
-    flex: 1,
-    backgroundColor: WARM_CORE.card,
-    borderWidth: 1,
-    borderColor: WARM_CORE.border,
-    borderRadius: 12,
-    padding: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  statLabel: {
-    fontSize: 11,
-    color: WARM_CORE.textSecondary,
-    fontWeight: '700',
-    marginLeft: 8,
-    flex: 1,
-  },
-  statValue: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: WARM_CORE.text,
-  },
-  card: {
-    backgroundColor: WARM_CORE.white,
-    borderRadius: 14,
-    padding: 18,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: WARM_CORE.border,
-  },
-  sectionTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: WARM_CORE.text,
-    marginBottom: 4,
-  },
-  sectionDesc: {
-    fontSize: 12,
-    color: WARM_CORE.textSecondary,
-    lineHeight: 16,
-    marginBottom: 14,
-  },
-  upiInputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  input: {
-    flex: 1,
-    height: 48,
-    backgroundColor: WARM_CORE.background,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    fontSize: 14,
-    color: WARM_CORE.text,
-    borderWidth: 1,
-    borderColor: WARM_CORE.border,
-    marginRight: 10,
-  },
-  inputDisabled: {
-    opacity: 0.8,
-    backgroundColor: WARM_CORE.card,
-    borderColor: WARM_CORE.border,
-    color: WARM_CORE.textSecondary,
-  },
-  verifyBtn: {
-    height: 48,
-    backgroundColor: WARM_CORE.primary,
-    borderRadius: 10,
-    paddingHorizontal: 18,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  verifyBtnSuccess: {
-    backgroundColor: WARM_CORE.success,
-  },
-  verifyBtnText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  withdrawRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  withdrawInput: {
-    flex: 1,
-    height: 48,
-    backgroundColor: WARM_CORE.background,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    fontSize: 14,
-    color: WARM_CORE.text,
-    borderWidth: 1,
-    borderColor: WARM_CORE.border,
-    marginRight: 10,
-  },
-  withdrawBtn: {
-    height: 48,
-    backgroundColor: WARM_CORE.primary,
-    borderRadius: 10,
-    paddingHorizontal: 18,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  withdrawBtnText: {
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: '700',
-  },
-  disabledBtn: {
-    opacity: 0.6,
-  },
-  txSection: {
-    marginTop: 8,
-    marginBottom: 30,
-  },
-  txSectionTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: WARM_CORE.text,
+    justifyContent: 'space-between',
     marginBottom: 12,
   },
-  emptyContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 32,
-    backgroundColor: WARM_CORE.white,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: WARM_CORE.border,
+  balanceCardTag: {
+    color: 'rgba(255,255,255,0.9)',
+    fontSize: 12,
+    fontWeight: '600',
   },
-  emptyText: {
+  balanceLabel: {
+    color: 'rgba(255,255,255,0.8)',
     fontSize: 13,
-    color: WARM_CORE.textSecondary,
-    marginTop: 8,
+    fontWeight: '500',
   },
-  txRow: {
+  balanceAmount: {
+    color: '#FFFFFF',
+    fontSize: 32,
+    fontWeight: '800',
+    marginVertical: 4,
+  },
+  balanceSubtext: {
+    color: 'rgba(255,255,255,0.85)',
+    fontSize: 12,
+    marginTop: 8,
+    lineHeight: 16,
+  },
+  accountCard: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  cardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: WARM_CORE.white,
+    marginBottom: 12,
+  },
+  cardTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111827',
+    marginLeft: 8,
+  },
+  linkedInfoBox: {
+    backgroundColor: '#F0FDF4',
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#BBF7D0',
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  statusBadgeText: {
+    color: '#047857',
+    fontWeight: '700',
+    fontSize: 13,
+    marginLeft: 6,
+  },
+  accountIdLabel: {
+    fontSize: 12,
+    color: '#6B7280',
+  },
+  accountIdValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#111827',
+    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
+  },
+  setupBox: {
+    marginTop: 4,
+  },
+  setupDesc: {
+    fontSize: 13,
+    color: '#4B5563',
+    marginBottom: 12,
+    lineHeight: 18,
+  },
+  input: {
+    backgroundColor: '#F9FAFB',
+    borderWidth: 1,
+    borderColor: '#D1D5DB',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: '#111827',
+    marginBottom: 12,
+  },
+  saveButton: {
+    backgroundColor: WARM_CORE.primary,
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  saveButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  historySection: {
+    marginTop: 8,
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#111827',
+    marginBottom: 12,
+  },
+  emptyBox: {
+    alignItems: 'center',
+    paddingVertical: 32,
+  },
+  emptyText: {
+    color: '#9CA3AF',
+    fontSize: 14,
+    marginTop: 8,
+  },
+  txCard: {
+    backgroundColor: '#FFFFFF',
     borderRadius: 12,
     padding: 14,
     marginBottom: 10,
     borderWidth: 1,
-    borderColor: WARM_CORE.border,
+    borderColor: '#E5E7EB',
   },
-  txIconContainer: {
-    width: 38,
-    height: 38,
-    borderRadius: 8,
-    backgroundColor: WARM_CORE.background,
-    justifyContent: 'center',
+  txHeader: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginRight: 12,
+    justifyContent: 'space-between',
+    marginBottom: 6,
   },
-  txDetails: {
-    flex: 1,
+  txTypeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
-  txLabel: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: WARM_CORE.text,
-    marginBottom: 2,
-  },
-  txDate: {
-    fontSize: 11,
-    color: WARM_CORE.textSecondary,
-  },
-  txAmountContainer: {
-    alignItems: 'flex-end',
+  txTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
+    marginLeft: 6,
   },
   txAmount: {
-    fontSize: 14,
-    fontWeight: '800',
-    marginBottom: 4,
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#10B981',
   },
-  statusBadge: {
-    borderRadius: 4,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+  txDetailsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
   },
-  statusBadgeSuccess: {
-    backgroundColor: 'rgba(16, 185, 129, 0.08)',
+  txDetailText: {
+    fontSize: 12,
+    color: '#6B7280',
   },
-  statusBadgePending: {
-    backgroundColor: 'rgba(217, 119, 6, 0.08)',
+  txFooter: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderTopColor: '#F3F4F6',
+    paddingTop: 8,
   },
-  statusBadgeFailed: {
-    backgroundColor: 'rgba(239, 68, 68, 0.08)',
+  txStatus: {
+    fontSize: 12,
+    fontWeight: '600',
   },
-  statusBadgeText: {
-    fontSize: 8,
-    fontWeight: '800',
+  txDate: {
+    fontSize: 12,
+    color: '#9CA3AF',
   },
 });

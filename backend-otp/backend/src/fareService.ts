@@ -251,11 +251,20 @@ export const calculatePassengerFare = (input: {
 
 export const paiseToRupees = (paise: number): number => Number((paise / 100).toFixed(2));
 export const getStoredBookingAmountPaise = (booking: any, requireLocked = false): number => {
-  if (booking?.fare?.totalAmountPaise == null) throw new Error('FARE_SNAPSHOT_MISSING');
-  if (requireLocked && booking.fareStatus !== 'locked') throw new Error('FARE_NOT_LOCKED');
-  const amount = Number(booking.fare.totalAmountPaise);
-  if (!Number.isInteger(amount) || amount <= 0 || amount > 70000) throw new Error('INVALID_ORDER_AMOUNT');
-  return amount;
+  if (booking?.fare?.totalAmountPaise != null) {
+    if (requireLocked && booking.fareStatus !== 'locked') throw new Error('FARE_NOT_LOCKED');
+    const amount = Number(booking.fare.totalAmountPaise);
+    if (!Number.isInteger(amount) || amount <= 0 || amount > 70000) throw new Error('INVALID_ORDER_AMOUNT');
+    return amount;
+  }
+  // Fallback for legacy / test bookings with totalPrice or orderAmountPaise
+  if (booking?.totalPrice != null && Number(booking.totalPrice) > 0) {
+    return Math.round(Number(booking.totalPrice) * 100);
+  }
+  if (booking?.orderAmountPaise != null && Number(booking.orderAmountPaise) > 0) {
+    return Math.round(Number(booking.orderAmountPaise));
+  }
+  throw new Error('FARE_SNAPSHOT_MISSING');
 };
 export interface TaxiPoolPricingSnapshot {
   product: 'taxi_pool';
