@@ -153,6 +153,23 @@ export default function WalletScreen() {
     }
   };
 
+  const handleReconcilePayouts = async () => {
+    if (!auth.user) return;
+    try {
+      setLoadingTransfers(true);
+      const res = await apiClient.post('/driver/reconcile-payouts');
+      if (res.data?.success) {
+        Alert.alert('Reconciliation Complete 🔄', res.data.message || 'Driver payouts reconciled successfully.');
+      } else {
+        throw new Error(res.data?.message || 'Failed to reconcile payouts');
+      }
+    } catch (err: any) {
+      Alert.alert('Reconciliation Error', err.message || 'Could not reconcile driver payouts');
+    } finally {
+      setLoadingTransfers(false);
+    }
+  };
+
   const renderTransferItem = ({ item }: { item: RouteTransfer }) => {
     const driverShare = (item.driverSharePaise || 0) / 100;
     const gross = (item.grossAmountPaise || 0) / 100;
@@ -166,16 +183,20 @@ export default function WalletScreen() {
       statusColor = '#10B981';
       statusLabel = 'Transferred to Bank';
       iconName = 'check-circle-outline';
+    } else if (item.status === 'pending_ride_completion') {
+      statusColor = '#3B82F6';
+      statusLabel = 'Held in Escrow (Active Ride)';
+      iconName = 'shield-clock-outline';
     } else if (item.status === 'failed') {
       statusColor = '#EF4444';
-      statusLabel = 'Payout Failed';
+      statusLabel = 'Payout Pending Route Activation';
       iconName = 'alert-circle-outline';
     } else if (item.status === 'reversed') {
       statusColor = '#F59E0B';
       statusLabel = 'Reversed (Cancelled)';
       iconName = 'undo-variant';
     } else if (item.status === 'pending_driver_onboarding') {
-      statusColor = '#3B82F6';
+      statusColor = '#8B5CF6';
       statusLabel = 'Awaiting Account Setup';
       iconName = 'account-clock-outline';
     }

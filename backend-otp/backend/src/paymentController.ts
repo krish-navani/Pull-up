@@ -382,21 +382,33 @@ export async function handleVerifyPayment(req: Request, res: Response) {
       };
     });
 
-    // 4. Razorpay Route Payout Transfer to Driver (Idempotent)
+    // 4. Record Escrow Hold in transfers collection (Funds held in Razorpay Merchant Account until Ride Completion)
     if (!result.alreadyProcessed) {
-      await processRazorpayRoutePayout({
-        db,
-        paymentId: razorpay_payment_id,
-        bookingId,
-        rideId: result.rideId,
-        driverId: result.driverId,
-        amountPaise: expectedAmountPaise,
-      });
+      const transferDocRef = db.collection('transfers').doc(`trf_${bookingId}`);
+      const existingTx = await transferDocRef.get();
+      if (!existingTx.exists) {
+        const commissionPercentage = config.commissionPercentage || 10;
+        const platformFeePaise = Math.round((expectedAmountPaise * commissionPercentage) / 100);
+        const driverSharePaise = expectedAmountPaise - platformFeePaise;
+        await transferDocRef.set({
+          id: `trf_${bookingId}`,
+          paymentId: razorpay_payment_id,
+          bookingId,
+          rideId: result.rideId,
+          driverId: result.driverId,
+          grossAmountPaise: expectedAmountPaise,
+          platformFeePaise,
+          driverSharePaise,
+          status: 'pending_ride_completion',
+          createdAt: admin.firestore.Timestamp.now(),
+          updatedAt: admin.firestore.Timestamp.now(),
+        });
+      }
     }
 
     return res.json({
       success: true,
-      message: 'Payment verified and captured successfully via Razorpay',
+      message: 'Payment verified and captured successfully via Razorpay (Held in Escrow until Ride Completion)',
       bookingId: result.bookingId,
       rideId: result.rideId,
     });
@@ -423,11 +435,11 @@ export async function processRazorpayRoutePayout(params: {
 }) {
   const { db, paymentId, bookingId, rideId, driverId, amountPaise } = params;
 
-  // Check if transfer record already exists (Idempotency check)
+  // Check if transfer record already processed (Idempotency check)
   const transferDocRef = db.collection('transfers').doc(`trf_${bookingId}`);
   const existingTransfer = await transferDocRef.get();
-  if (existingTransfer.exists && ['processed', 'pending_driver_onboarding'].includes(existingTransfer.data()?.status)) {
-    console.log(`[ROUTE PAYOUT] Transfer for booking ${bookingId} already exists: ${existingTransfer.data()?.status}`);
+  if (existingTransfer.exists && existingTransfer.data()?.status === 'processed') {
+    console.log(`[ROUTE PAYOUT] Transfer for booking ${bookingId} already processed: ${existingTransfer.data()?.transferId}`);
     return existingTransfer.data();
   }
 
@@ -435,10 +447,55 @@ export async function processRazorpayRoutePayout(params: {
   const commissionPercentage = config.commissionPercentage || 10;
   const platformFeePaise = Math.round((amountPaise * commissionPercentage) / 100);
   const driverSharePaise = amountPaise - platformFeePaise;
+  const driverShareRupees = driverSharePaise / 100;
 
   const driverDoc = await db.collection('users').doc(driverId).get();
   const driverData = driverDoc.data();
   const razorpayAccountId = driverData?.razorpayAccountId;
+
+  const updateLedgerOnSuccess = async (transferId: string) => {
+    // Sync Firestore driver wallet & walletTransactions
+    const walletRef = db.collection('wallets').doc(driverId);
+    const walletDoc = await walletRef.get();
+    if (walletDoc.exists) {
+      const wData = walletDoc.data()!;
+      const currentWalletBalance = wData.walletBalance || 0;
+      const currentPendingBalance = wData.pendingBalance || 0;
+      const currentLifetime = wData.lifetimeEarnings || 0;
+
+      await walletRef.update({
+        walletBalance: parseFloat((currentWalletBalance + driverShareRupees).toFixed(2)),
+        pendingBalance: Math.max(0, parseFloat((currentPendingBalance - (amountPaise / 100)).toFixed(2))),
+        lifetimeEarnings: parseFloat((currentLifetime + driverShareRupees).toFixed(2)),
+        updatedAt: admin.firestore.Timestamp.now(),
+      });
+    } else {
+      await walletRef.set({
+        userId: driverId,
+        walletBalance: driverShareRupees,
+        pendingBalance: 0,
+        lockedBalance: 0,
+        lifetimeEarnings: driverShareRupees,
+        lifetimeWithdrawals: 0,
+        updatedAt: admin.firestore.Timestamp.now(),
+      });
+    }
+
+    // Add walletTransaction log
+    await db.collection('walletTransactions').add({
+      userId: driverId,
+      rideId,
+      bookingId,
+      paymentId,
+      transferId,
+      amount: driverShareRupees,
+      grossAmount: amountPaise / 100,
+      platformFee: platformFeePaise / 100,
+      type: 'payout_transferred',
+      status: 'completed',
+      createdAt: admin.firestore.Timestamp.now(),
+    });
+  };
 
   if (razorpayAccountId && String(razorpayAccountId).startsWith('acc_')) {
     try {
@@ -471,6 +528,7 @@ export async function processRazorpayRoutePayout(params: {
       };
 
       await transferDocRef.set(transferData, { merge: true });
+      await updateLedgerOnSuccess(transferData.transferId);
       return transferData;
     } catch (err: any) {
       console.error(`[ROUTE PAYOUT FAILED] Payment ${paymentId} for driver ${driverId}:`, err);
@@ -510,6 +568,51 @@ export async function processRazorpayRoutePayout(params: {
     };
     await transferDocRef.set(pendingData, { merge: true });
     return pendingData;
+  }
+}
+
+/**
+ * Driver Payout Reconciliation Endpoint
+ */
+export async function handleReconcileDriverPayouts(req: Request, res: Response) {
+  try {
+    const authenticatedUserId = await getAuthenticatedUserId(req);
+    const db = getDb();
+
+    const transfersSnap = await db.collection('transfers')
+      .where('driverId', '==', authenticatedUserId)
+      .get();
+
+    let processedCount = 0;
+    let attemptedCount = 0;
+
+    for (const doc of transfersSnap.docs) {
+      const tData = doc.data();
+      if (tData.status !== 'processed') {
+        attemptedCount++;
+        const result = await processRazorpayRoutePayout({
+          db,
+          paymentId: tData.paymentId,
+          bookingId: tData.bookingId,
+          rideId: tData.rideId,
+          driverId: tData.driverId,
+          amountPaise: tData.grossAmountPaise,
+        });
+        if (result?.status === 'processed') {
+          processedCount++;
+        }
+      }
+    }
+
+    return res.json({
+      success: true,
+      message: `Payout reconciliation finished. ${processedCount} of ${attemptedCount} payouts processed.`,
+      attemptedCount,
+      processedCount,
+    });
+  } catch (error: any) {
+    console.error('[API] /driver/reconcile-payouts error:', error);
+    return res.status(500).json({ success: false, message: error.message || 'Failed to reconcile payouts' });
   }
 }
 

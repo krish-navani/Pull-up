@@ -16,6 +16,8 @@ import { consumeDeletionAuthorization, createDeletionAuthorization, deletePullUp
 import {
   handleDriverPayoutAccountSetup,
   getDriverPayoutAccountStatus,
+  handleReconcileDriverPayouts,
+  processRazorpayRoutePayout,
   handleCreateOrder,
   handleVerifyPayment,
   handleRazorpayWebhook,
@@ -1057,6 +1059,11 @@ router.post('/create-order', async (req, res) => {
 // VERIFY PAYMENT & COMPLETE CARPOOL BOOKING
 router.post('/verify-payment', handleVerifyPayment);
 
+// DRIVER PAYOUT LINKED ACCOUNT & RECONCILIATION ROUTES
+router.post('/driver/payout-account', handleDriverPayoutAccountSetup);
+router.get('/driver/payout-account', getDriverPayoutAccountStatus);
+router.post('/driver/reconcile-payouts', handleReconcileDriverPayouts);
+
 // CANCEL PENDING BOOKING & RELEASE RESERVED SEATS
 router.post('/cancel-pending-booking', async (req: Request, res: Response) => {
   try {
@@ -1164,13 +1171,13 @@ export async function executeInternalCompleteRide(
     }
 
     const driverId = rideData.driverId;
+    const walletRef = db.collection('wallets').doc(driverId);
+    const walletSnap = await transaction.get(walletRef);
 
-    transaction.update(rideRef, {
-      status: 'completed',
-      completedAt: new Date().toISOString(),
-      updatedAt: admin.firestore.Timestamp.now(),
-    });
+    const statsRef = db.collection('system').doc('stats');
+    const statsDoc = await transaction.get(statsRef);
 
+    // ── PHASE 2: COMPUTE & QUERIES ─────────────────────────────────────
     const bookingsRef = db.collection('bookings');
     const bookingsQuery = await bookingsRef
       .where('rideId', '==', rideId)
@@ -1205,9 +1212,14 @@ export async function executeInternalCompleteRide(
       }
     }
 
+    // ── PHASE 3: ALL WRITES ─────────────────────────────────────────────
+    transaction.update(rideRef, {
+      status: 'completed',
+      completedAt: new Date().toISOString(),
+      updatedAt: admin.firestore.Timestamp.now(),
+    });
+
     if (totalDriverPayout > 0) {
-      const walletRef = db.collection('wallets').doc(driverId);
-      const walletSnap = await transaction.get(walletRef);
       let walletBalance = 0;
       let pendingBalance = 0;
       let lifetimeEarnings = 0;
@@ -1257,8 +1269,6 @@ export async function executeInternalCompleteRide(
         });
       }
 
-      const statsRef = db.collection('system').doc('stats');
-      const statsDoc = await transaction.get(statsRef);
       if (statsDoc.exists) {
         const statsData = statsDoc.data()!;
         transaction.update(statsRef, {
@@ -1307,6 +1317,33 @@ export async function executeInternalCompleteRide(
         'ride-details',
         result.rideId
       ).catch(e => console.error('[COMPLETE_RIDE_NOTIF] Passenger notification error:', e));
+    }
+  }
+
+  // Execute Razorpay Route Payout Transfers to Driver upon Ride Completion
+  if (!result.alreadyProcessed && result.driverId && result.rideId) {
+    const paidBookingsSnap = await db.collection('bookings')
+      .where('rideId', '==', result.rideId)
+      .where('paymentStatus', '==', 'paid')
+      .get();
+
+    for (const doc of paidBookingsSnap.docs) {
+      const bData = doc.data();
+      if (bData.paymentId) {
+        const amountPaise = getStoredBookingAmountPaise(bData, true);
+        try {
+          await processRazorpayRoutePayout({
+            db,
+            paymentId: bData.paymentId,
+            bookingId: doc.id,
+            rideId: result.rideId,
+            driverId: result.driverId,
+            amountPaise,
+          });
+        } catch (err: any) {
+          console.error(`[COMPLETE_RIDE] Route payout error for booking ${doc.id}:`, err);
+        }
+      }
     }
   }
 
