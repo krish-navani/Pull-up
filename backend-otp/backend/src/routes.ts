@@ -11,7 +11,7 @@ import { getHaversineDistance, getDistanceToPolyline, decodePolyline, simplifyDo
 import { registerFareRoutes } from './fareRoutes.js';
 import { getAuthoritativeRoute } from './fareRouteService.js';
 import { calculateRidePricing, calculateTaxiPoolPricing, getStoredBookingAmountPaise } from './fareService.js';
-import { ATLAS_GEOFENCE_METERS, ATLAS_LOCATION } from './atlasConfig.js';
+import { ATLAS_GEOFENCE_METERS, ATLAS_LOCATION, ATLAS_ENDPOINT_IDENTITY_METERS } from './atlasConfig.js';
 import { consumeDeletionAuthorization, createDeletionAuthorization, deletePullUpAccount } from './accountDeletionService.js';
 import {
   handleDriverPayoutAccountSetup,
@@ -23,6 +23,7 @@ import {
   handleRazorpayWebhook,
   executeBookingRefundAndReversal
 } from './paymentController.js';
+import { clearPayoutsForCompletedRide } from './payout/payoutService.js';
 
 const router = Router();
 
@@ -1284,6 +1285,11 @@ export async function executeInternalCompleteRide(
   if (result.alreadyProcessed) {
     return { success: true };
   }
+
+  // Clear pending payouts for the completed ride (transitions pending_completion -> ready_for_payout)
+  await clearPayoutsForCompletedRide(db, rideId).catch(err =>
+    console.error('[COMPLETE_RIDE] Error clearing payouts for ride:', rideId, err)
+  );
 
   const payout = result.totalDriverPayout ?? 0;
   if (payout > 0 && result.driverId && result.rideId) {
@@ -2877,13 +2883,19 @@ export async function triggerNotification(
 }
 
 // ─── Background Location Update (called by TaskManager background task) ───────
-// Authenticated via PULLUP_BG_SECRET header to prevent spoofed location writes.
+// Authenticated via Firebase ID Token (Bearer auth)
 router.post('/update-location', async (req: Request, res: Response) => {
-  // Auth check
-  const secret = req.headers['x-pullup-bg-secret'];
-  const expectedSecret = process.env.PULLUP_BG_SECRET || 'pullup_commute_secure_pass_2026';
-  if (secret !== expectedSecret) {
-    return res.status(401).json({ success: false, message: 'Unauthorized' });
+  const bearerToken = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+  if (!bearerToken) {
+    return res.status(401).json({ success: false, message: 'Authentication required' });
+  }
+
+  let authenticatedUid: string;
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(bearerToken);
+    authenticatedUid = decodedToken.uid;
+  } catch (authErr) {
+    return res.status(401).json({ success: false, message: 'Invalid or expired authentication token' });
   }
 
   const { rideId, latitude, longitude, heading, speed, accuracy } = req.body;
@@ -2902,6 +2914,10 @@ router.post('/update-location', async (req: Request, res: Response) => {
     }
 
     const rideData = rideSnap.data() || {};
+    if (rideData.driverId !== authenticatedUid) {
+      return res.status(403).json({ success: false, message: 'Unauthorized: Only the assigned driver can update ride location' });
+    }
+
     if (rideData.status !== 'in_progress' && rideData.status !== 'active') {
       return res.status(409).json({ success: false, message: `Ride status is ${rideData.status}, not trackable` });
     }
@@ -2924,30 +2940,38 @@ router.post('/update-location', async (req: Request, res: Response) => {
     // Background Geofencing Checks (Run asynchronously without blocking the location write response)
     (async () => {
       try {
-        const currentCoords = { latitude, longitude };
-        
-        // 1. Completion check (2km to destination)
         const ATLAS_LAT = ATLAS_LOCATION.latitude;
         const ATLAS_LNG = ATLAS_LOCATION.longitude;
-        const ATLAS_RADIUS_METERS = ATLAS_GEOFENCE_METERS;
-        
-        const isWithinAtlas = (lat: number, lng: number) => {
-          return calculateDistance(lat, lng, ATLAS_LAT, ATLAS_LNG) <= ATLAS_RADIUS_METERS;
-        };
+        const ATLAS_RADIUS_METERS = ATLAS_GEOFENCE_METERS; // 1000m (1km)
 
-        const pickupIsAtlas = isWithinAtlas(rideData.pickupLocation.latitude, rideData.pickupLocation.longitude);
-        const direction = !pickupIsAtlas ? 'home-to-atlas' : 'atlas-to-home';
+        // Check endpoint identity accurately (within 250m)
+        const pickupIsAtlas = rideData.pickupLocation
+          ? calculateDistance(rideData.pickupLocation.latitude, rideData.pickupLocation.longitude, ATLAS_LAT, ATLAS_LNG) <= ATLAS_ENDPOINT_IDENTITY_METERS
+          : false;
+        const dropIsAtlas = rideData.dropLocation
+          ? calculateDistance(rideData.dropLocation.latitude, rideData.dropLocation.longitude, ATLAS_LAT, ATLAS_LNG) <= ATLAS_ENDPOINT_IDENTITY_METERS
+          : false;
 
-        let distanceToDestination = 0;
-        if (direction === 'home-to-atlas') {
-          distanceToDestination = calculateDistance(latitude, longitude, ATLAS_LAT, ATLAS_LNG);
-        } else if (direction === 'atlas-to-home' && rideData.dropLocation) {
-          distanceToDestination = calculateDistance(latitude, longitude, rideData.dropLocation.latitude, rideData.dropLocation.longitude);
+        let destinationCoords: { latitude: number; longitude: number } | null = null;
+        if (!pickupIsAtlas && dropIsAtlas) {
+          // Home -> Atlas
+          destinationCoords = { latitude: ATLAS_LAT, longitude: ATLAS_LNG };
+        } else if (pickupIsAtlas && rideData.dropLocation) {
+          // Atlas -> Home / Dropoff
+          destinationCoords = { latitude: rideData.dropLocation.latitude, longitude: rideData.dropLocation.longitude };
+        } else if (rideData.dropLocation?.latitude && rideData.dropLocation?.longitude) {
+          // Custom / General endpoint
+          destinationCoords = { latitude: rideData.dropLocation.latitude, longitude: rideData.dropLocation.longitude };
         }
 
-        if (distanceToDestination > 0 && distanceToDestination <= ATLAS_RADIUS_METERS) {
-          console.log(`[BG GEOFENCE] Auto-completing ride ${rideId} via background geofence (dist=${distanceToDestination.toFixed(0)}m)`);
-          await executeInternalCompleteRide(db, rideId, true);
+        // 1. Completion check (1km to destination)
+        if (destinationCoords && !rideData.completedNotificationSent && rideData.status === 'in_progress') {
+          const distanceToDestination = calculateDistance(latitude, longitude, destinationCoords.latitude, destinationCoords.longitude);
+          if (distanceToDestination <= ATLAS_RADIUS_METERS) {
+            console.log(`[BG GEOFENCE] Auto-completing ride ${rideId} via background geofence (dist=${distanceToDestination.toFixed(0)}m)`);
+            await rideRef.update({ completedNotificationSent: true });
+            await executeInternalCompleteRide(db, rideId, true);
+          }
         }
 
         // 2. Passenger Pickups check (nearby 200m / arrived 50m)
@@ -2985,7 +3009,7 @@ router.post('/update-location', async (req: Request, res: Response) => {
               `${rideData.driverName || 'Your driver'} is at your pickup point. Please come out now!`,
               rideId,
               bookingId,
-              'navigation',
+              'group-chat',
               rideId
             );
           }
@@ -3490,7 +3514,7 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
       }
     }
 
-    // ─── 3. RIDE DEPARTURE REMINDERS (30m / 10m) ───
+    // ─── 3. RIDE DEPARTURE REMINDERS (30m / 5m / Departure time) ───
     const activeRidesSnap = await db.collection('rides').where('status', '==', 'active').get();
     for (const doc of activeRidesSnap.docs) {
       const ride = doc.data();
@@ -3499,7 +3523,7 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
       const diffMins = Math.floor(diffMs / 60000);
 
       // A. 30 Minutes Before Departure
-      if (diffMins <= 30 && diffMins > 10 && !ride.reminder30mSent) {
+      if (diffMins <= 30 && diffMins > 5 && !ride.reminder30mSent) {
         const bookingsSnap = await db.collection('bookings')
           .where('rideId', '==', doc.id)
           .where('status', '==', 'confirmed')
@@ -3512,7 +3536,7 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
             booking.passengerId,
             'ride_started',
             'Ride Departing Soon! ⏰',
-            `Your ride departs in 30 minutes. Please be ready at the pickup location.`,
+            `Your ride departs in 30 minutes. Please be ready at your pickup location.`,
             doc.id,
             bDoc.id,
             'ride-details',
@@ -3534,8 +3558,8 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
         await doc.ref.update({ reminder30mSent: true });
       }
 
-      // B. 10 Minutes Before Departure
-      if (diffMins <= 10 && diffMins > 0 && !ride.reminder10mSent) {
+      // B. 5 Minutes Before Departure
+      if (diffMins <= 5 && diffMins > 0 && !ride.reminder5mSent) {
         const bookingsSnap = await db.collection('bookings')
           .where('rideId', '==', doc.id)
           .where('status', '==', 'confirmed')
@@ -3547,8 +3571,8 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
           await triggerNotification(
             booking.passengerId,
             'ride_started',
-            'Ride Departing in 10m! 🚗',
-            `Your ride departs in 10 minutes. Check your active ride coordinates.`,
+            'Ride Departing in 5m! 🚗',
+            `Your ride departs in 5 minutes. Please be ready at your pickup location.`,
             doc.id,
             bDoc.id,
             'ride-details',
@@ -3559,15 +3583,31 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
         await triggerNotification(
           ride.driverId,
           'booking_request',
-          'Upcoming Departure in 10m! 🚗',
-          `Your ride departs in 10 minutes. Please prepare to start your ride.`,
+          'Upcoming Departure in 5m! 🚗',
+          `Your ride departs in 5 minutes. Please prepare to start your ride.`,
           doc.id,
           null,
           'ride-details',
           doc.id
         );
 
-        await doc.ref.update({ reminder10mSent: true });
+        await doc.ref.update({ reminder5mSent: true });
+      }
+
+      // C. Departure Time Prompt for Driver
+      if (diffMins <= 0 && diffMins >= -15 && (ride.status === 'active' || !ride.status) && !ride.rideStartPromptSent) {
+        await triggerNotification(
+          ride.driverId,
+          'booking_request',
+          'Time to Start Your Ride! 🚗',
+          `It is departure time. Please start your ride to begin navigation and notify your passengers.`,
+          doc.id,
+          null,
+          'ride-details',
+          doc.id
+        );
+
+        await doc.ref.update({ rideStartPromptSent: true });
       }
     }
 
@@ -3665,45 +3705,6 @@ router.post('/process-reminders', async (req: Request, res: Response) => {
           doc.id
         );
         await doc.ref.update({ paymentReminder5mSent: true });
-      }
-    }
-
-    // ─── 5.1 UNPAID PENDING BOOKINGS TIMEOUT (10 min) ───
-    const unpaidPendingSnap = await db.collection('bookings')
-      .where('status', '==', 'pending')
-      .where('paymentStatus', '==', 'pending')
-      .get();
-
-    for (const bDoc of unpaidPendingSnap.docs) {
-      const booking = bDoc.data();
-      const expiresAt = booking.expiresAt ? (booking.expiresAt.toDate ? booking.expiresAt.toDate() : new Date(booking.expiresAt)) : null;
-      if (expiresAt && expiresAt <= now) {
-        console.log(`[SWEEP] Expiring unpaid pending booking request: ${bDoc.id}`);
-        const rideId = booking.rideId;
-        const passengerId = booking.passengerId;
-
-        await db.runTransaction(async (transaction) => {
-          const bRef = db.collection('bookings').doc(bDoc.id);
-          const rideRef = db.collection('rides').doc(rideId);
-          const rSnap = await transaction.get(rideRef);
-
-          transaction.update(bRef, {
-            status: 'cancelled',
-            paymentStatus: 'failed',
-            updatedAt: admin.firestore.Timestamp.now()
-          });
-
-          if (rSnap.exists) {
-            const rideData = rSnap.data()!;
-            const updatedBookedSeats = (rideData.bookedSeats || []).filter(
-              (b: any) => b.passengerId !== passengerId
-            );
-            transaction.update(rideRef, {
-              bookedSeats: updatedBookedSeats,
-              updatedAt: admin.firestore.Timestamp.now()
-            });
-          }
-        });
       }
     }
 

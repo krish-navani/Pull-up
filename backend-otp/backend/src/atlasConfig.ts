@@ -8,7 +8,7 @@ export const ATLAS_LOCATION: RouteCoordinate & { address: string; city: string }
   city: 'Mumbai',
 });
 
-export const ATLAS_GEOFENCE_METERS = 2000;
+export const ATLAS_GEOFENCE_METERS = 1000;
 export const ATLAS_ENDPOINT_IDENTITY_METERS = 250;
 
 export const isAtlasEndpoint = (location: RouteCoordinate): boolean => {

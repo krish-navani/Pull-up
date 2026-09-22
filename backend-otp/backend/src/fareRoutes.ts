@@ -4,6 +4,7 @@ import { getDb } from './firebase.js';
 import { calculatePassengerFare, calculateRidePricing, calculateTaxiPoolPricing, getFareConfig, paiseToRupees, RidePricing } from './fareService.js';
 import { geocodeAddress, getAuthoritativeRoute, RouteCoordinate } from './fareRouteService.js';
 import { canonicalizeAtlasEndpoint, isAtlasEndpoint } from './atlasConfig.js';
+import { assertActiveMembership } from './membershipService.js';
 
 type Notify = (
   userId: string, type: string, title: string, message: string,
@@ -67,11 +68,13 @@ const ridePricing = (ride: any, distanceMeters: number): RidePricing => {
 const fail = (res: Response, error: any) => {
   const code = String(error?.message || 'FARE_CALCULATION_FAILED');
   const status = code === 'UNAUTHENTICATED' ? 401
+    : code === 'MEMBERSHIP_REQUIRED' ? 403
     : code.includes('NOT_FOUND') ? 404
     : code.includes('UNAVAILABLE') || code.includes('QUOTA') || code.includes('NOT_CONFIGURED') || code.startsWith('MISSING_TAXI_') ? 503
     : 400;
   const messages: Record<string, string> = {
     UNAUTHENTICATED: 'Please sign in again.',
+    MEMBERSHIP_REQUIRED: 'An active PullUp pass is required to join rides or host taxi pools. Please activate your pass.',
     EXACTLY_ONE_ATLAS_ENDPOINT_REQUIRED: 'Exactly one ride endpoint must be Atlas SkillTech University.',
     DRIVER_FARE_OUT_OF_RANGE: 'Selected fare is outside the permitted cost-sharing range.',
     ROUTE_PROVIDER_UNAVAILABLE: 'Road route calculation is temporarily unavailable. Please retry.',
@@ -271,10 +274,11 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
     }
   });
 
-  router.post('/fare/create-booking', async (req, res) => {
+    router.post('/fare/create-booking', async (req, res) => {
     try {
       const passengerId = await authenticatedUid(req);
       const db = getDb();
+      await assertActiveMembership(db, passengerId);
       const rideId = String(req.body.rideId || '');
       const rideRef = db.collection('rides').doc(rideId);
       const initialRide = await rideRef.get();
@@ -306,7 +310,6 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
           extraDistanceMeters: fare.incrementalDetourDistanceMeters,
           extraDurationSeconds: Number(req.body.detourMeta?.extraDurationSeconds || 0),
           walkingDistanceMeters: Number(req.body.detourMeta?.walkingDistanceMeters || 0),
-          expiresAt: admin.firestore.Timestamp.fromDate(new Date(Date.now() + 10 * 60 * 1000)),
           bookedAt: admin.firestore.Timestamp.now(), createdAt: admin.firestore.Timestamp.now(), updatedAt: admin.firestore.Timestamp.now(),
         });
         const bookedSeats = (ride.bookedSeats || []).filter((entry: any) => entry.passengerId !== passengerId);
@@ -350,6 +353,7 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
     try {
       const creatorId = await authenticatedUid(req);
       const db = getDb();
+      await assertActiveMembership(db, creatorId);
       const userDoc = await db.collection('users').doc(creatorId).get();
       if (!userDoc.exists) throw new Error('USER_NOT_FOUND');
       const user = userDoc.data()!;
@@ -400,6 +404,7 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
     try {
       const passengerId = await authenticatedUid(req);
       const db = getDb();
+      await assertActiveMembership(db, passengerId);
       const poolId = String(req.body.poolId || '');
       const poolRef = db.collection('taxiPools').doc(poolId);
       const poolDoc = await poolRef.get();
@@ -460,7 +465,7 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
         if (ride.availableSeats < booking.seatsBooked) throw new Error('INSUFFICIENT_SEATS');
         const lockedAt = new Date().toISOString();
         transaction.update(bookingRef, { status: 'accepted', fareStatus: 'locked', 'fare.lockedAt': lockedAt,
-          expiresAt: admin.firestore.Timestamp.fromDate(new Date(Date.now() + 10 * 60 * 1000)), updatedAt: admin.firestore.Timestamp.now() });
+          updatedAt: admin.firestore.Timestamp.now() });
         transaction.update(rideRef, { bookedSeats: (ride.bookedSeats || []).map((entry: any) =>
           entry.passengerId === booking.passengerId ? { ...entry, status: 'accepted' } : entry), updatedAt: admin.firestore.Timestamp.now() });
         return booking;

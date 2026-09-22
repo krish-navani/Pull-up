@@ -111,7 +111,7 @@ export const getFareConfig = (): FareConfigSnapshot => {
     minimumFareReferenceDistanceMeters: positiveInt(process.env.FARE_MIN_REFERENCE_DISTANCE_METERS, 18000),
     maximumPassengerFarePaise: positiveInt(process.env.FARE_MAX_PASSENGER_PAISE, 70000),
     maximumRideFarePaise: positiveInt(process.env.FARE_MAX_RIDE_PAISE, 70000),
-    platformFeePaise: Math.max(0, Number(process.env.FARE_PLATFORM_FEE_PAISE || 0)),
+    platformFeePaise: positiveInt(process.env.FARE_PLATFORM_FEE_PAISE, 1000), // Default ₹10 platform fee
     tollHandlingPolicy: 'excluded',
     roundingPolicy: process.env.FARE_ROUNDING_POLICY === 'ceil_rupee' ? 'ceil_rupee' : 'nearest_rupee',
     effectiveFrom: process.env.FARE_CONFIG_EFFECTIVE_FROM || '2026-08-25T00:00:00.000Z',

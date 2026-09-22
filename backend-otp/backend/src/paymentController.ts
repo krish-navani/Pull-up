@@ -15,6 +15,8 @@ import {
   createOrLinkRazorpayAccount,
 } from './razorpayService.js';
 import { getStoredBookingAmountPaise } from './fareService.js';
+import { createPendingPayoutRecord, voidPayoutAndExecuteRefund } from './payout/payoutService.js';
+import { RefundReason } from './payout/types.js';
 
 // Helper to extract authenticated user ID from Bearer token (with dev/test fallback)
 async function getAuthenticatedUserId(req: Request): Promise<string> {
@@ -382,28 +384,18 @@ export async function handleVerifyPayment(req: Request, res: Response) {
       };
     });
 
-    // 4. Record Escrow Hold in transfers collection (Funds held in Razorpay Merchant Account until Ride Completion)
-    if (!result.alreadyProcessed) {
-      const transferDocRef = db.collection('transfers').doc(`trf_${bookingId}`);
-      const existingTx = await transferDocRef.get();
-      if (!existingTx.exists) {
-        const commissionPercentage = config.commissionPercentage || 10;
-        const platformFeePaise = Math.round((expectedAmountPaise * commissionPercentage) / 100);
-        const driverSharePaise = expectedAmountPaise - platformFeePaise;
-        await transferDocRef.set({
-          id: `trf_${bookingId}`,
-          paymentId: razorpay_payment_id,
-          bookingId,
-          rideId: result.rideId,
-          driverId: result.driverId,
-          grossAmountPaise: expectedAmountPaise,
-          platformFeePaise,
-          driverSharePaise,
-          status: 'pending_ride_completion',
-          createdAt: admin.firestore.Timestamp.now(),
-          updatedAt: admin.firestore.Timestamp.now(),
-        });
-      }
+    // 4. Create pending payout ledger record (DO NOT transfer money to driver until ride completes)
+    if (!result.alreadyProcessed && result.passengerId) {
+      await createPendingPayoutRecord(db, {
+        bookingId,
+        rideId: result.rideId,
+        driverId: result.driverId,
+        passengerId: result.passengerId,
+        paymentId: razorpay_payment_id,
+        orderId: razorpay_order_id,
+        totalAmountPaise: result.amountPaise ?? expectedAmountPaise,
+        platformFeePaise: 1000,
+      });
     }
 
     return res.json({
@@ -617,7 +609,7 @@ export async function handleReconcileDriverPayouts(req: Request, res: Response) 
 }
 
 /**
- * Executes Real Razorpay Refund & Transfer Reversal on Cancellation
+ * Executes Real Razorpay Refund & Voids Payout on Cancellation / No Pickup
  */
 export async function executeBookingRefundAndReversal(params: {
   db: admin.firestore.Firestore;
@@ -625,8 +617,9 @@ export async function executeBookingRefundAndReversal(params: {
   reason: string;
   isPassengerCancellation: boolean;
   departureTimeIso?: string;
+  initiatedBy?: string;
 }): Promise<{ refundId?: string; refundAmountPaise: number; status: string }> {
-  const { db, bookingId, reason, isPassengerCancellation, departureTimeIso } = params;
+  const { db, bookingId, reason, isPassengerCancellation, departureTimeIso, initiatedBy = 'system' } = params;
 
   const bookingDoc = await db.collection('bookings').doc(bookingId).get();
   if (!bookingDoc.exists) throw new Error('BOOKING_NOT_FOUND');
@@ -636,7 +629,6 @@ export async function executeBookingRefundAndReversal(params: {
     return { refundAmountPaise: 0, status: 'no_payment_to_refund' };
   }
 
-  const paymentId = bookingData.paymentId;
   const totalAmountPaise = getStoredBookingAmountPaise(bookingData, true);
 
   // Determine refund ratio according to PullUp policy
@@ -655,62 +647,20 @@ export async function executeBookingRefundAndReversal(params: {
     return { refundAmountPaise: 0, status: 'no_refund_applicable' };
   }
 
-  // 1. Issue real Razorpay refund
-  const refund = await createRazorpayRefund({
-    paymentId,
-    amountPaise: refundAmountPaise,
-    notes: { bookingId, reason, refundPercentage: String(refundPercentage) },
+  // Execute Razorpay refund and void the driver payout ledger so driver is never paid
+  const refundResult = await voidPayoutAndExecuteRefund(db, {
+    bookingId,
+    reason: (isPassengerCancellation ? 'passenger_cancelled' : 'driver_cancelled') as RefundReason,
+    initiatedBy,
+    customAmountPaise: refundAmountPaise,
   });
 
-  const refundId = refund.id || `ref_${bookingId}_${Date.now()}`;
-
-  // 2. Reverse Razorpay Route transfer if driver share was transferred
-  const transferDoc = await db.collection('transfers').doc(`trf_${bookingId}`).get();
-  if (transferDoc.exists && transferDoc.data()?.status === 'processed' && transferDoc.data()?.transferId) {
-    const tData = transferDoc.data()!;
-    const reversalAmountPaise = Math.round((tData.driverSharePaise * refundPercentage) / 100);
-    try {
-      const reversal = await reverseRouteTransfer({
-        transferId: tData.transferId,
-        amountPaise: reversalAmountPaise,
-        notes: { bookingId, reason: 'booking_cancelled' },
-      });
-      await transferDoc.ref.update({
-        status: refundPercentage === 100 ? 'reversed' : 'partially_reversed',
-        reversalId: reversal.id || `rev_${Date.now()}`,
-        reversalAmountPaise,
-        updatedAt: admin.firestore.Timestamp.now(),
-      });
-    } catch (err) {
-      console.error(`[ROUTE REVERSAL FAILED] Transfer ${tData.transferId}:`, err);
-    }
+  if (!refundResult.success) {
+    throw new Error(refundResult.message || 'Refund processing failed');
   }
 
   const refundStatus = refundPercentage === 100 ? 'refunded' : 'partially_refunded';
-
-  await db.collection('refunds').doc(refundId).set({
-    refundId,
-    paymentId,
-    bookingId,
-    rideId: bookingData.rideId,
-    passengerId: bookingData.passengerId,
-    totalAmountPaise,
-    refundAmountPaise,
-    refundPercentage,
-    reason,
-    status: 'processed',
-    createdAt: admin.firestore.Timestamp.now(),
-  });
-
-  await db.collection('bookings').doc(bookingId).update({
-    paymentStatus: refundStatus,
-    refundId,
-    refundAmountPaise,
-    refundedAt: admin.firestore.Timestamp.now(),
-    updatedAt: admin.firestore.Timestamp.now(),
-  });
-
-  return { refundId, refundAmountPaise, status: refundStatus };
+  return { refundId: refundResult.refundId, refundAmountPaise, status: refundStatus };
 }
 
 /**
@@ -772,13 +722,15 @@ export async function handleRazorpayWebhook(req: Request, res: Response) {
             paidAt: admin.firestore.Timestamp.now(),
             updatedAt: admin.firestore.Timestamp.now(),
           });
-          await processRazorpayRoutePayout({
-            db,
-            paymentId: payment.id,
+          await createPendingPayoutRecord(db, {
             bookingId,
             rideId: bData.rideId,
             driverId: bData.driverId,
-            amountPaise: Number(payment.amount),
+            passengerId: bData.passengerId,
+            paymentId: payment.id,
+            orderId: payment.order_id || bData.orderId || '',
+            totalAmountPaise: Number(payment.amount),
+            platformFeePaise: 1000,
           });
         }
       }
