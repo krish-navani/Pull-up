@@ -3,6 +3,11 @@
 # dependencies
 node_modules/
 
+# Next.js & Vercel
+.next/
+.vercel/
+
+
 # Expo
 .expo/
 dist/
