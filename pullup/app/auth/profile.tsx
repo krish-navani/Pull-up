@@ -73,6 +73,7 @@ interface FormData {
   appId: string;
   homeAddress: PullUpLocation | null;
   homeToAtlasDistanceKm: string;
+  upiId: string;
   role?: 'driver' | 'passenger';
 }
 
@@ -121,7 +122,9 @@ export default function ProfileScreen() {
     appId: '',
     homeAddress: null,
     homeToAtlasDistanceKm: '',
+    upiId: '',
   });
+  const [upiError, setUpiError] = useState('');
 
   const [showYearDropdown, setShowYearDropdown] = useState(false);
   const [showCourseDropdown, setShowCourseDropdown] = useState(false);
@@ -246,6 +249,15 @@ export default function ProfileScreen() {
         setPhoneError('');
       }
     }
+
+    // Real-time UPI ID validation
+    if (field === 'upiId') {
+      if (value.trim().length > 0 && !/^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/.test(value.trim())) {
+        setUpiError('Enter a valid UPI ID (e.g. name@upi or phone@bank)');
+      } else {
+        setUpiError('');
+      }
+    }
   };
 
   const handleCompleteProfile = async () => {
@@ -288,6 +300,18 @@ export default function ProfileScreen() {
       return;
     }
 
+    // Driver UPI ID validation
+    if (role === 'driver') {
+      if (!formData.upiId.trim()) {
+        setError('UPI ID is required for Car Owners to receive ride earnings');
+        return;
+      }
+      if (!/^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/.test(formData.upiId.trim())) {
+        setError('Please enter a valid UPI ID (e.g. name@upi or 9876543210@okicici)');
+        return;
+      }
+    }
+
     // Step 2: Validate email and OTP parameters
     if (!emailFromParams || !otpFromParams) {
       setError('Invalid session. Please start signup again.');
@@ -322,6 +346,7 @@ export default function ProfileScreen() {
         profileImage: image || undefined, // Include uploaded image URL or undefined if no image
         homeAddress: formData.homeAddress,
         homeToAtlasDistanceKm,
+        ...(role === 'driver' && formData.upiId.trim() ? { upiId: formData.upiId.trim() } : {}),
       });
 
       console.log('[PROFILE] verifyOTPAndSignUp completed, user role:', role);
@@ -358,6 +383,11 @@ export default function ProfileScreen() {
     }
   };
 
+  const isUpiValid = role !== 'driver' || (
+    formData.upiId.trim().length > 0 &&
+    /^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/.test(formData.upiId.trim())
+  );
+
   const isFormValid = formData.fullName.trim().length > 0 &&
     formData.phone.trim().length > 0 &&
     /^\d{10}$/.test(formData.phone.replace(/\D/g, '')) &&
@@ -368,7 +398,8 @@ export default function ProfileScreen() {
     !!formData.homeAddress &&
     Number.isFinite(Number(formData.homeToAtlasDistanceKm)) &&
     Number(formData.homeToAtlasDistanceKm) >= 0.5 &&
-    Number(formData.homeToAtlasDistanceKm) <= 100;
+    Number(formData.homeToAtlasDistanceKm) <= 100 &&
+    isUpiValid;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -820,6 +851,48 @@ export default function ProfileScreen() {
               </View>
             )}
           </View>
+
+          {/* UPI ID — required for Car Owners / Drivers only */}
+          {role === 'driver' && (
+            <View style={styles.fieldContainer}>
+              <Text style={styles.label}>UPI ID (for ride earnings) *</Text>
+              <View style={[styles.inputWrapper, upiError ? styles.inputWrapperError : undefined]}>
+                <View style={styles.inputIcon}>
+                  <MaterialCommunityIcons
+                    name="bank-transfer"
+                    size={20}
+                    color={WARM_CORE.textSecondary}
+                  />
+                </View>
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. 9876543210@okicici or name@upi"
+                  placeholderTextColor={WARM_CORE.textSecondary}
+                  value={formData.upiId}
+                  onChangeText={text => handleInputChange('upiId', text.trim())}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  editable={!auth.loading}
+                />
+              </View>
+              {upiError ? (
+                <View style={styles.errorContainer}>
+                  <MaterialCommunityIcons name="alert-circle" size={16} color={WARM_CORE.error} />
+                  <Text style={styles.errorText}>{upiError}</Text>
+                </View>
+              ) : formData.upiId.trim().length > 0 ? (
+                <View style={[styles.errorContainer, { backgroundColor: 'rgba(16,185,129,0.06)' }]}>
+                  <MaterialCommunityIcons name="check-circle" size={16} color="#10B981" />
+                  <Text style={[styles.errorText, { color: '#10B981' }]}>UPI ID looks good!</Text>
+                </View>
+              ) : null}
+              <Text style={{ marginTop: 4, fontSize: 11, color: WARM_CORE.textSecondary, lineHeight: 16 }}>
+                Passengers pay online. After each completed ride, PullUp transfers your earnings directly to this UPI ID.
+              </Text>
+            </View>
+          )}
+
           {error && (
             <Animated.View
               style={[

@@ -45,6 +45,7 @@ interface EditableProfile {
   homeAddress: PullUpLocation | null;
   emergencyContactName?: string;
   emergencyContactPhone?: string;
+  upiId?: string;
 }
 
 interface ValidationErrors {
@@ -53,6 +54,7 @@ interface ValidationErrors {
   course?: string;
   division?: string;
   homeAddress?: string;
+  upiId?: string;
 }
 
 const YEAR_OPTIONS = ['First Year', 'Second Year', 'Third Year', 'Fourth Year', 'Fifth Year', 'Honors Degree'] as const;
@@ -75,6 +77,7 @@ export default function ProfileEditScreen() {
     homeAddress: user?.homeAddress || null,
     emergencyContactName: user?.emergencyContactName || '',
     emergencyContactPhone: user?.emergencyContactPhone || '',
+    upiId: user?.upiId || '',
   });
 
   const [errors, setErrors] = useState<ValidationErrors>({});
@@ -113,6 +116,13 @@ export default function ProfileEditScreen() {
       newErrors.homeAddress = 'Home address is required';
     }
 
+    // UPI ID validation for drivers
+    if (user?.role === 'driver' && profile.upiId && profile.upiId.trim().length > 0) {
+      if (!/^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/.test(profile.upiId.trim())) {
+        newErrors.upiId = 'Enter a valid UPI ID (e.g. name@upi or 9876543210@okicici)';
+      }
+    }
+
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
   }, [profile]);
@@ -129,6 +139,7 @@ export default function ProfileEditScreen() {
       profile.profileImage !== (user?.profileImage || null) ||
       profile.emergencyContactName !== (user?.emergencyContactName || '') ||
       profile.emergencyContactPhone !== (user?.emergencyContactPhone || '') ||
+      (profile.upiId || '') !== (user?.upiId || '') ||
       JSON.stringify(profile.homeAddress || null) !== JSON.stringify(user?.homeAddress || null);
 
     setHasChanges(hasChanged);
@@ -235,6 +246,7 @@ export default function ProfileEditScreen() {
         homeAddress: profile.homeAddress,
         emergencyContactName: profile.emergencyContactName?.trim() || null,
         emergencyContactPhone: profile.emergencyContactPhone?.trim() || null,
+        ...(user?.role === 'driver' ? { upiId: profile.upiId?.trim() || null } : {}),
       };
 
       // Handle profile image changes (including removal and Cloudinary upload)
@@ -279,6 +291,7 @@ export default function ProfileEditScreen() {
       homeAddress: user.homeAddress || null,
       emergencyContactName: user.emergencyContactName || '',
       emergencyContactPhone: user.emergencyContactPhone || '',
+      upiId: user.upiId || '',
     });
     setErrors({});
   }, [user]);
@@ -581,7 +594,54 @@ export default function ProfileEditScreen() {
             )}
           </View>
 
+          {/* UPI ID — shown for Car Owners / Drivers only */}
+          {user?.role === 'driver' && (
+            <View style={styles.fieldSection}>
+              <View style={styles.fieldHeader}>
+                <MaterialCommunityIcons name="bank-transfer" size={18} color={WARM_CORE.primary} />
+                <Text style={styles.fieldLabel}>
+                  UPI ID (Ride Earnings)
+                  <Text style={styles.fieldLabelRequired}> *</Text>
+                </Text>
+                {profile.upiId && /^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/.test(profile.upiId.trim()) && (
+                  <View style={styles.successIndicator}>
+                    <MaterialCommunityIcons name="check" size={12} color="#fff" />
+                  </View>
+                )}
+              </View>
+              <View
+                style={[
+                  styles.inputContainer,
+                  focusedField === 'upiId' && styles.inputContainerFocused,
+                  errors.upiId && styles.inputError,
+                ]}
+              >
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. 9876543210@okicici or name@upi"
+                  placeholderTextColor={WARM_CORE.textSecondary}
+                  value={profile.upiId || ''}
+                  onChangeText={(text) =>
+                    setProfile((prev) => ({ ...prev, upiId: text.trim() }))
+                  }
+                  onFocus={() => setFocusedField('upiId')}
+                  onBlur={() => setFocusedField(null)}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
+              {errors.upiId && (
+                <Text style={styles.errorText}>{errors.upiId}</Text>
+              )}
+              <Text style={{ marginTop: 6, fontSize: 12, color: WARM_CORE.textSecondary, lineHeight: 17 }}>
+                Your ride earnings are transferred directly to this UPI ID after each trip.
+              </Text>
+            </View>
+          )}
+
           <View style={styles.divider} />
+
           
           <Text style={[styles.fieldLabel, { marginTop: 16, marginBottom: 8, color: WARM_CORE.primary }]}>
             Emergency Contact Information
