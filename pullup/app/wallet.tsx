@@ -32,7 +32,7 @@ interface RouteTransfer {
   grossAmountPaise?: number;
   platformFeePaise?: number;
   driverSharePaise?: number;
-  status: 'processed' | 'pending_driver_onboarding' | 'failed' | 'reversed' | 'pending';
+  status: 'processed' | 'pending_ride_completion' | 'pending_driver_onboarding' | 'failed' | 'reversed' | 'pending';
   createdAt?: any;
 }
 
