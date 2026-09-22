@@ -378,6 +378,12 @@ export default function MyBookingsScreen() {
       });
 
       if (!verification.data?.success) {
+        if (verification.data?.code === 'INSUFFICIENT_SEATS') {
+          Alert.alert('Pool is full', 'Pool is full / You were too late. All seats have already been claimed.');
+          await loadPassengerBookings(auth.user.id);
+          await loadAllAvailableRides();
+          return;
+        }
         throw new Error(verification.data?.message || 'Payment verification failed');
       }
 
@@ -385,8 +391,12 @@ export default function MyBookingsScreen() {
       await loadAllAvailableRides();
       Alert.alert('Payment successful', 'Payment verified and booking confirmed.');
     } catch (err: any) {
-      const message = err?.description || err?.message || 'Payment was cancelled or could not be completed.';
-      Alert.alert('Payment not completed', message);
+      if (err?.response?.data?.code === 'INSUFFICIENT_SEATS' || err?.message?.includes('INSUFFICIENT_SEATS')) {
+        Alert.alert('Pool is full', 'Pool is full / You were too late. All seats have already been claimed.');
+      } else {
+        const message = err?.response?.data?.message || err?.description || err?.message || 'Payment was cancelled or could not be completed.';
+        Alert.alert('Payment not completed', message);
+      }
     } finally {
       setIsProcessingPayment(false);
     }
@@ -1152,7 +1162,7 @@ export default function MyBookingsScreen() {
           </View>
 
           <View style={styles.priceSection}>
-            <Text style={styles.price}>₹{(ride.price).toFixed(0)}</Text>
+            <Text style={styles.price}>₹{(booking.totalPrice || (ride.price * booking.seatsBooked)).toFixed(0)}</Text>
             <Text style={styles.priceLabel}>Total</Text>
           </View>
         </View>
@@ -1184,7 +1194,7 @@ export default function MyBookingsScreen() {
                   onPress={() => handlePayNow(booking.id)}
                 >
                   <MaterialCommunityIcons name="credit-card-outline" size={16} color={WARM_CORE.white} />
-                  <Text style={styles.chatButtonText}>Pay Now (₹{ride.price * booking.seatsBooked})</Text>
+                  <Text style={styles.chatButtonText}>Pay Now (₹{(booking.totalPrice || (ride.price * booking.seatsBooked)).toFixed(0)})</Text>
                 </AnimatedPressButton>
               </View>
             ) : (

@@ -119,11 +119,12 @@ export default function NavigationScreen() {
     return ride.driverId === auth.user.id;
   }, [ride, auth.user]);
 
-  const isWithin2km = useMemo(() => distanceToDestKm <= 2.0, [distanceToDestKm]);
+  const isWithin1km = useMemo(() => distanceToDestKm <= 1.0, [distanceToDestKm]);
+  const isWithin2km = isWithin1km; // alias for backward compatibility
 
-  // Start pulsing finish ride button when within 2km
+  // Start pulsing finish ride button when within 1km
   useEffect(() => {
-    if (isWithin2km && isDriver) {
+    if (isWithin1km && isDriver) {
       Animated.loop(
         Animated.sequence([
           Animated.timing(pulseAnim, { toValue: 1.06, duration: 700, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
@@ -134,7 +135,7 @@ export default function NavigationScreen() {
       pulseAnim.stopAnimation();
       pulseAnim.setValue(1);
     }
-  }, [isWithin2km, isDriver]);
+  }, [isWithin1km, isDriver]);
 
   const currentStageIndex = useMemo(() => {
     if (!ride) return 0;
@@ -499,10 +500,10 @@ export default function NavigationScreen() {
   // 6. Complete Ride — only allowed within 2km
   const handleCompleteRide = async () => {
     if (!ride) return;
-    if (!isWithin2km) {
+    if (!isWithin1km) {
       Alert.alert(
         'Not There Yet',
-        `You are ${distanceToDestKm.toFixed(1)} km from the destination. The ride can only be finished within 2 km of the destination.`
+        `You are ${distanceToDestKm.toFixed(1)} km from the destination. The ride can only be finished within 1 km of the destination.`
       );
       return;
     }

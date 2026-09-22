@@ -93,7 +93,7 @@ function RootLayoutContent() {
 
         let resolvedScreen = targetScreen;
         if (!resolvedScreen && type) {
-          if (['chat_message', 'message', 'sos', 'SOS', 'group_message', 'group-message'].includes(type)) {
+          if (['chat_message', 'message', 'sos', 'SOS', 'group_message', 'group-message', 'driver_arrived'].includes(type)) {
             resolvedScreen = 'group-chat';
           } else if (['booking_request', 'booking_accepted', 'booking_rejected', 'ride_started', 'ride_completed', 'ride_cancelled', 'payment_confirmed', 'payment_required', 'payment-required', 'booking_expired', 'waitlist_joined', 'waitlist_promoted', 'waitlist_expired', 'cancellation'].includes(type)) {
             resolvedScreen = 'ride-details';
@@ -103,7 +103,7 @@ function RootLayoutContent() {
             resolvedScreen = 'wallet';
           } else if (type === 'marketing') {
             resolvedScreen = 'notifications';
-          } else if (['driver_arrived', 'passenger_confirmed_pickup', 'ride_started', 'live_tracking', 'live-tracking', 'location_update'].includes(type)) {
+          } else if (['passenger_confirmed_pickup', 'ride_started', 'live_tracking', 'live-tracking', 'location_update'].includes(type)) {
             // Live tracking events — open the navigation screen directly
             resolvedScreen = 'navigation';
           }

@@ -459,7 +459,7 @@ function SuccessScreen({ pickupCity, dropoffCity, pickupDetail, dropoffDetail, r
 
 function PostRideScreenInner() {
   const router = useRouter();
-  const { createRide, auth } = useAppContext();
+  const { createRide, auth, updateProfileData } = useAppContext();
   const [postMode, setPostMode] = useState<'car' | 'taxi'>('car');
   const [isLoading, setIsLoading] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
@@ -486,6 +486,12 @@ function PostRideScreenInner() {
   const [newCarColor, setNewCarColor] = useState('');
   const [newCarFuelType, setNewCarFuelType] = useState<'Petrol' | 'Diesel' | 'EV'>('Petrol');
   const [isSavingCar, setIsSavingCar] = useState(false);
+
+  // UPI Requirement Modal state
+  const [showUpiModal, setShowUpiModal] = useState(false);
+  const [upiInput, setUpiInput] = useState(auth.user?.upiId || '');
+  const [upiModalError, setUpiModalError] = useState('');
+  const [isSavingUpi, setIsSavingUpi] = useState(false);
 
   const [isRecurringWeekdays, setIsRecurringWeekdays] = useState(false);
   const [error, setError] = useState('');
@@ -548,6 +554,39 @@ function PostRideScreenInner() {
       Alert.alert('Error', 'Failed to save vehicle. Please try again.');
     } finally {
       setIsSavingCar(false);
+    }
+  };
+
+  // Handler to save UPI ID to user profile
+  const handleSaveUpi = async () => {
+    const trimmed = upiInput.trim();
+    if (!trimmed) {
+      setUpiModalError('Please enter your UPI ID');
+      return;
+    }
+    if (!/^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/.test(trimmed)) {
+      setUpiModalError('Enter a valid UPI ID (e.g. name@upi or 9876543210@okicici)');
+      return;
+    }
+
+    const currentUserId = auth.user?.id;
+    if (!currentUserId) return;
+
+    setIsSavingUpi(true);
+    setUpiModalError('');
+    try {
+      if (updateProfileData) {
+        await updateProfileData(currentUserId, { upiId: trimmed });
+      } else {
+        const userRef = doc(db, 'users', currentUserId);
+        await updateDoc(userRef, { upiId: trimmed });
+      }
+      setShowUpiModal(false);
+    } catch (err: any) {
+      console.error('[POST RIDE] Failed to save UPI ID:', err);
+      setUpiModalError(err.message || 'Failed to save UPI ID. Please try again.');
+    } finally {
+      setIsSavingUpi(false);
     }
   };
 
@@ -871,6 +910,15 @@ function PostRideScreenInner() {
           ]
         );
       }
+      return;
+    }
+
+    // Check if driver has a valid UPI ID saved for payouts
+    const currentUpi = auth.user?.upiId?.trim();
+    if (postMode === 'car' && (!currentUpi || !/^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/.test(currentUpi))) {
+      setUpiInput(currentUpi || '');
+      setUpiModalError('');
+      setShowUpiModal(true);
       return;
     }
 
@@ -1655,6 +1703,76 @@ function PostRideScreenInner() {
                 <ActivityIndicator color={WARM_CORE.white} size="small" />
               ) : (
                 <Text style={styles.saveCarButtonText}>Save & Select Vehicle</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* UPI ID REQUIRED MODAL */}
+      <Modal
+        visible={showUpiModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setShowUpiModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <MaterialCommunityIcons name="bank-transfer" size={22} color={WARM_CORE.primary} />
+                <Text style={styles.modalTitle}>Payout UPI ID Required</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowUpiModal(false)}>
+                <MaterialCommunityIcons name="close" size={22} color={WARM_CORE.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={{ fontSize: 13, color: WARM_CORE.textSecondary, lineHeight: 18, marginBottom: 14 }}>
+              Passengers pay online. PullUp transfers your ride earnings directly to this UPI ID after each trip.
+            </Text>
+
+            <Text style={styles.inputLabel}>UPI ID *</Text>
+            <TextInput
+              style={[
+                styles.modalInput,
+                upiModalError ? { borderColor: WARM_CORE.error } : undefined,
+              ]}
+              placeholder="e.g. 9876543210@okicici or name@upi"
+              placeholderTextColor={WARM_CORE.textSecondary}
+              value={upiInput}
+              onChangeText={(text) => {
+                setUpiInput(text.trim());
+                if (upiModalError) setUpiModalError('');
+              }}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!isSavingUpi}
+            />
+
+            {upiModalError ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 4 }}>
+                <MaterialCommunityIcons name="alert-circle" size={14} color={WARM_CORE.error} />
+                <Text style={{ fontSize: 12, color: WARM_CORE.error, flex: 1 }}>{upiModalError}</Text>
+              </View>
+            ) : upiInput.trim().length > 0 && /^[a-zA-Z0-9._-]+@[a-zA-Z0-9]+$/.test(upiInput.trim()) ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 4 }}>
+                <MaterialCommunityIcons name="check-circle" size={14} color="#10B981" />
+                <Text style={{ fontSize: 12, color: "#10B981" }}>Valid UPI ID</Text>
+              </View>
+            ) : null}
+
+            <TouchableOpacity
+              style={[styles.saveCarButton, isSavingUpi && { opacity: 0.7 }]}
+              onPress={handleSaveUpi}
+              disabled={isSavingUpi}
+              activeOpacity={0.85}
+            >
+              {isSavingUpi ? (
+                <ActivityIndicator color={WARM_CORE.white} size="small" />
+              ) : (
+                <Text style={styles.saveCarButtonText}>Save & Continue</Text>
               )}
             </TouchableOpacity>
           </View>

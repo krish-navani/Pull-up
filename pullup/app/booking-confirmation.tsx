@@ -8,6 +8,8 @@ import LocationSearchInput from '@/components/LocationSearchInput';
 import { ATLAS_LOCATION, getRideDirectionType } from '@/utils/atlasLocationUtils';
 import { calculateDistance } from '@/utils/locationUtils';
 import apiClient from '@/utils/backendApiClient';
+import MembershipGateModal from '@/components/MembershipGateModal';
+import { checkUserMembership } from '@/utils/membershipService';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
 import {
@@ -307,6 +309,7 @@ export default function BookingConfirmationScreen() {
 
   const [selectedPickup, setSelectedPickup] = useState<any>(null);
   const [selectedDrop, setSelectedDrop] = useState<any>(null);
+  const [showMembershipModal, setShowMembershipModal] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
   const [boardingChoice, setBoardingChoice] = useState<'ride_pickup' | 'home' | 'saved_pickup' | 'custom'>('ride_pickup');
   const [detourData, setDetourData] = useState<any>({
@@ -535,6 +538,13 @@ export default function BookingConfirmationScreen() {
     setIsConfirming(true);
     setErrorMessage(null);
     try {
+      const membership = await checkUserMembership(auth.user.id);
+      if (!membership.isActive) {
+        setIsConfirming(false);
+        setShowMembershipModal(true);
+        return;
+      }
+
       const pickupLocation = selectedPickup;
       const dropLocation = selectedDrop;
       const detourMeta = {
@@ -567,7 +577,11 @@ export default function BookingConfirmationScreen() {
       setShowSuccess(true);
       setIsConfirming(false);
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Failed to request booking.');
+      if (err?.code === 'MEMBERSHIP_REQUIRED' || err?.message?.includes('PullUp pass') || err?.message?.includes('MEMBERSHIP_REQUIRED')) {
+        setShowMembershipModal(true);
+      } else {
+        setErrorMessage(err?.message || 'Failed to request booking.');
+      }
       setIsConfirming(false);
     }
   };
@@ -856,32 +870,26 @@ export default function BookingConfirmationScreen() {
           opacity: card2Anim.opacity,
           transform: [{ translateY: card2Anim.translateY }],
         }]}>
-          <Text style={st.sectionLabel}>Your Fare</Text>
+          <Text style={st.sectionLabel}>Fare Breakdown</Text>
 
           <View style={st.priceRow}>
-            <Text style={st.priceLabel}>Road distance</Text>
+            <Text style={st.priceLabel} numberOfLines={1}>Road distance</Text>
             <Text style={st.priceValue}>{fareQuote ? `${fareQuote.fare.passengerSegmentDistanceKm} km` : 'Calculating...'}</Text>
           </View>
           <View style={st.priceRow}>
-            <Text style={st.priceLabel}>Operating cost</Text>
-            <Text style={st.priceValue}>₹{fareQuote ? (fareQuote.fare.operatingCostPaise / 100).toFixed(0) : '—'}</Text>
-          </View>
-          <View style={st.priceRow}>
-            <Text style={st.priceLabel}>Passenger contribution</Text>
+            <Text style={st.priceLabel} numberOfLines={1}>Ride fare</Text>
             <Text style={st.priceValue}>₹{fareQuote ? (fareQuote.fare.baseFarePaise / 100).toFixed(0) : '—'}</Text>
           </View>
           {fareQuote?.fare.detourCostPaise > 0 && (
             <View style={st.priceRow}>
-              <Text style={st.priceLabel}>Detour ({fareQuote.fare.detourDistanceKm} km)</Text>
+              <Text style={st.priceLabel} numberOfLines={1}>Detour ({fareQuote.fare.detourDistanceKm} km)</Text>
               <Text style={st.priceValue}>₹{(fareQuote.fare.detourCostPaise / 100).toFixed(0)}</Text>
             </View>
           )}
-          {fareQuote?.fare.platformFeePaise > 0 && (
-            <View style={st.priceRow}>
-              <Text style={st.priceLabel}>Platform fee</Text>
-              <Text style={st.priceValue}>₹{(fareQuote.fare.platformFeePaise / 100).toFixed(0)}</Text>
-            </View>
-          )}
+          <View style={st.priceRow}>
+            <Text style={st.priceLabel} numberOfLines={1}>PullUp platform fee</Text>
+            <Text style={st.priceValue}>₹{fareQuote ? ((fareQuote.fare.platformFeePaise || 1000) / 100).toFixed(0) : '10'}</Text>
+          </View>
           <View style={st.priceDivider} />
 
           <View style={st.totalRow}>
@@ -955,6 +963,12 @@ export default function BookingConfirmationScreen() {
         </Animated.View>
 
       </ScrollView>
+
+      <MembershipGateModal
+        visible={showMembershipModal}
+        onClose={() => setShowMembershipModal(false)}
+        actionTitle="join this carpool"
+      />
     </SafeAreaView>
   );
 }
@@ -1016,8 +1030,8 @@ const st = StyleSheet.create({
 
   sectionLabel: { fontSize: 11, fontWeight: '700', color: WARM_CORE.primary, letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 14 },
   priceRow:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 8 },
-  priceLabel:   { fontSize: 13, fontWeight: '500', color: WARM_CORE.textSecondary },
-  priceValue:   { fontSize: 13, fontWeight: '600', color: WARM_CORE.text },
+  priceLabel:   { fontSize: 13, fontWeight: '500', color: WARM_CORE.textSecondary, flex: 1, paddingRight: 8 },
+  priceValue:   { fontSize: 13, fontWeight: '600', color: WARM_CORE.text, textAlign: 'right' },
   priceDivider: { height: 1, backgroundColor: WARM_CORE.border, marginVertical: 6 },
   totalRow:     { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingTop: 10 },
   totalLabel:   { fontSize: 15, fontWeight: '700', color: WARM_CORE.text },

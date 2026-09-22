@@ -11,7 +11,7 @@ export const ATLAS_LOCATION = {
 } as const;
 
 export const ATLAS_ENDPOINT_IDENTITY_METERS = 250;
-export const ATLAS_ARRIVAL_GEOFENCE_METERS = 2000;
+export const ATLAS_ARRIVAL_GEOFENCE_METERS = 1000;
 
 /**
  * Calculate distance between two coordinates using Haversine formula

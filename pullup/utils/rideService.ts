@@ -669,7 +669,7 @@ export const startRide = async (rideId: string): Promise<void> => {
         seat.passengerId,
         'ride_started',
         'Ride Started 🚀',
-        `${ride.driverName || 'The driver'} has started the ride. Track location now.`,
+        `${ride.driverName || 'Your driver'} has started the ride. Stay ready at your pickup location.`,
         rideId
       ).catch(err => console.error('[RIDE SERVICE] Failed to notify passenger', seat.passengerId, 'on ride start:', err));
     }

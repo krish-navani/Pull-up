@@ -581,7 +581,7 @@ export default function RideDetailsScreen() {
         };
       default:
         return {
-          text: 'Review Fare & Request',
+          text: 'Review & Request',
           icon: 'plus-circle',
           color: WARM_CORE.white,
           bgColor: WARM_CORE.primary,
@@ -1008,11 +1008,11 @@ export default function RideDetailsScreen() {
       </View>
 
       {/* STICKY FOOTER */}
-      <View style={styles.footer}>
-        <View>
+      <View style={[styles.footer, { paddingBottom: Math.max(insets.bottom + 8, 16) }]}>
+        <View style={styles.fareInfoContainer}>
           <Text style={styles.totalLabel}>ESTIMATED FARE / SEAT</Text>
           <Text style={styles.totalAmount}>₹{ride.price}</Text>
-          <Text style={styles.fareHint}>Exact fare after pickup selection</Text>
+          <Text style={styles.fareHint} numberOfLines={2}>Exact fare after pickup selection</Text>
         </View>
 
         {ride && auth.user && (ride.driverId === auth.user.id || ((requestStatus === 'accepted' || requestStatus === 'confirmed') && paymentStatus === 'paid')) ? (
@@ -1021,6 +1021,8 @@ export default function RideDetailsScreen() {
               styles.ctaButton,
               {
                 backgroundColor: WARM_CORE.primary,
+                flex: 1,
+                maxWidth: 200,
               },
             ]}
             onPress={() => router.push({ pathname: '/group-chat' as any, params: { rideId: ride.id, rideType: 'carpool' } })}
@@ -1030,9 +1032,9 @@ export default function RideDetailsScreen() {
               name="message-text"
               size={18}
               color={WARM_CORE.white}
-              style={{ marginRight: 8 }}
+              style={{ marginRight: 6 }}
             />
-            <Text style={[styles.ctaText, { color: WARM_CORE.white }]}>
+            <Text style={[styles.ctaText, { color: WARM_CORE.white }]} numberOfLines={1} adjustsFontSizeToFit>
               Group Chat
             </Text>
           </TouchableOpacity>
@@ -1044,6 +1046,8 @@ export default function RideDetailsScreen() {
                 backgroundColor: '#FEF3C7',
                 borderColor: '#F59E0B',
                 borderWidth: 1,
+                flex: 1,
+                maxWidth: 200,
               },
             ]}
             onPress={() => router.push('/(tabs)/my-bookings')}
@@ -1053,14 +1057,14 @@ export default function RideDetailsScreen() {
               name="lock"
               size={18}
               color="#D97706"
-              style={{ marginRight: 8 }}
+              style={{ marginRight: 6 }}
             />
-            <Text style={[styles.ctaText, { color: '#D97706' }]}>
+            <Text style={[styles.ctaText, { color: '#D97706' }]} numberOfLines={1} adjustsFontSizeToFit>
               Pay Now to unlock Chat
             </Text>
           </TouchableOpacity>
         ) : (
-          <Animated.View style={{ transform: [{ scale: buttonInfo.disabled ? new Animated.Value(1) : ctaBreath }] }}>
+          <Animated.View style={[styles.ctaWrapper, { transform: [{ scale: buttonInfo.disabled ? new Animated.Value(1) : ctaBreath }] }]}>
             <TouchableOpacity
               style={[
                 styles.ctaButton,
@@ -1077,9 +1081,14 @@ export default function RideDetailsScreen() {
                 name={buttonInfo.icon as any}
                 size={18}
                 color={buttonInfo.color}
-                style={{ marginRight: 8 }}
+                style={{ marginRight: 6 }}
               />
-              <Text style={[styles.ctaText, { color: buttonInfo.color }]}>
+              <Text
+                style={[styles.ctaText, { color: buttonInfo.color }]}
+                numberOfLines={1}
+                adjustsFontSizeToFit
+                minimumFontScale={0.8}
+              >
                 {buttonInfo.text}
               </Text>
             </TouchableOpacity>
@@ -1571,43 +1580,55 @@ const styles = StyleSheet.create({
   },
 
   footer: {
-    paddingHorizontal: 24,
-    paddingTop: 16,
-    paddingBottom: 24,
+    paddingHorizontal: 16,
+    paddingTop: 12,
     borderTopWidth: 1,
     borderColor: WARM_CORE.border,
     backgroundColor: WARM_CORE.card,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    gap: 10,
+  },
+  fareInfoContainer: {
+    flexShrink: 1,
+    maxWidth: 135,
   },
   totalLabel: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "700",
     color: WARM_CORE.textSecondary,
+    letterSpacing: 0.2,
   },
   totalAmount: {
-    fontSize: 32,
+    fontSize: 26,
     fontWeight: "800",
     color: WARM_CORE.primary,
+    lineHeight: 30,
+    marginVertical: 1,
   },
   fareHint: {
-    maxWidth: 180,
     fontSize: 10,
-    lineHeight: 14,
+    lineHeight: 13,
     color: WARM_CORE.textSecondary,
   },
+  ctaWrapper: {
+    flex: 1,
+    maxWidth: 210,
+  },
   ctaButton: {
-    paddingVertical: 15,
-    paddingHorizontal: 32,
-    borderRadius: 18,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 14,
     alignItems: "center",
     flexDirection: "row",
     justifyContent: "center",
+    minHeight: 46,
+    width: '100%',
   },
   ctaText: {
     fontWeight: "700",
-    fontSize: 16,
+    fontSize: 14,
   },
   markerPickup: {
     width: 32,

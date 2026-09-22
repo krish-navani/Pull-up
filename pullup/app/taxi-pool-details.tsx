@@ -38,6 +38,8 @@ import {
   PoolRequest,
   PoolMember
 } from '@/utils/taxiPoolService';
+import MembershipGateModal from '@/components/MembershipGateModal';
+import { checkUserMembership } from '@/utils/membershipService';
 import { doc, onSnapshot, updateDoc } from 'firebase/firestore';
 import { db } from '@/utils/firebase';
 import apiClient from '@/utils/backendApiClient';
@@ -229,6 +231,7 @@ export default function TaxiPoolDetailsScreen() {
   const [isLoadingRoute, setIsLoadingRoute] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null); // tracks loading per action button
   const [isJoinLoading, setIsJoinLoading] = useState(false);
+  const [showMembershipModal, setShowMembershipModal] = useState(false);
   const [fareQuote, setFareQuote] = useState<TaxiPool['pricing'] | null>(null);
   const [isLoadingFare, setIsLoadingFare] = useState(false);
   const [fareError, setFareError] = useState<string | null>(null);
@@ -567,8 +570,14 @@ export default function TaxiPoolDetailsScreen() {
 
   const handleJoinRequest = async () => {
     if (!auth.user) return;
-    setIsJoinLoading(true);
     try {
+      const membership = await checkUserMembership(auth.user.id);
+      if (!membership.isActive) {
+        setShowMembershipModal(true);
+        return;
+      }
+
+      setIsJoinLoading(true);
       await createJoinRequest(
         pool.id,
         {
@@ -582,7 +591,11 @@ export default function TaxiPoolDetailsScreen() {
       );
       Alert.alert('Success', 'Your request to join the Taxi Pool has been submitted!');
     } catch (err: any) {
-      Alert.alert('Request Failed', err.message || 'Failed to submit request.');
+      if (err?.response?.data?.code === 'MEMBERSHIP_REQUIRED' || err?.message?.includes('PullUp pass') || err?.message?.includes('MEMBERSHIP_REQUIRED')) {
+        setShowMembershipModal(true);
+      } else {
+        Alert.alert('Request Failed', err.message || 'Failed to submit request.');
+      }
     } finally {
       setIsJoinLoading(false);
     }
@@ -1048,6 +1061,12 @@ export default function TaxiPoolDetailsScreen() {
           </View>
         </ScrollView>
       </Animated.View>
+
+      <MembershipGateModal
+        visible={showMembershipModal}
+        onClose={() => setShowMembershipModal(false)}
+        actionTitle="join this taxi pool"
+      />
     </View>
   );
 }

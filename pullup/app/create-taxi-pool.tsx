@@ -28,6 +28,8 @@ import LocationSearchInput from '@/components/LocationSearchInput';
 import { Location } from '@/types';
 import { fetchRoute } from '@/utils/routeUtils';
 import apiClient from '@/utils/backendApiClient';
+import MembershipGateModal from '@/components/MembershipGateModal';
+import { checkUserMembership } from '@/utils/membershipService';
 
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import { ATLAS_LOCATION } from '@/utils/atlasLocationUtils';
@@ -66,6 +68,7 @@ function PressableScale({ children, onPress, style, disabled }: any) {
 export default function CreateTaxiPoolScreen() {
   const router = useRouter();
   const { auth } = useAppContext();
+  const [showMembershipModal, setShowMembershipModal] = useState(false);
   
   const [pickup, setPickup] = useState<Location | null>({
     latitude: ATLAS_LOCATION.latitude,
@@ -236,6 +239,13 @@ export default function CreateTaxiPoolScreen() {
     setError('');
 
     try {
+      const membership = await checkUserMembership(auth.user.id);
+      if (!membership.isActive) {
+        setIsLoading(false);
+        setShowMembershipModal(true);
+        return;
+      }
+
       const departureDateTime = `${departureDate}T${departureTime}:00`;
       
       const poolId = await createTaxiPool({
@@ -275,7 +285,11 @@ export default function CreateTaxiPoolScreen() {
       );
     } catch (err: any) {
       console.error('[CREATE TAXI] Failed to post pool:', err);
-      setError(err.message || 'Failed to create taxi pool. Please try again.');
+      if (err?.response?.data?.code === 'MEMBERSHIP_REQUIRED' || err?.message?.includes('PullUp pass') || err?.message?.includes('MEMBERSHIP_REQUIRED')) {
+        setShowMembershipModal(true);
+      } else {
+        setError(err.message || 'Failed to create taxi pool. Please try again.');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -633,6 +647,11 @@ export default function CreateTaxiPoolScreen() {
       ) : null}
       {Platform.OS !== 'ios' && showDatePicker && DateTimePicker != null ? <DateTimePicker value={departureDate ? new Date(`${departureDate}T00:00:00`) : new Date()} mode="date" display="default" minimumDate={new Date()} onChange={handleDateChange} /> : null}
       {Platform.OS !== 'ios' && showTimePicker && DateTimePicker != null ? <DateTimePicker value={departureTime ? new Date(`2026-01-01T${departureTime}:00`) : new Date()} mode="time" display="default" onChange={handleTimeChange} /> : null}
+      <MembershipGateModal
+        visible={showMembershipModal}
+        onClose={() => setShowMembershipModal(false)}
+        actionTitle="host a taxi pool"
+      />
     </SafeAreaView>
   );
 }

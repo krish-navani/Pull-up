@@ -8,14 +8,15 @@ import { completeTaxiPoolRide } from './taxiPoolService';
 export const GEOFENCE_RADIUS_METERS = {
   PICKUP: 200,          // 200m — driver nearby, show "be ready" notification
   DRIVER_ARRIVED: 50,   // 50m — driver arrived, show "I'm here" + ask passenger to confirm
-  COMPLETION: 2000,     // 2km — auto-complete ride
+  COMPLETION: 1000,     // 1km — auto-complete ride
 };
 
 export class GeofenceEngine {
   /**
-   * Check and handle ride completion based on direction.
+   * Check and handle ride completion based on direction and endpoint.
    * - For home-to-atlas: check distance to Atlas.
    * - For atlas-to-home: check distance to driver dropLocation.
+   * - For taxi pools: check distance to pool.destination or Atlas.
    */
   static async checkAndTriggerCompletion(
     rideId: string,
@@ -35,14 +36,18 @@ export class GeofenceEngine {
           return { shouldComplete: false, message: `Taxi pool status is ${pool.status}, not in_progress` };
         }
 
+        // Determine destination: pool.destination or ATLAS_LOCATION
+        const destLat = pool.destination?.latitude ?? ATLAS_LOCATION.latitude;
+        const destLon = pool.destination?.longitude ?? ATLAS_LOCATION.longitude;
+        const destName = pool.destination?.address || 'Destination';
+
         const distanceToDestination = calculateDistance(
           currentCoords.latitude,
           currentCoords.longitude,
-          ATLAS_LOCATION.latitude,
-          ATLAS_LOCATION.longitude
+          destLat,
+          destLon
         );
-        const destName = 'Atlas SkillTech University';
-        const completionThresholdKM = GEOFENCE_RADIUS_METERS.COMPLETION / 1000; // 2km
+        const completionThresholdKM = GEOFENCE_RADIUS_METERS.COMPLETION / 1000; // 1km
 
         console.log(`[GEOFENCE ENGINE] Distance to destination (${destName}): ${distanceToDestination.toFixed(2)} km`);
 
@@ -51,26 +56,29 @@ export class GeofenceEngine {
           
           await completeTaxiPoolRide(rideId);
 
-          // Broadcast notifications to members on completion
-          try {
-            const membersQ = query(
-              collection(db, 'poolMembers'),
-              where('poolId', '==', rideId)
-            );
-            const membersSnap = await getDocs(membersQ);
-            const memberIds = membersSnap.docs.map(docSnap => docSnap.data().passengerId);
-
-            for (const memberId of memberIds) {
-              await sendNotification(
-                memberId,
-                'ride_completed',
-                'Taxi Pool Completed!',
-                `Your taxi pool ride has arrived within 2km of Atlas and is completed!`,
-                rideId
+          // Broadcast notifications to members on completion (idempotent guard via completedNotificationSent)
+          if (!pool.completedNotificationSent) {
+            try {
+              await updateDoc(poolRef, { completedNotificationSent: true });
+              const membersQ = query(
+                collection(db, 'poolMembers'),
+                where('poolId', '==', rideId)
               );
+              const membersSnap = await getDocs(membersQ);
+              const memberIds = membersSnap.docs.map(docSnap => docSnap.data().passengerId);
+
+              for (const memberId of memberIds) {
+                await sendNotification(
+                  memberId,
+                  'ride_completed',
+                  'Taxi Pool Completed!',
+                  `Your taxi pool ride has arrived within 1km of your destination and is completed!`,
+                  rideId
+                );
+              }
+            } catch (notifyErr) {
+              console.warn('[GEOFENCE ENGINE] Failed to notify members on completion:', notifyErr);
             }
-          } catch (notifyErr) {
-            console.warn('[GEOFENCE ENGINE] Failed to notify members on completion:', notifyErr);
           }
 
           return {
@@ -97,36 +105,40 @@ export class GeofenceEngine {
       }
 
       const direction = getRideDirectionType(
-        ride.pickupLocation.latitude,
-        ride.pickupLocation.longitude,
-        ride.dropLocation.latitude,
-        ride.dropLocation.longitude
+        ride.pickupLocation?.latitude,
+        ride.pickupLocation?.longitude,
+        ride.dropLocation?.latitude,
+        ride.dropLocation?.longitude
       );
 
-      let distanceToDestination = 0;
+      let destLat = 0;
+      let destLon = 0;
       let destName = '';
 
       if (direction === 'home-to-atlas') {
-        distanceToDestination = calculateDistance(
-          currentCoords.latitude,
-          currentCoords.longitude,
-          ATLAS_LOCATION.latitude,
-          ATLAS_LOCATION.longitude
-        );
+        destLat = ATLAS_LOCATION.latitude;
+        destLon = ATLAS_LOCATION.longitude;
         destName = 'Atlas SkillTech University';
-      } else if (direction === 'atlas-to-home') {
-        distanceToDestination = calculateDistance(
-          currentCoords.latitude,
-          currentCoords.longitude,
-          ride.dropLocation.latitude,
-          ride.dropLocation.longitude
-        );
+      } else if (direction === 'atlas-to-home' && ride.dropLocation) {
+        destLat = ride.dropLocation.latitude;
+        destLon = ride.dropLocation.longitude;
         destName = ride.dropLocation.address || 'Driver Destination';
+      } else if (ride.dropLocation?.latitude && ride.dropLocation?.longitude) {
+        destLat = ride.dropLocation.latitude;
+        destLon = ride.dropLocation.longitude;
+        destName = ride.dropLocation.address || 'Destination';
       } else {
         return { shouldComplete: false, message: 'Invalid or unsupported ride direction for geofencing' };
       }
 
-      const completionThresholdKM = GEOFENCE_RADIUS_METERS.COMPLETION / 1000; // 2km
+      const distanceToDestination = calculateDistance(
+        currentCoords.latitude,
+        currentCoords.longitude,
+        destLat,
+        destLon
+      );
+
+      const completionThresholdKM = GEOFENCE_RADIUS_METERS.COMPLETION / 1000; // 1km
 
       console.log(`[GEOFENCE ENGINE] Distance to destination (${destName}): ${distanceToDestination.toFixed(2)} km`);
 
@@ -136,23 +148,26 @@ export class GeofenceEngine {
         // Call completeRide service which updates state on backend and credits wallets
         await completeRide(rideId);
 
-        // Broadcast notifications to passengers on completion
-        try {
-          const passengerIds = (ride.bookedSeats || [])
-            .filter((seat: any) => seat.status === 'accepted' || seat.status === 'confirmed')
-            .map((seat: any) => seat.passengerId);
+        // Broadcast notifications to passengers on completion (idempotent guard)
+        if (!ride.completedNotificationSent) {
+          try {
+            await updateDoc(rideRef, { completedNotificationSent: true });
+            const passengerIds = (ride.bookedSeats || [])
+              .filter((seat: any) => seat.status === 'accepted' || seat.status === 'confirmed')
+              .map((seat: any) => seat.passengerId);
 
-          for (const passengerId of passengerIds) {
-            await sendNotification(
-              passengerId,
-              'ride_completed',
-              'Ride Completed!',
-              `Your ride with ${ride.driverName} has completed successfully. Thank you for using PullUp!`,
-              rideId
-            );
+            for (const passengerId of passengerIds) {
+              await sendNotification(
+                passengerId,
+                'ride_completed',
+                'Ride Completed!',
+                `Your ride with ${ride.driverName || 'your driver'} has completed successfully. Thank you for using PullUp!`,
+                rideId
+              );
+            }
+          } catch (notifyErr) {
+            console.warn('[GEOFENCE ENGINE] Failed to notify passengers on completion:', notifyErr);
           }
-        } catch (notifyErr) {
-          console.warn('[GEOFENCE ENGINE] Failed to notify passengers on completion:', notifyErr);
         }
 
         return {

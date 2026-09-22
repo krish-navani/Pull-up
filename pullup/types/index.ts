@@ -48,6 +48,7 @@ export interface User {
   carModel?: string;
   fuelType?: 'Petrol' | 'Diesel' | 'EV';
   savedCars?: Array<{ id: string; model: string; fuelType: 'Petrol' | 'Diesel' | 'EV' }>;
+  upiId?: string;
 
   // Safety Layer
   verifiedStudent?: boolean;

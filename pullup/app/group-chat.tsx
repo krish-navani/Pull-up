@@ -41,6 +41,7 @@ import * as FileSystem from 'expo-file-system';
 import * as Location from 'expo-location';
 import MapView, { Marker, PROVIDER_GOOGLE } from 'react-native-maps';
 import { uploadImageToCloudinaryWithPublicId } from '@/utils/cloudinaryService';
+import { GeofenceEngine } from '@/utils/geofenceEngine';
 
 export default function GroupChatScreen() {
   const router = useRouter();
@@ -64,6 +65,8 @@ export default function GroupChatScreen() {
   const [profileVisible, setProfileVisible] = useState(false);
   const [muteVisible, setMuteVisible] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
+  const [myBooking, setMyBooking] = useState<any>(null);
+  const [confirmingPickup, setConfirmingPickup] = useState(false);
 
   // Rich Messaging States
   const [messageLimit, setMessageLimit] = useState(30);
@@ -213,6 +216,48 @@ export default function GroupChatScreen() {
       }
     }
   }, [auth.user, rideId]);
+
+  // 4b. Subscribe to user's booking for arrival and pickup status
+  useEffect(() => {
+    if (!rideId || !auth.user || rideType !== 'carpool') return;
+    const bookingId = `${rideId}_${auth.user.id}`;
+    const unsubBooking = onSnapshot(doc(db, 'bookings', bookingId), (snap) => {
+      if (snap.exists()) {
+        setMyBooking({ id: snap.id, ...snap.data() });
+      } else {
+        setMyBooking(null);
+      }
+    });
+    return () => unsubBooking();
+  }, [rideId, auth.user, rideType]);
+
+  const handleConfirmPickup = async () => {
+    if (!rideId || !auth.user || !rideDetails?.driverId) return;
+    try {
+      setConfirmingPickup(true);
+      await GeofenceEngine.confirmPassengerPickup(
+        rideId,
+        auth.user.id,
+        auth.user.fullName || 'Passenger',
+        rideDetails.driverId
+      );
+      Alert.alert('✅ Confirmed!', 'Driver has been notified that you have boarded.');
+    } catch (err) {
+      console.error('[GROUP CHAT] Error confirming pickup:', err);
+      Alert.alert('Error', 'Failed to confirm boarding. Please try again.');
+    } finally {
+      setConfirmingPickup(false);
+    }
+  };
+
+  const handleCallDriver = () => {
+    const phone = rideDetails?.driverPhone;
+    if (phone) {
+      Linking.openURL(`tel:${phone}`);
+    } else {
+      Alert.alert('Contact Driver', 'Driver phone number is not available directly. Please coordinate via chat.');
+    }
+  };
 
   // 5. Read Receipts Syncer (update readBy on loaded unread messages)
   useEffect(() => {
@@ -888,10 +933,53 @@ export default function GroupChatScreen() {
           </Text>
         </View>
 
+        {rideDetails?.driverPhone && auth.user?.id !== rideDetails?.driverId && (
+          <TouchableOpacity onPress={handleCallDriver} style={[styles.headerBtn, { marginRight: 4 }]}>
+            <MaterialCommunityIcons name="phone" size={22} color={WARM_CORE.primary} />
+          </TouchableOpacity>
+        )}
+
         <TouchableOpacity onPress={() => setActionsVisible(true)} style={styles.headerBtn}>
           <MaterialCommunityIcons name="dots-vertical" size={24} color={WARM_CORE.text} />
         </TouchableOpacity>
       </View>
+
+      {/* Passenger Arrival / Boarding Confirmation Banner */}
+      {myBooking && myBooking.notifiedArrived && !myBooking.pickedUp && (
+        <View style={styles.arrivedBanner}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+            <MaterialCommunityIcons name="car-side" size={24} color={WARM_CORE.primary} style={{ marginRight: 8 }} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.arrivedBannerTitle}>Driver Has Arrived!</Text>
+              <Text style={styles.arrivedBannerSubtitle}>
+                {rideDetails?.driverName || 'Your driver'} is at your pickup point.
+              </Text>
+            </View>
+          </View>
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            {rideDetails?.driverPhone && (
+              <TouchableOpacity onPress={handleCallDriver} style={styles.callDriverBtn}>
+                <MaterialCommunityIcons name="phone" size={16} color={WARM_CORE.white} />
+                <Text style={styles.callDriverBtnText}>Call</Text>
+              </TouchableOpacity>
+            )}
+            <TouchableOpacity
+              onPress={handleConfirmPickup}
+              disabled={confirmingPickup}
+              style={[styles.confirmBoardingBtn, { flex: 1 }]}
+            >
+              {confirmingPickup ? (
+                <ActivityIndicator size="small" color={WARM_CORE.white} />
+              ) : (
+                <>
+                  <MaterialCommunityIcons name="check-circle" size={16} color={WARM_CORE.white} />
+                  <Text style={styles.confirmBoardingText}>I'm in the Car</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
 
       {/* Ride Status Banner */}
       {status === 'in_progress' ? (
@@ -1979,4 +2067,53 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '80%',
   } as any,
+  arrivedBanner: {
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1,
+    borderColor: '#FED7AA',
+    borderRadius: 12,
+    marginHorizontal: 16,
+    marginVertical: 8,
+    padding: 12,
+  } as ViewStyle,
+  arrivedBannerTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: WARM_CORE.text,
+  } as TextStyle,
+  arrivedBannerSubtitle: {
+    fontSize: 12,
+    color: WARM_CORE.textSecondary,
+    marginTop: 2,
+  } as TextStyle,
+  callDriverBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#2563EB',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    gap: 6,
+  } as ViewStyle,
+  callDriverBtnText: {
+    color: WARM_CORE.white,
+    fontWeight: '700',
+    fontSize: 13,
+  } as TextStyle,
+  confirmBoardingBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#16A34A',
+    paddingVertical: 8,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    gap: 6,
+  } as ViewStyle,
+  confirmBoardingText: {
+    color: WARM_CORE.white,
+    fontWeight: '700',
+    fontSize: 13,
+  } as TextStyle,
 });
