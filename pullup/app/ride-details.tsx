@@ -941,6 +941,13 @@ export default function RideDetailsScreen() {
                 </View>
               </View>
 
+              {ride.womenOnly === true && (
+                <View style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 12, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 9, backgroundColor: '#F7D6E2' }}>
+                  <MaterialCommunityIcons name="gender-female" size={14} color="#A3154D" />
+                  <Text style={{ color: '#A3154D', fontSize: 11, fontWeight: '800' }}>WOMEN ONLY</Text>
+                </View>
+              )}
+
               {/* Detour preferences badge */}
               <View style={[
                 styles.detourBadgeContainer,

@@ -61,6 +61,7 @@ export interface TaxiPool {
   maxMembers: number;
   memberCount: number;
   notes?: string;
+  womenOnly?: boolean;
   status: 'OPEN' | 'FULL' | 'CLOSED' | 'CANCELLED' | 'in_progress' | 'completed';
   createdAt: any;
   currentLocation?: {
@@ -106,6 +107,7 @@ export const createTaxiPool = async (
     departureTime: poolData.departureTime,
     maxMembers: poolData.maxMembers,
     notes: poolData.notes || null,
+    womenOnly: poolData.womenOnly === true,
   });
   const poolId = String(response.data?.poolId || '');
   if (!poolId) throw new Error('Backend did not return a Taxi Pool ID.');

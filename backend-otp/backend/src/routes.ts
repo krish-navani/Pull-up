@@ -1,5 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { config } from './config.js';
+import { assertWomenOnlyEligible, normalizeProfileGender } from './womenOnlyService.js';
 import { sendOTPEmail } from './emailService.js';
 import { rateLimiter, verifyRateLimiter, validateEmail, validateOTP } from './middleware.js';
 import { deleteOTP, sendOTP, verifyOTP } from './otpService.js';
@@ -510,11 +511,13 @@ router.post('/profile/initialize', async (req: Request, res: Response) => {
     const email = String((decoded as any).universityEmail || '').trim().toLowerCase();
     const fullName = canonicalNameFromUniversityEmail(email);
     const profile = req.body?.profile || {};
+    const gender = normalizeProfileGender(profile.gender);
+    if (!gender) return res.status(400).json({ success: false, code: 'INVALID_GENDER', message: 'Choose Woman, Man, or Other.' });
     const hasHomeDistance = profile.homeToAtlasDistanceKm !== undefined && profile.homeToAtlasDistanceKm !== null && profile.homeToAtlasDistanceKm !== '';
     const homeToAtlasDistanceKm = hasHomeDistance ? Number(profile.homeToAtlasDistanceKm) : null;
     const homeFareEstimate = homeToAtlasDistanceKm === null ? null : buildHomeFareEstimate(homeToAtlasDistanceKm);
     const allowed = {
-      id: decoded.uid, email, fullName,
+      id: decoded.uid, email, fullName, gender,
       phone: String(profile.phone || '').trim(),
       year: String(profile.year || ''), course: String(profile.course || ''),
       division: String(profile.division || ''),
@@ -539,6 +542,34 @@ router.post('/profile/initialize', async (req: Request, res: Response) => {
   } catch (error: any) {
     const code = String(error?.message || 'PROFILE_INITIALIZATION_FAILED');
     return res.status(code === 'UNAUTHENTICATED' ? 401 : 400).json({ success: false, code, message: 'Profile identity could not be initialized.' });
+  }
+});
+
+router.post('/profile/gender', async (req: Request, res: Response) => {
+  try {
+    const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+    if (!token) return res.status(401).json({ success: false, code: 'UNAUTHENTICATED' });
+    const decoded = await admin.auth().verifyIdToken(token);
+    const gender = normalizeProfileGender(req.body?.gender);
+    if (!gender) return res.status(400).json({ success: false, code: 'INVALID_GENDER' });
+    const db = getDb();
+    const ref = db.collection('users').doc(decoded.uid);
+    const result = await db.runTransaction(async transaction => {
+      const snapshot = await transaction.get(ref);
+      if (!snapshot.exists) return 'USER_NOT_FOUND';
+      const existingGender = normalizeProfileGender(snapshot.data()?.gender);
+      if (existingGender && existingGender !== gender) return 'GENDER_ALREADY_SET';
+      if (!existingGender) transaction.update(ref, { gender, updatedAt: new Date().toISOString() });
+      return 'OK';
+    });
+    if (result === 'USER_NOT_FOUND') return res.status(404).json({ success: false, code: result });
+    if (result === 'GENDER_ALREADY_SET') {
+      return res.status(409).json({ success: false, code: result, message: 'Profile gender cannot be changed.' });
+    }
+    return res.json({ success: true, gender, user: (await ref.get()).data() });
+  } catch (error: any) {
+    console.error('[PROFILE] gender initialization failed:', error);
+    return res.status(401).json({ success: false, code: 'GENDER_INITIALIZATION_FAILED' });
   }
 });
 const normalizeDeletionEmail = (value: unknown): string => typeof value === 'string' ? value.trim().toLowerCase() : '';
@@ -1450,9 +1481,10 @@ export async function promoteWaitlist(db: admin.firestore.Firestore, rideId: str
 // POST /waitlist/join
 router.post('/waitlist/join', async (req: Request, res: Response) => {
   try {
-    const { rideId, userId } = req.body;
-    if (!rideId || !userId) {
-      return res.status(400).json({ success: false, message: 'Missing rideId or userId' });
+    const rideId = String(req.body.rideId || '');
+    const userId = await getAuthenticatedUserId(req);
+    if (!rideId) {
+      return res.status(400).json({ success: false, message: 'Missing rideId' });
     }
 
     const db = getDb();
@@ -1464,6 +1496,7 @@ router.post('/waitlist/join', async (req: Request, res: Response) => {
       return res.status(404).json({ success: false, message: 'Ride not found' });
     }
     const rideData = rideSnap.data()!;
+    if (rideData.womenOnly === true) await assertWomenOnlyEligible(db, userId);
     if (rideData.driverId === userId) {
       return res.status(400).json({ success: false, message: 'You cannot join the waitlist of your own ride' });
     }
@@ -1505,6 +1538,12 @@ router.post('/waitlist/join', async (req: Request, res: Response) => {
     res.json({ success: true, position });
   } catch (error: any) {
     console.error('[API] /waitlist/join error:', error);
+    if (error?.message === 'UNAUTHENTICATED') {
+      return res.status(401).json({ success: false, code: error.message, message: 'Please sign in again.' });
+    }
+    if (error?.message === 'WOMEN_ONLY_ELIGIBILITY_REQUIRED') {
+      return res.status(403).json({ success: false, code: error.message, message: 'Only users with a Woman gender selection can join Women-only rides.' });
+    }
     res.status(500).json({ success: false, message: error.message });
   }
 });

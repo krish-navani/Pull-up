@@ -71,6 +71,7 @@ export const clearUserFromStorage = async (): Promise<void> => {
 export interface OTPSignUpData {
   email: string;
   fullName: string;
+  gender: NonNullable<User['gender']>;
   phone: string;
   year: User['year'];
   course: string;
@@ -176,6 +177,7 @@ export const verifyOTPAndCreateAccount = async (
     const profileResponse = await apiClient.post('/profile/initialize', {
       profile: {
         phone: signUpData.phone || '',
+        gender: signUpData.gender,
         year: signUpData.year,
         course: signUpData.course,
         division: signUpData.division,
@@ -198,6 +200,24 @@ export const verifyOTPAndCreateAccount = async (
       message: error.message || 'OTP verification failed',
     };
   }
+};
+
+export const setProfileGender = async (
+  userId: string,
+  gender: NonNullable<User['gender']>
+): Promise<User> => {
+  const currentUser = auth.currentUser;
+  if (!currentUser || currentUser.isAnonymous || currentUser.uid !== userId) {
+    throw new Error('A matching authenticated account is required to set profile gender.');
+  }
+  const response = await apiClient.post('/profile/gender', { gender });
+  const userData = response.data?.user as User | undefined;
+  if (!userData || userData.id !== currentUser.uid || userData.gender !== gender) {
+    throw new Error('The profile gender could not be saved securely.');
+  }
+  const normalized = ensureUserDefaults(userData as any);
+  await saveUserToStorage(normalized);
+  return normalized;
 };
 
 /**

@@ -2,6 +2,7 @@ import LocationSearchInput from '@/components/LocationSearchInput';
 import { useAppContext } from '@/context/AppContext';
 import { Location } from '@/types';
 import { WARM_CORE } from '@/constants/theme';
+import WomenOnlySwitch from '@/components/WomenOnlySwitch';
 import { ATLAS_LOCATION, isAtlasEndpoint, validateRideDirections } from '@/utils/atlasLocationUtils';
 import { getCurrentLocation } from '@/utils/locationUtils';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -475,6 +476,7 @@ function PostRideScreenInner() {
     carModel: '',
     fuelType: 'Petrol' as 'Petrol' | 'Diesel' | 'EV',
     notes: '',
+    womenOnly: false,
     detourRadiusMeters: null as number | null,
   });
   const [savedCars, setSavedCars] = useState<Array<{ id: string; model: string; fuelType: 'Petrol' | 'Diesel' | 'EV'; color?: string }>>([]);
@@ -718,6 +720,7 @@ function PostRideScreenInner() {
       carModel: '',
       fuelType: 'Petrol' as 'Petrol' | 'Diesel' | 'EV',
       notes: '',
+      womenOnly: false,
       detourRadiusMeters: null as number | null,
     };
   }, []);
@@ -1009,6 +1012,7 @@ function PostRideScreenInner() {
           carModel: formData.carModel,
           fuelType: formData.fuelType,
           detourRadiusMeters: formData.detourRadiusMeters ?? 0,
+          womenOnly: formData.womenOnly,
           routePolyline: (routeInfo as any)?.polyline || '',
           simplifiedCoordinates: simplifiedCoords,
           baselineDistanceMeters: routeInfo?.distanceMeters || 0,
@@ -1556,6 +1560,19 @@ function PostRideScreenInner() {
                 );
               })}
             </View>
+          </View>
+
+          <View style={{ marginBottom: 12 }}>
+            <WomenOnlySwitch
+              value={formData.womenOnly}
+              onValueChange={value => setFormData(prev => ({ ...prev, womenOnly: value }))}
+              disabled={auth.user?.gender !== 'woman'}
+            />
+            {auth.user?.gender !== 'woman' && (
+              <Text style={{ color: WARM_CORE.textSecondary, fontSize: 11, marginTop: 6 }}>
+                Women-only hosting is available to members whose profile gender is Woman.
+              </Text>
+            )}
           </View>
 
           {/* Notes Card */}

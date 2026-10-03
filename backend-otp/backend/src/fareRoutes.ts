@@ -5,6 +5,7 @@ import { calculatePassengerFare, calculateRidePricing, calculateTaxiPoolPricing,
 import { geocodeAddress, getAuthoritativeRoute, RouteCoordinate } from './fareRouteService.js';
 import { canonicalizeAtlasEndpoint, isAtlasEndpoint } from './atlasConfig.js';
 import { assertActiveMembership } from './membershipService.js';
+import { assertWomenOnlyEligible } from './womenOnlyService.js';
 
 type Notify = (
   userId: string, type: string, title: string, message: string,
@@ -68,13 +69,14 @@ const ridePricing = (ride: any, distanceMeters: number): RidePricing => {
 const fail = (res: Response, error: any) => {
   const code = String(error?.message || 'FARE_CALCULATION_FAILED');
   const status = code === 'UNAUTHENTICATED' ? 401
-    : code === 'MEMBERSHIP_REQUIRED' ? 403
+    : code === 'MEMBERSHIP_REQUIRED' || code === 'WOMEN_ONLY_ELIGIBILITY_REQUIRED' ? 403
     : code.includes('NOT_FOUND') ? 404
     : code.includes('UNAVAILABLE') || code.includes('QUOTA') || code.includes('NOT_CONFIGURED') || code.startsWith('MISSING_TAXI_') ? 503
     : 400;
   const messages: Record<string, string> = {
     UNAUTHENTICATED: 'Please sign in again.',
     MEMBERSHIP_REQUIRED: 'An active PullUp pass is required to join rides or host taxi pools. Please activate your pass.',
+    WOMEN_ONLY_ELIGIBILITY_REQUIRED: 'Only users with a Woman gender selection can create or join Women-only rides.',
     EXACTLY_ONE_ATLAS_ENDPOINT_REQUIRED: 'Exactly one ride endpoint must be Atlas SkillTech University.',
     DRIVER_FARE_OUT_OF_RANGE: 'Selected fare is outside the permitted cost-sharing range.',
     ROUTE_PROVIDER_UNAVAILABLE: 'Road route calculation is temporarily unavailable. Please retry.',
@@ -214,6 +216,8 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
       const userDoc = await db.collection('users').doc(driverId).get();
       if (!userDoc.exists) throw new Error('DRIVER_NOT_FOUND');
       const user = userDoc.data()!;
+      const womenOnly = req.body.womenOnly === true;
+      if (womenOnly) await assertWomenOnlyEligible(db, driverId);
       if (!(user.licenseVerified === true || ['approved', 'verified'].includes(user.licenseVerificationStatus))) {
         throw new Error('DRIVER_LICENSE_NOT_APPROVED');
       }
@@ -239,6 +243,7 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
       const ref = db.collection('rides').doc();
       await ref.set({
         driverId, driverName: user.fullName || 'Driver', pickupLocation: pickup, dropLocation: drop,
+        womenOnly,
         searchIndex: searchIndex(pickup.address, pickup.city, drop.address, drop.city, user.fullName, pickup.placeId, drop.placeId),
         departureTime: departure.toISOString(), price: paiseToRupees(pricing.automaticPassengerContributionPaise),
         availableSeats: totalSeats, totalSeats, carModel: String(req.body.carModel || ''),
@@ -285,6 +290,7 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
       if (!initialRide.exists) throw new Error('RIDE_NOT_FOUND');
       const initial = initialRide.data()!;
       if (initial.driverId === passengerId) throw new Error('OWN_RIDE_BOOKING');
+      if (initial.womenOnly === true) await assertWomenOnlyEligible(db, passengerId);
       const fare = await bookingQuote(db, initial, req.body);
       const passenger = (await db.collection('users').doc(passengerId).get()).data() || {};
       const bookingId = `${rideId}_${passengerId}`;
@@ -357,6 +363,8 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
       const userDoc = await db.collection('users').doc(creatorId).get();
       if (!userDoc.exists) throw new Error('USER_NOT_FOUND');
       const user = userDoc.data()!;
+      const womenOnly = req.body.womenOnly === true;
+      if (womenOnly) await assertWomenOnlyEligible(db, creatorId);
       const pickup = canonicalizeAtlasEndpoint(coordinate(req.body.pickupLocation, 'pickup'));
       const destination = canonicalizeAtlasEndpoint(coordinate(req.body.destination, 'destination'));
       validateAtlasRoute(pickup, destination);
@@ -378,7 +386,7 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
       await db.runTransaction(async transaction => {
         transaction.create(ref, {
           creatorId, creatorName: user.fullName, creatorImage: user.profileImage || null,
-          creatorCourse: user.course || '', creatorDivision: user.division || '',
+          creatorCourse: user.course || '', creatorDivision: user.division || '', womenOnly,
           pickupLocation: pickup, destination, departureTime: departure.toISOString(),
           maxMembers, memberCount: 1, notes: String(req.body.notes || '').trim() || null,
           price: paiseToRupees(pricing.perMemberFarePaise), pricing,
@@ -415,6 +423,7 @@ export const registerFareRoutes = (router: Router, notify: Notify): void => {
       const passengerDoc = await db.collection('users').doc(passengerId).get();
       if (!passengerDoc.exists) throw new Error('USER_NOT_FOUND');
       const passenger = passengerDoc.data()!;
+      if (pool.womenOnly === true) await assertWomenOnlyEligible(db, passengerId);
       const route = await getAuthoritativeRoute(db, coordinate(pool.pickupLocation, 'pickup'), coordinate(pool.destination, 'destination'));
       const pricing = calculateTaxiPoolPricing(route.distanceMeters, route.durationSeconds, Number(pool.maxMembers));
       if (pool.pricing?.version !== pricing.version ||

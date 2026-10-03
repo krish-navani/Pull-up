@@ -23,6 +23,7 @@ import { useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAppContext } from '@/context/AppContext';
 import { WARM_CORE } from '@/constants/theme';
+import WomenOnlySwitch from '@/components/WomenOnlySwitch';
 import { createTaxiPool } from '@/utils/taxiPoolService';
 import LocationSearchInput from '@/components/LocationSearchInput';
 import { Location } from '@/types';
@@ -82,6 +83,7 @@ export default function CreateTaxiPoolScreen() {
   const [departureTime, setDepartureTime] = useState<string>('');
   const [maxMembers, setMaxMembers] = useState<number>(4);
   const [notes, setNotes] = useState<string>('');
+  const [womenOnly, setWomenOnly] = useState(false);
   
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
@@ -267,6 +269,7 @@ export default function CreateTaxiPoolScreen() {
         departureTime: departureDateTime,
         maxMembers,
         notes: notes.trim() || null,
+        womenOnly,
       } as any);
 
       Alert.alert(
@@ -541,6 +544,19 @@ export default function CreateTaxiPoolScreen() {
                   );
                 })}
               </View>
+            </View>
+
+            <View style={{ marginTop: 14 }}>
+              <WomenOnlySwitch
+                value={womenOnly}
+                onValueChange={setWomenOnly}
+                disabled={auth.user?.gender !== 'woman'}
+              />
+              {auth.user?.gender !== 'woman' && (
+                <Text style={{ color: WARM_CORE.textSecondary, fontSize: 11, marginTop: 6 }}>
+                  Women-only hosting is available to members whose profile gender is Woman.
+                </Text>
+              )}
             </View>
 
             {auth.user?.homeFareEstimate ? (

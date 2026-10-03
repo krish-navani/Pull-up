@@ -4,9 +4,10 @@ import { Location } from '@/types';
 import { calculateDistance, formatDistance, getCurrentLocation } from '@/utils/locationUtils';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { WARM_CORE } from '@/constants/theme';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import UserAvatar from '@/components/UserAvatar';
+import WomenOnlySwitch from '@/components/WomenOnlySwitch';
 import {
   Animated,
   Easing,
@@ -53,6 +54,7 @@ function SpringCard({ onPress, style, children }: any) {
 
 export default function AllRidesScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ womenOnly?: string }>();
   const { rides, loadAllAvailableRides, auth } = useAppContext();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
@@ -60,6 +62,7 @@ export default function AllRidesScreen() {
   const [rideDistances, setRideDistances] = useState<Record<string, number>>({});
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [womenOnly, setWomenOnly] = useState(params.womenOnly === '1');
 
   const headerAnim = useRef({ opacity: new Animated.Value(0), translateY: new Animated.Value(16) }).current;
   const searchAnim = useRef({ opacity: new Animated.Value(0), translateY: new Animated.Value(16) }).current;
@@ -114,12 +117,12 @@ export default function AllRidesScreen() {
   };
 
   const filteredRides = rides
-    .filter(ride => ride.status === 'active' && (searchQuery === '' || ride.pickupLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) || ride.dropLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) || ride.driverName.toLowerCase().includes(searchQuery.toLowerCase())))
+    .filter(ride => ride.status === 'active' && (!womenOnly || ride.womenOnly === true) && (searchQuery === '' || ride.pickupLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) || ride.dropLocation.address.toLowerCase().includes(searchQuery.toLowerCase()) || ride.driverName.toLowerCase().includes(searchQuery.toLowerCase())))
     .sort((a, b) => (rideDistances[a.id] ?? Infinity) - (rideDistances[b.id] ?? Infinity));
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor={WARM_CORE.background} />
+    <SafeAreaView style={[styles.safeArea, womenOnly && { backgroundColor: '#FFF5F8' }]}>
+      <StatusBar barStyle="dark-content" backgroundColor={womenOnly ? '#FFF5F8' : WARM_CORE.background} />
 
       <Animated.View style={[styles.header, { opacity: headerAnim.opacity, transform: [{ translateY: headerAnim.translateY }] }]}>
         <Animated.View style={{ transform: [{ scale: backScale }] }}>
@@ -134,12 +137,16 @@ export default function AllRidesScreen() {
       </Animated.View>
 
       <Animated.View style={[styles.searchSection, { opacity: searchAnim.opacity, transform: [{ translateY: searchAnim.translateY }] }]}>
-        <View style={[styles.searchContainer, searchFocused && styles.searchContainerFocused]}>
+        <View style={[styles.searchContainer, womenOnly && { backgroundColor: '#FFF9FB', borderColor: '#F2CBD9' }, searchFocused && styles.searchContainerFocused]}>
           <MaterialCommunityIcons name="magnify" size={20} color={searchFocused ? WARM_CORE.primary : WARM_CORE.textSecondary} />
           <TextInput style={styles.searchInput} placeholder="Search by location or driver..." placeholderTextColor={WARM_CORE.textSecondary} value={searchQuery} onChangeText={setSearchQuery} onFocus={() => setSearchFocused(true)} onBlur={() => setSearchFocused(false)} />
           {searchQuery.length > 0 && (<Pressable onPress={() => setSearchQuery('')} hitSlop={8}><MaterialCommunityIcons name="close-circle" size={18} color={WARM_CORE.textSecondary} /></Pressable>)}
         </View>
       </Animated.View>
+
+      <View style={{ paddingHorizontal: 20, paddingBottom: 12 }}>
+        <WomenOnlySwitch value={womenOnly} onValueChange={setWomenOnly} />
+      </View>
 
       <Animated.View style={[{ flex: 1 }, { opacity: listAnim.opacity, transform: [{ translateY: listAnim.translateY }] }]}>
         {isLoading ? (
@@ -150,10 +157,16 @@ export default function AllRidesScreen() {
           <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} refreshControl={<RefreshControl refreshing={isRefreshing} onRefresh={onRefresh} tintColor={WARM_CORE.primary} colors={[WARM_CORE.primary]} progressBackgroundColor={WARM_CORE.card} />}>
             {filteredRides.length > 0 ? (
               filteredRides.map(ride => (
-                <SpringCard key={ride.id} style={styles.rideCard} onPress={() => router.push({ pathname: '/ride-details', params: { rideId: ride.id } })}>
+                <SpringCard key={ride.id} style={[styles.rideCard, ride.womenOnly === true && { backgroundColor: '#FCEAF1', borderColor: '#D86A91' }]} onPress={() => router.push({ pathname: '/ride-details', params: { rideId: ride.id } })}>
                   {ride.driverId === auth.user?.id && (
                     <View style={styles.yourRideBadge}>
                       <Text style={styles.yourRideBadgeText}>YOUR RIDE</Text>
+                    </View>
+                  )}
+                  {ride.womenOnly === true && (
+                    <View style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 10, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 8, backgroundColor: '#F7D6E2' }}>
+                      <MaterialCommunityIcons name="gender-female" size={12} color="#A3154D" />
+                      <Text style={{ color: '#A3154D', fontSize: 10, fontWeight: '800' }}>WOMEN ONLY</Text>
                     </View>
                   )}
                   <View style={styles.routeSection}>

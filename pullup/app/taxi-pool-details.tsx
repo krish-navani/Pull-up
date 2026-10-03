@@ -853,6 +853,12 @@ export default function TaxiPoolDetailsScreen() {
           {/* Destination & Departure info */}
           <View style={styles.headerSection}>
             <Text style={styles.destText}>{pool.destination.address}</Text>
+            {pool.womenOnly === true && (
+              <View style={{ alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 10, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 9, backgroundColor: '#F7D6E2' }}>
+                <MaterialCommunityIcons name="gender-female" size={14} color="#A3154D" />
+                <Text style={{ color: '#A3154D', fontSize: 11, fontWeight: '800' }}>WOMEN ONLY</Text>
+              </View>
+            )}
             <View style={styles.timeBadgeRow}>
               <View style={styles.badge}>
                 <MaterialCommunityIcons name="calendar" size={14} color={WARM_CORE.primary} />

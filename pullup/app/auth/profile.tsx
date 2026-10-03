@@ -66,6 +66,7 @@ const ProgressBar = ({ step, totalSteps, label }: { step: number; totalSteps: nu
 
 interface FormData {
   fullName: string;
+  gender: 'woman' | 'man' | 'other' | '';
   phone: string;
   year: 'First Year' | 'Second Year' | 'Third Year' | 'Fourth Year' | 'Fifth Year' | 'Honors Degree' | '';
   course: string;
@@ -115,6 +116,7 @@ export default function ProfileScreen() {
   const [role, setRole] = useState<'driver' | 'passenger'>('passenger');
   const [formData, setFormData] = useState<FormData>({
     fullName: fullNameFromParams || '',
+    gender: '',
     phone: '',
     year: '',
     course: '',
@@ -270,6 +272,10 @@ export default function ProfileScreen() {
       setError('Please enter your phone number');
       return;
     }
+    if (!formData.gender) {
+      setError('Please select your gender');
+      return;
+    }
     if (!/^\d{10}$/.test(formData.phone.replace(/\D/g, ''))) {
       setError('Please enter a valid 10-digit phone number');
       return;
@@ -338,6 +344,7 @@ export default function ProfileScreen() {
       const result = await verifyOTPAndSignUp(emailFromParams, otpFromParams, {
         email: emailFromParams,
         fullName: formData.fullName,
+        gender: formData.gender,
         phone: formData.phone,
         year: formData.year,
         course: formData.course,
@@ -389,6 +396,7 @@ export default function ProfileScreen() {
   );
 
   const isFormValid = formData.fullName.trim().length > 0 &&
+    formData.gender.length > 0 &&
     formData.phone.trim().length > 0 &&
     /^\d{10}$/.test(formData.phone.replace(/\D/g, '')) &&
     formData.year.length > 0 &&
@@ -524,6 +532,41 @@ export default function ProfileScreen() {
                 onChangeText={text => handleInputChange('fullName', text)}
                 editable={false}
               />
+            </View>
+          </View>
+
+          <View style={styles.fieldContainer}>
+            <Text style={styles.label}>Gender</Text>
+            <Text style={{ color: WARM_CORE.textSecondary, fontSize: 12, marginBottom: 10 }}>
+              Used to keep Women-only rides limited to eligible members. This choice cannot be changed later.
+            </Text>
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              {([
+                ['woman', 'Woman'],
+                ['man', 'Man'],
+                ['other', 'Other'],
+              ] as const).map(([value, label]) => {
+                const selected = formData.gender === value;
+                return (
+                  <TouchableOpacity
+                    key={value}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected }}
+                    onPress={() => handleInputChange('gender', value)}
+                    style={{
+                      flex: 1,
+                      paddingVertical: 12,
+                      alignItems: 'center',
+                      borderRadius: 12,
+                      borderWidth: 1,
+                      borderColor: selected ? '#C2185B' : WARM_CORE.border,
+                      backgroundColor: selected ? '#FCEAF1' : WARM_CORE.card,
+                    }}
+                  >
+                    <Text style={{ color: selected ? '#A3154D' : WARM_CORE.text, fontWeight: '700', fontSize: 13 }}>{label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           </View>
 

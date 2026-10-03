@@ -6,6 +6,7 @@ import { useFocusEffect, useRouter, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import {
   Animated,
+  Alert,
   Easing,
   Image,
   Pressable,
@@ -27,6 +28,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { WARM_CORE } from '@/constants/theme';
 import { subscribeToActivePools, subscribeToPassengerRequests, TaxiPool, PoolRequest } from '@/utils/taxiPoolService';
 import PoolCard from '@/components/PoolCard';
+import WomenOnlySwitch from '@/components/WomenOnlySwitch';
 
 import GreetingBanner from '@/components/GreetingBanner';
 import UserAvatar from '@/components/UserAvatar';
@@ -79,7 +81,7 @@ function PressableRideCard({ onPress, children }: any) {
   );
 }
 
-function UnifiedFeedCard({ item, onPress }: { item: any; onPress: () => void }) {
+function UnifiedFeedCard({ item, onPress, womenTheme }: { item: any; onPress: () => void; womenTheme: boolean }) {
   const formattedTime = new Date(item.time).toLocaleTimeString([], {
     hour: '2-digit',
     minute: '2-digit',
@@ -92,13 +94,15 @@ function UnifiedFeedCard({ item, onPress }: { item: any; onPress: () => void }) 
       style={[
         styles.newCard,
         isTaxi ? styles.newCardTaxi : styles.newCardCar,
+        womenTheme && styles.newCardWomenTheme,
+        item.rawItem?.womenOnly === true && styles.newCardWomenOnly,
       ]}
       onPress={onPress}
       activeOpacity={0.9}
     >
       {isTaxi ? (
         <View
-          style={[StyleSheet.absoluteFillObject, { backgroundColor: '#FFF2E6' }]}
+          style={[StyleSheet.absoluteFillObject, { backgroundColor: womenTheme ? '#FBE6EF' : '#FFF2E6' }]}
         />
       ) : (
         <View
@@ -112,6 +116,7 @@ function UnifiedFeedCard({ item, onPress }: { item: any; onPress: () => void }) 
 
       {/* Top Header Row */}
       <View style={styles.cardHeaderRow}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
         <View style={[
           styles.typePill,
           isTaxi ? styles.typePillTaxi : styles.typePillCar
@@ -122,6 +127,13 @@ function UnifiedFeedCard({ item, onPress }: { item: any; onPress: () => void }) 
           ]}>
             {isTaxi ? 'TAXI POOL' : 'CAR POOL'}
           </Text>
+        </View>
+        {item.rawItem?.womenOnly === true && (
+          <View style={styles.womenOnlyPill}>
+            <MaterialCommunityIcons name="gender-female" size={11} color="#A3154D" />
+            <Text style={styles.womenOnlyPillText}>WOMEN ONLY</Text>
+          </View>
+        )}
         </View>
         <Text style={styles.cardTimeText}>{formattedTime}</Text>
       </View>
@@ -170,7 +182,7 @@ function UnifiedFeedCard({ item, onPress }: { item: any; onPress: () => void }) 
 export default function HomeScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ search?: string }>();
-  const { rides, auth, notifications, loadAllAvailableRides, authInitializing, switchRolePersistent } = useAppContext();
+  const { rides, auth, notifications, loadAllAvailableRides, authInitializing, switchRolePersistent, updateProfileData } = useAppContext();
   const [searchQuery, setSearchQuery] = useState('');
   const [searchFocused, setSearchFocused] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -185,6 +197,7 @@ export default function HomeScreen() {
   const [showRolePrompt, setShowRolePrompt] = useState(false);
   const [joinLoading, setJoinLoading] = useState<Record<string, boolean>>({});
   const [poolDistances, setPoolDistances] = useState<Record<string, number>>({});
+  const [womenOnlyFilter, setWomenOnlyFilter] = useState(false);
 
   useEffect(() => {
     if (params.search) {
@@ -272,6 +285,7 @@ export default function HomeScreen() {
     } else if (activeTab === 'pools') {
       filtered = feed.filter(item => item.type === 'taxi');
     }
+    if (womenOnlyFilter) filtered = filtered.filter(item => item.rawItem?.womenOnly === true);
 
     const scored = filtered
       .map((item) => ({
@@ -292,7 +306,7 @@ export default function HomeScreen() {
       }
       return new Date(a.time).getTime() - new Date(b.time).getTime();
     });
-  }, [rides, pools, activeTab, searchQuery, rideDistances, poolDistances, userLocation]);
+  }, [rides, pools, activeTab, searchQuery, rideDistances, poolDistances, userLocation, womenOnlyFilter]);
 
   // ── Entry animations ─────────────────────────────────────────────────────
   // All three groups start invisible and slide up together as a clean stagger
@@ -588,7 +602,7 @@ export default function HomeScreen() {
   };
 
   const handleViewAll = () => {
-    router.push('/all-rides' as any);
+    router.push({ pathname: '/all-rides', params: { womenOnly: womenOnlyFilter ? '1' : '0' } } as any);
   };
 
   const handleSavingsCalculator = () => {
@@ -609,10 +623,10 @@ export default function HomeScreen() {
   const firstName = auth.user?.fullName ? auth.user.fullName.trim().split(' ')[0] : 'there';
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" backgroundColor={WARM_CORE.background} />
+    <SafeAreaView style={[styles.safeArea, womenOnlyFilter && { backgroundColor: '#FFF5F8' }]}>
+      <StatusBar barStyle="dark-content" backgroundColor={womenOnlyFilter ? '#FFF5F8' : WARM_CORE.background} />
       <ScrollView
-        style={styles.container}
+        style={[styles.container, womenOnlyFilter && { backgroundColor: '#FFF5F8' }]}
         contentContainerStyle={styles.contentContainer}
         showsVerticalScrollIndicator={false}
         scrollEventThrottle={16}
@@ -697,7 +711,7 @@ export default function HomeScreen() {
         {/* Search Bar */}
         <Animated.View style={{ opacity: searchAnim.opacity, transform: [{ translateY: searchAnim.translateY }] }}>
           <View style={styles.searchSection}>
-            <View style={[styles.searchContainer, searchFocused && styles.searchContainerFocused]}>
+            <View style={[styles.searchContainer, womenOnlyFilter && styles.searchContainerWomen, searchFocused && styles.searchContainerFocused]}>
               <MaterialCommunityIcons
                 name="magnify"
                 size={22}
@@ -736,26 +750,52 @@ export default function HomeScreen() {
           {/* Segmented Control */}
           <View style={styles.segmentContainer}>
             <TouchableOpacity 
-              style={[styles.segmentButton, activeTab === 'all' && styles.segmentButtonActive]} 
+              style={[styles.segmentButton, activeTab === 'all' && styles.segmentButtonActive, womenOnlyFilter && activeTab === 'all' && styles.segmentButtonWomenActive]}
               onPress={() => setActiveTab('all')}
               activeOpacity={0.7}
             >
-              <Text style={[styles.segmentText, activeTab === 'all' && styles.segmentTextActive]}>All</Text>
+              <Text style={[styles.segmentText, activeTab === 'all' && styles.segmentTextActive, womenOnlyFilter && activeTab === 'all' && styles.segmentTextWomenActive]}>All</Text>
             </TouchableOpacity>
             <TouchableOpacity 
-              style={[styles.segmentButton, activeTab === 'rides' && styles.segmentButtonActive]} 
+              style={[styles.segmentButton, activeTab === 'rides' && styles.segmentButtonActive, womenOnlyFilter && activeTab === 'rides' && styles.segmentButtonWomenActive]}
               onPress={() => setActiveTab('rides')}
               activeOpacity={0.7}
             >
-              <Text style={[styles.segmentText, activeTab === 'rides' && styles.segmentTextActive]}>Car Pool</Text>
+              <Text style={[styles.segmentText, activeTab === 'rides' && styles.segmentTextActive, womenOnlyFilter && activeTab === 'rides' && styles.segmentTextWomenActive]}>Car Pool</Text>
             </TouchableOpacity>
             <TouchableOpacity 
-              style={[styles.segmentButton, activeTab === 'pools' && styles.segmentButtonActive]} 
+              style={[styles.segmentButton, activeTab === 'pools' && styles.segmentButtonActive, womenOnlyFilter && activeTab === 'pools' && styles.segmentButtonWomenActive]}
               onPress={() => setActiveTab('pools')}
               activeOpacity={0.7}
             >
-              <Text style={[styles.segmentText, activeTab === 'pools' && styles.segmentTextActive]}>Taxi Pool</Text>
+              <Text style={[styles.segmentText, activeTab === 'pools' && styles.segmentTextActive, womenOnlyFilter && activeTab === 'pools' && styles.segmentTextWomenActive]}>Taxi Pool</Text>
             </TouchableOpacity>
+          </View>
+
+          <View style={{ marginHorizontal: 20, marginTop: 8, gap: 10 }}>
+            <WomenOnlySwitch value={womenOnlyFilter} onValueChange={setWomenOnlyFilter} />
+            {!auth.user?.gender && (
+              <View style={styles.genderSetupPanel}>
+                <Text style={styles.genderSetupTitle}>Choose your profile gender</Text>
+                <Text style={styles.genderSetupSubtitle}>Set once to access Women-only ride features.</Text>
+                <View style={styles.genderSetupChoices}>
+                  {([
+                    ['woman', 'Woman'],
+                    ['man', 'Man'],
+                    ['other', 'Other'],
+                  ] as const).map(([gender, label]) => (
+                    <TouchableOpacity
+                      key={gender}
+                      style={styles.genderSetupChoice}
+                      onPress={() => updateProfileData(auth.user!.id, { gender })
+                        .catch((error: any) => Alert.alert('Could not save choice', error.message || 'Please try again.'))}
+                    >
+                      <Text style={styles.genderSetupChoiceText}>{label}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            )}
           </View>
 
           {/* Combined Feed List */}
@@ -765,6 +805,7 @@ export default function HomeScreen() {
                 <UnifiedFeedCard
                   key={`${item.type}_${item.id}`}
                   item={item}
+                  womenTheme={womenOnlyFilter}
                   onPress={() => {
                     if (item.type === 'car') {
                       router.push({ pathname: '/ride-details', params: { rideId: item.id } } as any);
@@ -780,8 +821,8 @@ export default function HomeScreen() {
               <Animated.View style={{ transform: [{ scale: emptyIconScale }, { translateY: emptyIconFloat }] }}>
                 <MaterialCommunityIcons name="car-off" size={64} color={WARM_CORE.textSecondary} />
               </Animated.View>
-              <Text style={styles.emptyStateText}>No commutes found</Text>
-              <Text style={styles.emptyStateSubText}>Try clearing search or change category</Text>
+              <Text style={styles.emptyStateText}>{womenOnlyFilter ? 'No Women-only rides found' : 'No commutes found'}</Text>
+              <Text style={styles.emptyStateSubText}>{womenOnlyFilter ? 'Check again later or switch the filter off.' : 'Try clearing search or change category'}</Text>
             </View>
           )}
 
@@ -917,6 +958,10 @@ const styles = StyleSheet.create({
   searchContainerFocused: {
     borderColor: WARM_CORE.primary,
     backgroundColor: WARM_CORE.card,
+  } as ViewStyle,
+  searchContainerWomen: {
+    backgroundColor: '#FFF9FB',
+    borderColor: '#F2CBD9',
   } as ViewStyle,
   searchIcon: {
     marginRight: 12,
@@ -1511,6 +1556,11 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   } as ViewStyle,
+  segmentButtonWomenActive: {
+    backgroundColor: '#C2185B',
+    borderColor: '#C2185B',
+    shadowColor: '#C2185B',
+  } as ViewStyle,
   segmentText: {
     fontSize: 13,
     fontWeight: '700',
@@ -1519,6 +1569,27 @@ const styles = StyleSheet.create({
   segmentTextActive: {
     color: WARM_CORE.white,
   } as TextStyle,
+  segmentTextWomenActive: { color: '#FFFFFF' } as TextStyle,
+  genderSetupPanel: {
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: '#FFF9FB',
+    borderWidth: 1,
+    borderColor: '#F2CBD9',
+  } as ViewStyle,
+  genderSetupTitle: { color: '#482431', fontSize: 13, fontWeight: '700' } as TextStyle,
+  genderSetupSubtitle: { color: '#806571', fontSize: 11, marginTop: 3, marginBottom: 10 } as TextStyle,
+  genderSetupChoices: { flexDirection: 'row', gap: 8 } as ViewStyle,
+  genderSetupChoice: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 9,
+    borderRadius: 10,
+    backgroundColor: '#FCEAF1',
+    borderWidth: 1,
+    borderColor: '#F2CBD9',
+  } as ViewStyle,
+  genderSetupChoiceText: { color: '#A3154D', fontSize: 12, fontWeight: '700' } as TextStyle,
   fabButton: {
     width: 56,
     height: 56,
@@ -1739,6 +1810,24 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF8F0',
     borderColor: '#EFE0CC',
   } as ViewStyle,
+  newCardWomenTheme: {
+    backgroundColor: '#FFF5F8',
+    borderColor: '#F0CDDA',
+  } as ViewStyle,
+  newCardWomenOnly: {
+    backgroundColor: '#FCEAF1',
+    borderColor: '#D86A91',
+  } as ViewStyle,
+  womenOnlyPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    paddingHorizontal: 7,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: '#F7D6E2',
+  } as ViewStyle,
+  womenOnlyPillText: { color: '#A3154D', fontSize: 9, fontWeight: '800' } as TextStyle,
   // Gradient overlay sits on top of the base, adds a top-left brighten
   cardGradientOverlay: {
     position: 'absolute',

@@ -13,6 +13,7 @@ export interface User {
   id: string;
   email: string;
   fullName: string;
+  gender?: 'woman' | 'man' | 'other';
   year: 'First Year' | 'Second Year' | 'Third Year' | 'Fourth Year' | 'Fifth Year' | 'Honors Degree';
   course: string;
   division: string;
@@ -156,6 +157,7 @@ export interface Ride {
   fuelType?: 'Petrol' | 'Diesel' | 'EV';
   carColor?: string;
   description?: string;
+  womenOnly?: boolean;
   createdAt: string;
   status: 'active' | 'in_progress' | 'completed' | 'cancelled' | 'expired' | 'no_show';
   startedAt?: string; // When driver started the ride

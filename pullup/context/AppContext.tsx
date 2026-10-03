@@ -55,6 +55,7 @@ import {
     onAuthStateChanged,
     OTPSignUpData,
     sendOTP,
+    setProfileGender,
     verifyOTPAndAutoAuth,
     verifyOTPAndCreateAccount,
     verifyOTPAndLogin,
@@ -1998,7 +1999,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (userId: string, updates: Partial<User>) => {
       try {
         dispatch({ type: 'SET_LOADING', payload: true });
-        const updatedUser = await updateUserProfile(userId, updates);
+        const updatedUser = updates.gender
+          ? await setProfileGender(userId, updates.gender)
+          : await updateUserProfile(userId, updates);
         dispatch({ type: 'SET_USER', payload: updatedUser });
         dispatch({ type: 'SET_ERROR', payload: null });
         

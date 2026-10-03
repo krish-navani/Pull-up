@@ -93,7 +93,8 @@ service cloud.firestore {
       allow update: if isSignedIn() && getPersistentUserId() == userId &&
                     request.resource.data.id == resource.data.id &&
                     request.resource.data.email == resource.data.email &&
-                    request.resource.data.fullName == resource.data.fullName;
+                    request.resource.data.fullName == resource.data.fullName &&
+                    request.resource.data.get('gender', null) == resource.data.get('gender', null);
       allow delete: if isSignedIn() && getPersistentUserId() == userId;
 
       // ── Notifications subcollection ──────────────────────────────────────
@@ -121,11 +122,16 @@ service cloud.firestore {
     // permission-denied), sorting is done client-side in rideService.ts.
     match /rides/{rideId} {
       allow read:   if isSignedIn();
-      allow create: if isSignedIn() && request.resource.data.driverId == getPersistentUserId();
-      allow update: if isSignedIn() && (
-        resource.data.driverId == getPersistentUserId() || 
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['bookedSeats', 'updatedAt'])
-      );
+      allow create: if isSignedIn() &&
+        request.resource.data.driverId == getPersistentUserId() &&
+        (!('womenOnly' in request.resource.data) || request.resource.data.womenOnly is bool) &&
+        (request.resource.data.get('womenOnly', false) == false ||
+          (exists(/databases/$(database)/documents/users/$(getPersistentUserId())) &&
+           get(/databases/$(database)/documents/users/$(getPersistentUserId())).data.get('gender', '') == 'woman'));
+      allow update: if isSignedIn() &&
+        request.resource.data.get('womenOnly', false) == resource.data.get('womenOnly', false) &&
+        (resource.data.driverId == getPersistentUserId() ||
+         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['bookedSeats', 'updatedAt']));
       allow delete: if isSignedIn() && (
         resource.data.driverId == getPersistentUserId() ||
         resource.data.status == 'expired' ||
@@ -222,7 +228,8 @@ service cloud.firestore {
       allow update: if isSignedIn() &&
         request.resource.data.price == resource.data.price &&
         request.resource.data.pricing == resource.data.pricing &&
-        request.resource.data.route == resource.data.route && (
+        request.resource.data.route == resource.data.route &&
+        request.resource.data.get('womenOnly', false) == resource.data.get('womenOnly', false) && (
           resource.data.creatorId == getPersistentUserId() ||
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberCount', 'status', 'currentLocation', 'updatedAt'])
         );

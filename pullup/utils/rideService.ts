@@ -146,6 +146,7 @@ export const createRideInFirestore = async (
     simplifiedCoordinates?: Array<{ latitude: number; longitude: number }>;
     baselineDistanceMeters?: number;
     baselineDurationSeconds?: number;
+    womenOnly?: boolean;
   }
 ): Promise<string> => {
   const createRideDirectlyInFirestore = async (): Promise<string> => {
@@ -167,6 +168,7 @@ export const createRideInFirestore = async (
     const firebaseRideData = {
       driverId,
       driverName,
+      womenOnly: rideData.womenOnly === true,
       pickupLocation: rideData.pickupLocation,
       dropLocation: rideData.dropLocation,
       searchIndex: generateSearchIndex(rideData.pickupLocation, rideData.dropLocation, driverName),
@@ -305,6 +307,7 @@ export const getAllRides = async (): Promise<Ride[]> => {
         route: data.route,
         pricing: data.pricing,
         searchIndex: data.searchIndex || [],
+        womenOnly: data.womenOnly === true,
       });
     });
 
@@ -360,6 +363,7 @@ export const getAllRidesIncludingHistory = async (): Promise<Ride[]> => {
         carModel: data.carModel,
         carColor: data.carColor,
         description: data.description,
+        womenOnly: data.womenOnly === true,
         createdAt: data.createdAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
         status: data.status,
         bookedSeats: data.bookedSeats || [],
@@ -416,6 +420,7 @@ export const getDriverRides = async (driverId: string): Promise<Ride[]> => {
         carModel: data.carModel,
         carColor: data.carColor,
         description: data.description,
+        womenOnly: data.womenOnly === true,
         createdAt: data.createdAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
         status: data.status,
         bookedSeats: data.bookedSeats || [],
@@ -468,6 +473,7 @@ export const getRideById = async (rideId: string): Promise<Ride | null> => {
       carModel: data.carModel,
       carColor: data.carColor,
       description: data.description,
+      womenOnly: data.womenOnly === true,
       createdAt: data.createdAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
       status: data.status,
       bookedSeats: data.bookedSeats || [],
