@@ -773,26 +773,19 @@ export default function HomeScreen() {
           </View>
 
           <View style={{ marginHorizontal: 20, marginTop: 8, gap: 10 }}>
-            <WomenOnlySwitch value={womenOnlyFilter} onValueChange={setWomenOnlyFilter} />
-            {!auth.user?.gender && (
-              <View style={styles.genderSetupPanel}>
-                <Text style={styles.genderSetupTitle}>Choose your profile gender</Text>
-                <Text style={styles.genderSetupSubtitle}>Set once to access Women-only ride features.</Text>
-                <View style={styles.genderSetupChoices}>
-                  {([
-                    ['woman', 'Woman'],
-                    ['man', 'Man'],
-                    ['other', 'Other'],
-                  ] as const).map(([gender, label]) => (
-                    <TouchableOpacity
-                      key={gender}
-                      style={styles.genderSetupChoice}
-                      onPress={() => updateProfileData(auth.user!.id, { gender })
-                        .catch((error: any) => Alert.alert('Could not save choice', error.message || 'Please try again.'))}
-                    >
-                      <Text style={styles.genderSetupChoiceText}>{label}</Text>
-                    </TouchableOpacity>
-                  ))}
+            {auth.user?.gender === 'woman' ? (
+              <WomenOnlySwitch value={womenOnlyFilter} onValueChange={setWomenOnlyFilter} />
+            ) : (
+              <View style={styles.womenOnlyLockedBanner}>
+                <View style={styles.womenOnlyLockedIcon}>
+                  <MaterialCommunityIcons name="gender-female" size={18} color="#C2185B" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.womenOnlyLockedTitle}>Women-only rides</Text>
+                  <Text style={styles.womenOnlyLockedSub}>Available exclusively for women members 🌸</Text>
+                </View>
+                <View style={styles.womenOnlyLockedBadge}>
+                  <MaterialCommunityIcons name="lock-outline" size={13} color="#C2185B" />
                 </View>
               </View>
             )}
@@ -1828,6 +1821,53 @@ const styles = StyleSheet.create({
     backgroundColor: '#F7D6E2',
   } as ViewStyle,
   womenOnlyPillText: { color: '#A3154D', fontSize: 9, fontWeight: '800' } as TextStyle,
+  // Women-only locked banner (shown to non-women users)
+  womenOnlyLockedBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#FDF4F7',
+    borderWidth: 1,
+    borderColor: '#F0D0DC',
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    shadowColor: '#C2185B',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 1,
+  } as ViewStyle,
+  womenOnlyLockedIcon: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#FCEAF1',
+    borderWidth: 1,
+    borderColor: '#EAB3CB',
+    alignItems: 'center',
+    justifyContent: 'center',
+  } as ViewStyle,
+  womenOnlyLockedTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#7B1D45',
+    marginBottom: 1,
+  } as TextStyle,
+  womenOnlyLockedSub: {
+    fontSize: 11,
+    color: '#9E6B7E',
+  } as TextStyle,
+  womenOnlyLockedBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#FCEAF1',
+    borderWidth: 1,
+    borderColor: '#EAB3CB',
+    alignItems: 'center',
+    justifyContent: 'center',
+  } as ViewStyle,
   // Gradient overlay sits on top of the base, adds a top-left brighten
   cardGradientOverlay: {
     position: 'absolute',

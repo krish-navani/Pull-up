@@ -537,33 +537,55 @@ export default function ProfileScreen() {
 
           <View style={styles.fieldContainer}>
             <Text style={styles.label}>Gender</Text>
-            <Text style={{ color: WARM_CORE.textSecondary, fontSize: 12, marginBottom: 10 }}>
-              Used to keep Women-only rides limited to eligible members. This choice cannot be changed later.
+            <Text style={{ color: WARM_CORE.textSecondary, fontSize: 12, marginBottom: 12, lineHeight: 16 }}>
+              Used to unlock Women-only rides for eligible members.{'\n'}This choice is permanent and cannot be changed later.
             </Text>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
+            <View style={{ gap: 8 }}>
               {([
-                ['woman', 'Woman'],
-                ['man', 'Man'],
-                ['other', 'Other'],
-              ] as const).map(([value, label]) => {
-                const selected = formData.gender === value;
+                { gVal: 'woman' as const, label: 'Woman', icon: 'gender-female' as const, iconColor: '#C2185B', bgColor: '#FCEAF1', borderColor: '#F0D0DC' },
+                { gVal: 'man' as const, label: 'Man', icon: 'gender-male' as const, iconColor: WARM_CORE.primary, bgColor: WARM_CORE.card, borderColor: WARM_CORE.border },
+                { gVal: 'other' as const, label: 'Other', icon: 'account-outline' as const, iconColor: WARM_CORE.textSecondary, bgColor: WARM_CORE.card, borderColor: WARM_CORE.border },
+              ]).map(({ gVal, label, icon, iconColor, bgColor, borderColor }) => {
+                const selected = formData.gender === gVal;
                 return (
                   <TouchableOpacity
-                    key={value}
+                    key={gVal}
                     accessibilityRole="radio"
                     accessibilityState={{ selected }}
-                    onPress={() => handleInputChange('gender', value)}
+                    onPress={() => handleInputChange('gender', gVal)}
                     style={{
-                      flex: 1,
-                      paddingVertical: 12,
+                      flexDirection: 'row',
                       alignItems: 'center',
-                      borderRadius: 12,
-                      borderWidth: 1,
-                      borderColor: selected ? '#C2185B' : WARM_CORE.border,
-                      backgroundColor: selected ? '#FCEAF1' : WARM_CORE.card,
+                      gap: 12,
+                      paddingVertical: 13,
+                      paddingHorizontal: 14,
+                      borderRadius: 14,
+                      borderWidth: selected ? 1.5 : 1,
+                      borderColor: selected ? iconColor : borderColor,
+                      backgroundColor: selected ? bgColor : WARM_CORE.card,
                     }}
+                    activeOpacity={0.75}
                   >
-                    <Text style={{ color: selected ? '#A3154D' : WARM_CORE.text, fontWeight: '700', fontSize: 13 }}>{label}</Text>
+                    <View style={{
+                      width: 34, height: 34, borderRadius: 17,
+                      backgroundColor: selected ? iconColor : WARM_CORE.background,
+                      alignItems: 'center', justifyContent: 'center',
+                      borderWidth: 1,
+                      borderColor: selected ? iconColor : WARM_CORE.border,
+                    }}>
+                      <MaterialCommunityIcons name={icon} size={17} color={selected ? '#FFFFFF' : iconColor} />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={{ color: selected ? iconColor : WARM_CORE.text, fontWeight: '700', fontSize: 14 }}>{label}</Text>
+                      {gVal === 'woman' && (
+                        <Text style={{ fontSize: 11, color: selected ? '#A3154D' : WARM_CORE.textSecondary, marginTop: 1 }}>
+                          🌸 Unlocks Women-only rides
+                        </Text>
+                      )}
+                    </View>
+                    {selected && (
+                      <MaterialCommunityIcons name="check-circle" size={20} color={iconColor} />
+                    )}
                   </TouchableOpacity>
                 );
               })}

@@ -145,7 +145,22 @@ export default function AllRidesScreen() {
       </Animated.View>
 
       <View style={{ paddingHorizontal: 20, paddingBottom: 12 }}>
-        <WomenOnlySwitch value={womenOnly} onValueChange={setWomenOnly} />
+        {auth.user?.gender === 'woman' ? (
+          <WomenOnlySwitch value={womenOnly} onValueChange={setWomenOnly} />
+        ) : (
+          <View style={styles.womenLockedBanner}>
+            <View style={styles.womenLockedIcon}>
+              <MaterialCommunityIcons name="gender-female" size={17} color="#C2185B" />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.womenLockedTitle}>Women-only rides</Text>
+              <Text style={styles.womenLockedSub}>Available exclusively for women members 🌸</Text>
+            </View>
+            <View style={styles.womenLockedBadge}>
+              <MaterialCommunityIcons name="lock-outline" size={13} color="#C2185B" />
+            </View>
+          </View>
+        )}
       </View>
 
       <Animated.View style={[{ flex: 1 }, { opacity: listAnim.opacity, transform: [{ translateY: listAnim.translateY }] }]}>
@@ -260,4 +275,9 @@ const styles = StyleSheet.create({
   emptySubtitle: { fontSize: 14, color: WARM_CORE.textSecondary, textAlign: 'center' } as TextStyle,
   yourRideBadge: { backgroundColor: '#22c55e', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8, alignSelf: 'flex-start', margin: 12, marginBottom: 0 } as ViewStyle,
   yourRideBadgeText: { fontSize: 10, fontWeight: '800', color: '#ffffff', letterSpacing: 0.8 } as TextStyle,
+  womenLockedBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#FDF4F7', borderWidth: 1, borderColor: '#F0D0DC', borderRadius: 14, paddingHorizontal: 14, paddingVertical: 11, shadowColor: '#C2185B', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 1 } as ViewStyle,
+  womenLockedIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#FCEAF1', borderWidth: 1, borderColor: '#EAB3CB', alignItems: 'center', justifyContent: 'center' } as ViewStyle,
+  womenLockedTitle: { fontSize: 13, fontWeight: '700', color: '#7B1D45', marginBottom: 1 } as TextStyle,
+  womenLockedSub: { fontSize: 11, color: '#9E6B7E' } as TextStyle,
+  womenLockedBadge: { width: 26, height: 26, borderRadius: 13, backgroundColor: '#FCEAF1', borderWidth: 1, borderColor: '#EAB3CB', alignItems: 'center', justifyContent: 'center' } as ViewStyle,
 });
