@@ -546,18 +546,25 @@ export default function CreateTaxiPoolScreen() {
               </View>
             </View>
 
-            <View style={{ marginTop: 14 }}>
-              <WomenOnlySwitch
-                value={womenOnly}
-                onValueChange={setWomenOnly}
-                disabled={auth.user?.gender !== 'woman'}
-              />
-              {auth.user?.gender !== 'woman' && (
-                <Text style={{ color: WARM_CORE.textSecondary, fontSize: 11, marginTop: 6 }}>
-                  Women-only hosting is available to members whose profile gender is Woman.
+            {auth.user?.gender === 'woman' ? (
+              <View style={{ marginTop: 14 }}>
+                <WomenOnlySwitch
+                  value={womenOnly}
+                  onValueChange={setWomenOnly}
+                />
+              </View>
+            ) : !auth.user?.gender ? (
+              <TouchableOpacity
+                style={{ marginTop: 14, padding: 12, borderRadius: 12, backgroundColor: WARM_CORE.card, borderWidth: 1, borderColor: WARM_CORE.border, flexDirection: 'row', alignItems: 'center' }}
+                onPress={() => router.push('/profile-edit')}
+              >
+                <MaterialCommunityIcons name="gender-female" size={18} color="#C2185B" />
+                <Text style={{ flex: 1, color: WARM_CORE.text, fontSize: 12, fontWeight: '600', marginLeft: 8 }}>
+                  Select your gender in Profile to enable Women-only taxi pools
                 </Text>
-              )}
-            </View>
+                <MaterialCommunityIcons name="chevron-right" size={18} color={WARM_CORE.primary} />
+              </TouchableOpacity>
+            ) : null}
 
             {auth.user?.homeFareEstimate ? (
               <View style={{ marginBottom: 16, padding: 14, borderRadius: 8, backgroundColor: 'rgba(212,80,10,0.06)', borderWidth: 1, borderColor: 'rgba(212,80,10,0.18)' }}>

@@ -1562,18 +1562,25 @@ function PostRideScreenInner() {
             </View>
           </View>
 
-          <View style={{ marginBottom: 12 }}>
-            <WomenOnlySwitch
-              value={formData.womenOnly}
-              onValueChange={value => setFormData(prev => ({ ...prev, womenOnly: value }))}
-              disabled={auth.user?.gender !== 'woman'}
-            />
-            {auth.user?.gender !== 'woman' && (
-              <Text style={{ color: WARM_CORE.textSecondary, fontSize: 11, marginTop: 6 }}>
-                Women-only hosting is available to members whose profile gender is Woman.
+          {auth.user?.gender === 'woman' ? (
+            <View style={{ marginBottom: 12 }}>
+              <WomenOnlySwitch
+                value={formData.womenOnly}
+                onValueChange={value => setFormData(prev => ({ ...prev, womenOnly: value }))}
+              />
+            </View>
+          ) : !auth.user?.gender ? (
+            <TouchableOpacity
+              style={{ marginBottom: 12, padding: 12, borderRadius: 12, backgroundColor: WARM_CORE.card, borderWidth: 1, borderColor: WARM_CORE.border, flexDirection: 'row', alignItems: 'center' }}
+              onPress={() => router.push('/profile-edit')}
+            >
+              <MaterialCommunityIcons name="gender-female" size={18} color="#C2185B" />
+              <Text style={{ flex: 1, color: WARM_CORE.text, fontSize: 12, fontWeight: '600', marginLeft: 8 }}>
+                Select your gender in Profile to enable Women-only hosting
               </Text>
-            )}
-          </View>
+              <MaterialCommunityIcons name="chevron-right" size={18} color={WARM_CORE.primary} />
+            </TouchableOpacity>
+          ) : null}
 
           {/* Notes Card */}
           <View style={[styles.optionalCard, styles.notesCard]}>

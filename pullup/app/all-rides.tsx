@@ -144,24 +144,28 @@ export default function AllRidesScreen() {
         </View>
       </Animated.View>
 
-      <View style={{ paddingHorizontal: 20, paddingBottom: 12 }}>
-        {auth.user?.gender === 'woman' ? (
+      {auth.user?.gender === 'woman' ? (
+        <View style={{ paddingHorizontal: 20, paddingBottom: 12 }}>
           <WomenOnlySwitch value={womenOnly} onValueChange={setWomenOnly} />
-        ) : (
-          <View style={styles.womenLockedBanner}>
+        </View>
+      ) : !auth.user?.gender ? (
+        <View style={{ paddingHorizontal: 20, paddingBottom: 12 }}>
+          <TouchableOpacity 
+            style={styles.womenLockedBanner} 
+            onPress={() => router.push('/profile-edit')}
+            activeOpacity={0.8}
+          >
             <View style={styles.womenLockedIcon}>
               <MaterialCommunityIcons name="gender-female" size={17} color="#C2185B" />
             </View>
             <View style={{ flex: 1 }}>
-              <Text style={styles.womenLockedTitle}>Women-only rides</Text>
-              <Text style={styles.womenLockedSub}>Available exclusively for women members 🌸</Text>
+              <Text style={styles.womenLockedTitle}>Unlock Women-only rides</Text>
+              <Text style={styles.womenLockedSub}>Select your gender in Profile to enable option</Text>
             </View>
-            <View style={styles.womenLockedBadge}>
-              <MaterialCommunityIcons name="lock-outline" size={13} color="#C2185B" />
-            </View>
-          </View>
-        )}
-      </View>
+            <MaterialCommunityIcons name="chevron-right" size={18} color="#C2185B" />
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
       <Animated.View style={[{ flex: 1 }, { opacity: listAnim.opacity, transform: [{ translateY: listAnim.translateY }] }]}>
         {isLoading ? (

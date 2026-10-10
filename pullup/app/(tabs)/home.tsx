@@ -772,24 +772,28 @@ export default function HomeScreen() {
             </TouchableOpacity>
           </View>
 
-          <View style={{ marginHorizontal: 20, marginTop: 8, gap: 10 }}>
-            {auth.user?.gender === 'woman' ? (
+          {auth.user?.gender === 'woman' ? (
+            <View style={{ marginHorizontal: 20, marginTop: 8 }}>
               <WomenOnlySwitch value={womenOnlyFilter} onValueChange={setWomenOnlyFilter} />
-            ) : (
-              <View style={styles.womenOnlyLockedBanner}>
+            </View>
+          ) : !auth.user?.gender ? (
+            <View style={{ marginHorizontal: 20, marginTop: 8 }}>
+              <TouchableOpacity 
+                style={styles.womenOnlyLockedBanner} 
+                onPress={() => router.push('/profile-edit')}
+                activeOpacity={0.8}
+              >
                 <View style={styles.womenOnlyLockedIcon}>
                   <MaterialCommunityIcons name="gender-female" size={18} color="#C2185B" />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.womenOnlyLockedTitle}>Women-only rides</Text>
-                  <Text style={styles.womenOnlyLockedSub}>Available exclusively for women members 🌸</Text>
+                  <Text style={styles.womenOnlyLockedTitle}>Unlock Women-only rides</Text>
+                  <Text style={styles.womenOnlyLockedSub}>Select your gender in Profile to enable option</Text>
                 </View>
-                <View style={styles.womenOnlyLockedBadge}>
-                  <MaterialCommunityIcons name="lock-outline" size={13} color="#C2185B" />
-                </View>
-              </View>
-            )}
-          </View>
+                <MaterialCommunityIcons name="chevron-right" size={18} color="#C2185B" />
+              </TouchableOpacity>
+            </View>
+          ) : null}
 
           {/* Combined Feed List */}
           {combinedFeed.length > 0 ? (
