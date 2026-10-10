@@ -2,7 +2,7 @@ import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { User } from '../types';
 import { db } from './firebase';
 
-export type PublicProfile = Pick<User, 'id' | 'fullName' | 'profileImage' | 'role' | 'course' | 'year' | 'division' | 'licenseVerified'> & {
+export type PublicProfile = Pick<User, 'id' | 'fullName' | 'profileImage' | 'role' | 'course' | 'year' | 'division' | 'licenseVerified' | 'gender'> & {
   rating?: number;
   completedRides?: number;
   status?: string;
@@ -13,7 +13,7 @@ export type PublicProfile = Pick<User, 'id' | 'fullName' | 'profileImage' | 'rol
 
 const PUBLIC_FIELDS = [
   'id', 'fullName', 'profileImage', 'role', 'course', 'year', 'division', 'licenseVerified',
-  'rating', 'completedRides', 'status', 'lastSeen', 'createdAt', 'updatedAt',
+  'rating', 'completedRides', 'status', 'lastSeen', 'createdAt', 'updatedAt', 'gender',
 ] as const;
 
 export const sanitizePublicProfile = (userId: string, source: Record<string, any>): PublicProfile => {

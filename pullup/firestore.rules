@@ -67,7 +67,7 @@ service cloud.firestore {
       return data.keys().hasOnly([
                'id', 'fullName', 'profileImage', 'role', 'course', 'year',
                'division', 'licenseVerified', 'rating', 'completedRides', 'status', 'lastSeen',
-               'createdAt', 'updatedAt'
+               'createdAt', 'updatedAt', 'gender'
              ]) &&
              data.id == userId;
     }
@@ -92,8 +92,7 @@ service cloud.firestore {
       allow create: if false;
       allow update: if isSignedIn() && getPersistentUserId() == userId &&
                     request.resource.data.id == resource.data.id &&
-                    request.resource.data.email == resource.data.email &&
-                    request.resource.data.fullName == resource.data.fullName;
+                    request.resource.data.email == resource.data.email;
       allow delete: if isSignedIn() && getPersistentUserId() == userId;
 
       // ── Notifications subcollection ──────────────────────────────────────
@@ -106,12 +105,13 @@ service cloud.firestore {
     // Sanitized identity used by ride, booking and chat surfaces.
     match /publicProfiles/{userId} {
       allow read: if isSignedIn();
-      allow create: if false;
+      allow create: if isSignedIn() &&
+                       getPersistentUserId() == userId &&
+                       isPublicProfileShape(request.resource.data, userId);
       allow update: if isSignedIn() &&
                        getPersistentUserId() == userId &&
                        isPublicProfileShape(request.resource.data, userId) &&
-                       request.resource.data.id == resource.data.id &&
-                       request.resource.data.fullName == resource.data.fullName;
+                       request.resource.data.id == resource.data.id;
       allow delete: if isSignedIn() && getPersistentUserId() == userId;
     }
 

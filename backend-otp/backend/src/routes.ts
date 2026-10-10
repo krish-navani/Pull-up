@@ -561,7 +561,7 @@ router.post('/profile/gender', async (req: Request, res: Response) => {
       return 'OK';
     });
     if (result === 'USER_NOT_FOUND') return res.status(404).json({ success: false, code: result });
-    return res.json({ success: true, gender, user: (await ref.get()).data() });
+    return res.json({ success: true, gender, user: { id: decoded.uid, ...(await ref.get()).data() } });
   } catch (error: any) {
     console.error('[PROFILE] gender initialization failed:', error);
     return res.status(401).json({ success: false, code: 'GENDER_INITIALIZATION_FAILED' });
