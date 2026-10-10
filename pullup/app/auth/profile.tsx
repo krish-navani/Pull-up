@@ -579,7 +579,7 @@ export default function ProfileScreen() {
                       <Text style={{ color: selected ? iconColor : WARM_CORE.text, fontWeight: '700', fontSize: 14 }}>{label}</Text>
                       {gVal === 'woman' && (
                         <Text style={{ fontSize: 11, color: selected ? '#A3154D' : WARM_CORE.textSecondary, marginTop: 1 }}>
-                          🌸 Unlocks Women-only rides
+                          Unlocks Women-only rides
                         </Text>
                       )}
                     </View>

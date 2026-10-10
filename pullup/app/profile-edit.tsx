@@ -37,6 +37,7 @@ const { width } = Dimensions.get('window');
 
 interface EditableProfile {
   fullName: string;
+  gender?: 'woman' | 'man' | 'other' | '';
   phone: string;
   course: string;
   year: 'First Year' | 'Second Year' | 'Third Year' | 'Fourth Year' | 'Fifth Year' | 'Honors Degree';
@@ -69,6 +70,7 @@ export default function ProfileEditScreen() {
   // State Management
   const [profile, setProfile] = useState<EditableProfile>({
     fullName: user?.fullName || '',
+    gender: user?.gender || '',
     phone: user?.phone || '',
     course: user?.course || '',
     year: user?.year || 'First Year',
@@ -79,6 +81,23 @@ export default function ProfileEditScreen() {
     emergencyContactPhone: user?.emergencyContactPhone || '',
     upiId: user?.upiId || '',
   });
+
+  // Sync profile state when auth user updates
+  useEffect(() => {
+    if (user) {
+      setProfile((prev) => ({
+        ...prev,
+        fullName: user.fullName || prev.fullName,
+        gender: user.gender || prev.gender,
+        phone: user.phone || prev.phone,
+        course: user.course || prev.course,
+        year: user.year || prev.year,
+        division: user.division || prev.division,
+        profileImage: user.profileImage !== undefined ? user.profileImage : prev.profileImage,
+        homeAddress: user.homeAddress !== undefined ? user.homeAddress : prev.homeAddress,
+      }));
+    }
+  }, [user]);
 
   const [errors, setErrors] = useState<ValidationErrors>({});
   const [isLoading, setIsLoading] = useState(false);
@@ -112,9 +131,6 @@ export default function ProfileEditScreen() {
     if (!profile.division.trim()) {
       newErrors.division = 'Division is required';
     }
-    if (!profile.homeAddress) {
-      newErrors.homeAddress = 'Home address is required';
-    }
 
     // UPI ID validation for drivers
     if (user?.role === 'driver' && profile.upiId && profile.upiId.trim().length > 0) {
@@ -132,6 +148,7 @@ export default function ProfileEditScreen() {
    */
   useEffect(() => {
     const hasChanged =
+      (profile.gender || '') !== (user?.gender || '') ||
       profile.phone !== (user?.phone || '') ||
       profile.course !== (user?.course || '') ||
       profile.year !== (user?.year || 'First Year') ||
@@ -226,7 +243,9 @@ export default function ProfileEditScreen() {
    * Handle save profile
    */
   const handleSaveProfile = useCallback(async () => {
-    if (!validateProfile()) {
+    const isValid = validateProfile();
+    if (!isValid) {
+      Alert.alert('Required Fields Missing', 'Please make sure all required fields (Course, Division) are filled in properly.');
       return;
     }
 
@@ -239,15 +258,16 @@ export default function ProfileEditScreen() {
     try {
       const updates: any = {
         fullName: profile.fullName.trim(),
-        phone: profile.phone.trim() || undefined,
-        course: profile.course.trim(),
-        year: profile.year,
-        division: profile.division.trim(),
-        homeAddress: profile.homeAddress,
-        emergencyContactName: profile.emergencyContactName?.trim() || null,
-        emergencyContactPhone: profile.emergencyContactPhone?.trim() || null,
-        ...(user?.role === 'driver' ? { upiId: profile.upiId?.trim() || null } : {}),
       };
+      if (profile.gender) updates.gender = profile.gender;
+      if (profile.phone?.trim()) updates.phone = profile.phone.trim();
+      if (profile.course?.trim()) updates.course = profile.course.trim();
+      if (profile.year) updates.year = profile.year;
+      if (profile.division?.trim()) updates.division = profile.division.trim();
+      if (profile.homeAddress) updates.homeAddress = profile.homeAddress;
+      if (profile.emergencyContactName?.trim()) updates.emergencyContactName = profile.emergencyContactName.trim();
+      if (profile.emergencyContactPhone?.trim()) updates.emergencyContactPhone = profile.emergencyContactPhone.trim();
+      if (user?.role === 'driver' && profile.upiId?.trim()) updates.upiId = profile.upiId.trim();
 
       // Handle profile image changes (including removal and Cloudinary upload)
       if (profile.profileImage !== user.profileImage) {
@@ -260,6 +280,7 @@ export default function ProfileEditScreen() {
         }
       }
 
+      console.log('[PROFILE EDIT] Saving updates:', updates);
       await updateProfileData(user.id, updates);
 
       Alert.alert('Success', 'Profile updated successfully!', [
@@ -283,6 +304,7 @@ export default function ProfileEditScreen() {
     if (!user) return;
     setProfile({
       fullName: user.fullName || '',
+      gender: user.gender || '',
       phone: user.phone || '',
       course: user.course || '',
       year: user.year || 'First Year',
@@ -371,6 +393,53 @@ export default function ProfileEditScreen() {
                 value={profile.fullName}
                 editable={false}
               />
+            </View>
+          </View>
+
+          {/* Gender Field */}
+          <View style={styles.fieldSection}>
+            <View style={styles.fieldHeader}>
+              <MaterialCommunityIcons name="account-group" size={18} color={WARM_CORE.primary} />
+              <Text style={styles.fieldLabel}>
+                Gender
+                <Text style={styles.fieldLabelSub}> (Required for Women-Only Rides)</Text>
+              </Text>
+            </View>
+            <View style={styles.genderContainer}>
+              {[
+                { label: 'Woman', value: 'woman', icon: 'gender-female' as const },
+                { label: 'Man', value: 'man', icon: 'gender-male' as const },
+                { label: 'Other', value: 'other', icon: 'account-outline' as const },
+              ].map((option) => {
+                const isSelected = profile.gender === option.value;
+                const isWoman = option.value === 'woman';
+                return (
+                  <TouchableOpacity
+                    key={option.value}
+                    style={[
+                      styles.genderChip,
+                      isSelected && (isWoman ? styles.genderChipSelectedWoman : styles.genderChipSelected),
+                    ]}
+                    onPress={() => setProfile((prev) => ({ ...prev, gender: option.value as any }))}
+                    activeOpacity={0.7}
+                  >
+                    <MaterialCommunityIcons
+                      name={option.icon}
+                      size={18}
+                      color={isSelected ? (isWoman ? '#E11D48' : WARM_CORE.primary) : WARM_CORE.textSecondary}
+                      style={{ marginRight: 6 }}
+                    />
+                    <Text
+                      style={[
+                        styles.genderChipText,
+                        isSelected && (isWoman ? styles.genderChipTextSelectedWoman : styles.genderChipTextSelected),
+                      ]}
+                    >
+                      {option.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           </View>
 
@@ -733,49 +802,7 @@ export default function ProfileEditScreen() {
   );
 }
 
-const styles = StyleSheet.create<{
-  safeArea: ViewStyle;
-  container: ViewStyle;
-  centerContainer: ViewStyle;
-  header: ViewStyle;
-  backButton: ViewStyle;
-  headerTitle: TextStyle;
-  content: ViewStyle;
-  contentContainer: ViewStyle;
-  profileImageSection: ViewStyle;
-  profileImageContainer: ViewStyle;
-  profileImage: ImageStyle;
-  profileImagePlaceholder: ViewStyle;
-  editIconOverlay: ViewStyle;
-  profileImageHint: TextStyle;
-  fieldSection: ViewStyle;
-  fieldHeader: ViewStyle;
-  fieldLabel: TextStyle;
-  fieldLabelRequired: TextStyle;
-  inputContainer: ViewStyle;
-  inputContainerFocused: ViewStyle;
-  inputError: ViewStyle;
-  input: TextStyle;
-  characterCount: TextStyle;
-  errorText: TextStyle;
-  dropdownButton: ViewStyle;
-  dropdownButtonFocused: ViewStyle;
-  dropdownButtonText: TextStyle;
-  dropdownOptions: ViewStyle;
-  dropdownOption: ViewStyle;
-  dropdownOptionActive: ViewStyle;
-  dropdownOptionText: TextStyle;
-  dropdownOptionTextActive: TextStyle;
-  actionButtons: ViewStyle;
-  button: ViewStyle;
-  cancelButton: ViewStyle;
-  cancelButtonText: TextStyle;
-  saveButton: ViewStyle;
-  saveButtonText: TextStyle;
-  buttonDisabled: ViewStyle;
-  divider: ViewStyle;
-  successIndicator: ViewStyle;
-}>({
+const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: WARM_CORE.background,
@@ -1042,10 +1069,48 @@ const styles = StyleSheet.create<{
   buttonDisabled: {
     opacity: 0.5,
   },
-  divider: {
-    height: 1,
-    backgroundColor: WARM_CORE.border,
-    marginVertical: 8,
+  fieldLabelSub: {
+    fontSize: 12,
+    fontWeight: '500',
+    color: WARM_CORE.textSecondary,
+  },
+  genderContainer: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  genderChip: {
+    flex: 1,
+    flexDirection: 'row',
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: WARM_CORE.border,
+    backgroundColor: WARM_CORE.card,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  genderChipSelected: {
+    borderColor: WARM_CORE.primary,
+    backgroundColor: WARM_CORE.primary + '12',
+  },
+  genderChipSelectedWoman: {
+    borderColor: '#E11D48',
+    backgroundColor: '#FFF0F5',
+  },
+  genderChipText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: WARM_CORE.textSecondary,
+  },
+  genderChipTextSelected: {
+    color: WARM_CORE.primary,
+    fontWeight: '700',
+  },
+  genderChipTextSelectedWoman: {
+    color: '#E11D48',
+    fontWeight: '700',
   },
   successIndicator: {
     width: 20,
@@ -1054,5 +1119,10 @@ const styles = StyleSheet.create<{
     backgroundColor: WARM_CORE.success,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: WARM_CORE.border,
+    marginVertical: 16,
   },
 });

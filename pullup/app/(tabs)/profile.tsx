@@ -685,12 +685,26 @@ export default function ProfileScreen() {
                   <Text style={styles.academicTagLabel}>Division</Text>
                   <Text style={styles.academicTagValue}>{auth.user.division}</Text>
                 </View>
+                {auth.user.gender ? (
+                  <>
+                    <View style={styles.academicTagDivider} />
+                    <View style={styles.academicTag}>
+                      <Text style={styles.academicTagLabel}>Gender</Text>
+                      <Text style={styles.academicTagValue}>
+                        {auth.user.gender === 'woman' ? 'Woman' : auth.user.gender === 'man' ? 'Man' : 'Other'}
+                      </Text>
+                    </View>
+                  </>
+                ) : null}
               </View>
             </Animated.View>
 
             {/* PROFILE COMPLETION CARD (Non-blocking) */}
             {(() => {
               const missing: { id: string; label: string; icon: string; route: string }[] = [];
+              if (!auth.user?.gender) {
+                missing.push({ id: 'gender', label: 'Select Gender (For Women-Only rides)', icon: 'gender-male-female', route: '/profile-edit' });
+              }
               if (!auth.user?.profileImage) {
                 missing.push({ id: 'photo', label: 'Add Profile Photo', icon: 'camera-plus-outline', route: '/profile-edit' });
               }
@@ -704,8 +718,9 @@ export default function ProfileScreen() {
 
               if (missing.length === 0) return null;
 
-              const completedCount = 3 - missing.length;
-              const percent = Math.round((completedCount / 3) * 100);
+              const totalTasks = 4;
+              const completedCount = totalTasks - missing.length;
+              const percent = Math.round((completedCount / totalTasks) * 100);
 
               return (
                 <Animated.View
