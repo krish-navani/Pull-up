@@ -1999,9 +1999,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     async (userId: string, updates: Partial<User>) => {
       try {
         dispatch({ type: 'SET_LOADING', payload: true });
-        const updatedUser = updates.gender
-          ? await setProfileGender(userId, updates.gender)
-          : await updateUserProfile(userId, updates);
+        let updatedUser = await updateUserProfile(userId, updates);
+
+        if (updates.gender) {
+          try {
+            const genderUser = await setProfileGender(userId, updates.gender);
+            if (genderUser) {
+              updatedUser = { ...updatedUser, ...genderUser };
+            }
+          } catch (e) {
+            console.warn('[CONTEXT] Backend setProfileGender notice:', e);
+          }
+        }
+
         dispatch({ type: 'SET_USER', payload: updatedUser });
         dispatch({ type: 'SET_ERROR', payload: null });
         

@@ -526,10 +526,23 @@ export const verifyOTPAndAutoAuth = async (email: string, otp: string): Promise<
 export const updateUserProfile = async (userId: string, updates: Partial<User>): Promise<User> => {
   try {
     const userRef = doc(db, 'users', userId);
+    
+    // Clean updates: remove any undefined keys so Firestore updateDoc doesn't throw
+    const cleanedUpdates: Record<string, any> = {};
+    Object.keys(updates).forEach((key) => {
+      const val = (updates as any)[key];
+      if (val !== undefined) {
+        cleanedUpdates[key] = val;
+      }
+    });
+
     const updatePayload = {
-      ...updates,
+      ...cleanedUpdates,
       updatedAt: new Date().toISOString(),
     };
+
+    console.log('[AUTH] updateUserProfile updating Firestore doc:', userId, updatePayload);
+
     await forensicTrace('updateDoc', 'users', userId, updatePayload, () =>
       updateDoc(userRef, updatePayload)
     );
@@ -543,6 +556,7 @@ export const updateUserProfile = async (userId: string, updates: Partial<User>):
     }
     throw new Error('User document not found after update');
   } catch (error: any) {
+    console.error('[AUTH] ❌ updateUserProfile error:', error);
     throw {
       code: error.code || 'UPDATE_PROFILE_ERROR',
       message: error.message || 'Failed to update profile',
