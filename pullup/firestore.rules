@@ -93,8 +93,7 @@ service cloud.firestore {
       allow update: if isSignedIn() && getPersistentUserId() == userId &&
                     request.resource.data.id == resource.data.id &&
                     request.resource.data.email == resource.data.email &&
-                    request.resource.data.fullName == resource.data.fullName &&
-                    request.resource.data.get('gender', null) == resource.data.get('gender', null);
+                    request.resource.data.fullName == resource.data.fullName;
       allow delete: if isSignedIn() && getPersistentUserId() == userId;
 
       // ── Notifications subcollection ──────────────────────────────────────

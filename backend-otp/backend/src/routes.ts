@@ -557,15 +557,10 @@ router.post('/profile/gender', async (req: Request, res: Response) => {
     const result = await db.runTransaction(async transaction => {
       const snapshot = await transaction.get(ref);
       if (!snapshot.exists) return 'USER_NOT_FOUND';
-      const existingGender = normalizeProfileGender(snapshot.data()?.gender);
-      if (existingGender && existingGender !== gender) return 'GENDER_ALREADY_SET';
-      if (!existingGender) transaction.update(ref, { gender, updatedAt: new Date().toISOString() });
+      transaction.update(ref, { gender, updatedAt: new Date().toISOString() });
       return 'OK';
     });
     if (result === 'USER_NOT_FOUND') return res.status(404).json({ success: false, code: result });
-    if (result === 'GENDER_ALREADY_SET') {
-      return res.status(409).json({ success: false, code: result, message: 'Profile gender cannot be changed.' });
-    }
     return res.json({ success: true, gender, user: (await ref.get()).data() });
   } catch (error: any) {
     console.error('[PROFILE] gender initialization failed:', error);
